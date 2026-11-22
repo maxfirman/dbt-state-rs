@@ -76,6 +76,7 @@ ever mutate `CDO_DEMO_DB`.
 | Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh`, `data_test_history.py {table CAPTURE…\|probes\|probes-order}` (#200: attributes each data-test SKIP's echoed runtime to the confirmed run it matches; crafted one-factor and same-key cells through `PROBE_URL`; tested by `data_test_history_test.py`) |
 | Selectors and deferral | `selector_experiment.sh {baseline\|query CRIT\|mutate CRIT EDIT\|all-clean}`, `selector_last_write_wins.sh`, `deferral_experiment.sh` |
 | Explain | `explain_capture.py SCENARIO --port PORT` (the shared driver, [below](#shared-live-capture-driver-experimentsexplain_capturepy)), `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`, `ambiguous_rebuilds.py PROBE…` (crafted ambiguous Target relation probes d1–d4; point `PROBE_URL` at your own proxy); `incomplete_test_results.py PROBE…` (crafted data-test confirms without complete results, #75; same); `copy_logic_probes.py PROBE…` (crafted RegisterClone copies and the rebuilds over them, #104; same); `malformed_requests.py PROBE…` (crafted malformed requests, #104; same); `unknown_epoch_probes.py PROBE…` (crafted upstreams with an unknown epoch, #104, #113; same); `rebuild_tolerance_line_probes.py PROBE…` (crafted data-only rebuilds past a 20 s Lag tolerance, with and without an equivalent elsewhere, #104; same); `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`); `decision_rows.py` holds the wire names and minted-decision helpers both share |
+| Databricks Volatile evaluation | `databricks_volatile.py` (#198: pinned native captures of fresh `rand()` tables, a control, a consumer and a singular data test, built twice and explained, with SQL API readbacks; [Databricks capability campaign](#databricks-capability-campaign) setup; tested by `databricks_volatile_test.py`), `databricks_volatile_priority.py --batch {response\|reuse-controls\|checked-reuse\|function-builds\|producer}` (#213: the prioritized cells through dbt 2.0.11, [characterization](reports/databricks-volatile-priority-2026-11-21.md)) |
 | Inspection and validation | `golden_tail.py FILE N [PREFIX]`, `lag_show.py`, `lag_rule_check.py [files]`, `trace_validate.py` and `oracles.py` (correlate captured source, clone and confirm evidence; tested by `trace_validate_test.py`) |
 
 `lag_experiment.sh` bumps upstreams by External modification of dbt-built
@@ -309,6 +310,11 @@ offline PR cloud gate. It checks the pinned executable digest and guarded
 `cdo_demo_db` profile, uses run-owned schemas/project copies/ports, retains
 complete typed physical results and failed artifacts, and requires clean
 capture certification. The Snowflake runner's guards are unchanged.
+
+The [Databricks upstream-origin experiment](reports/databricks-upstream-origin-2026-11-21.md)
+compares ordinary FULL submits over a shared upstream, a confirmed copy and
+independent builds. Its four captures pair each decision with served rows, a
+State-disabled dev Reference execution and the next unchanged submit.
 
 Commands, evidence and the copy/snapshot blockers are recorded in the
 [2026-11-12 capability report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-capabilities-2026-11-12.md).

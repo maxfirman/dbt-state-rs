@@ -212,7 +212,7 @@ entry 13). The seven CLONE trees whose decisions agree are keyed as Explain
 gaps (entries 3, 7, 33, 39, 61, 67, 75). This needs its own issue.
 
 Replay: `copy_source_choice.jsonl` is in the generic conformance replay
-(corpus 148). Every other response, confirmation and Explain matches hosted
+(corpus 153). Every other response, confirmation and Explain matches hosted
 exactly.
 
 ## Reproduce

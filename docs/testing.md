@@ -125,7 +125,86 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
     `transformed_nodes_by_query` map) and `hosted_volatile_values` (a
     captured response) read Volatile evaluation values as query → function
     → value; `volatile_map_shape` drops the values.
-- `rows.rs` reads `executions` and `node_states` back for assertions.
+- `oidc.rs` supports `oidc` mode. `TestAuth::new(&[(org, disabled)])`
+  writes and loads a real auth config over the test-only keys in
+  `crates/auth/testdata/`, and `start_server_oidc(&auth)` serves it. A
+  `TestSigner` (`auth.signer()`, or `auth.signer_with(SignerOptions { issuer,
+  audience, key, organizations })` for wrong issuers, audiences, keys or a
+  stale view of the Organizations) issues person (`.person(sub, sid)`) and
+  machine (`.machine(sub)`) tokens with `.grant(org, role)` and
+  `.issued_ago(d)`. The gRPC server refuses a person token whose `sid`
+  names no active Token broker session, so a test that needs one accepted
+  records the session first: `person_session(&server, principal).await`
+  returns its `sid`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
+  send them. `capture_logs()` / `captured_logs()` capture the process's log
+  lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`
+  (which also registers the broker for browser sign-in with
+  `BROKER_CLIENT_SECRET` from a file and a refresh-token key file),
+  `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
+  `.subject_claim(c)`, `.dbt_client_id(id)`,
+  `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
+  `.without_browser_sign_in()` (no `[upstream] client_id`),
+  `.rule(kind, claim, value, org, role)`, `.person_lifetime_minutes(m)`,
+  `.machine_lifetime_minutes(m)`, `.issuer(url)` and `.without_signing()`.
+- `start_server_with_broker(&auth)` runs the gRPC server and the Token
+  broker in one process on separate listeners (`server.broker_url()`), as
+  `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
+  standalone broker on its own migrated schema whose issuer is its own URL
+  (`TestBroker::url()`, `.auth`, `.clock`), and
+  `start_broker_beside(&broker, builder)` another one on the same schema (a
+  replica, or the deployment restarted with another config). `server.broker_clock` (a
+  `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
+  codes, pending logins and sessions; the gRPC server's person session
+  check reads the same clock, so advancing it ages cached session statuses
+  (30 s) and brings sessions to their 12-hour cap
+  (`tests/session_revocation.rs`).
+- `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
+  serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
+  Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
+  .claim(name, value))` registers an app registration; `.audience(aud)`,
+  `.issuer(iss)`, `.opaque()`, `.signed_by_impostor()` and `.expired()`
+  spoil its access token. `idp.sign_in(UpstreamPerson::new(sub)
+  .claim(name, value))` signs the browser in as a person, whom the
+  auto-approving `/authorize` approves at once; `.wrong_nonce()`,
+  `.signed_by_impostor()`, `.audience(aud)`, `.issuer(iss)`,
+  `.without_id_token()` and `.without_refresh_token()` spoil its token
+  response. The `authorization_code` grant authenticates the broker by
+  `BROKER_CLIENT_SECRET` or a `private_key_jwt` assertion
+  (`upstream-rp-key.pem`) and checks redirect URI and PKCE. The
+  `refresh_token` grant renews a person with their current claims, rotating
+  the refresh token, and `/userinfo` answers for a person's access token:
+  `idp.update(person)` changes a person's claims, `idp.disable(sub)` /
+  `idp.enable(sub)` a person, `idp.fail_refresh(status, error)` /
+  `idp.restore_refresh()` every refresh; `UpstreamPerson`
+  `.without_refresh_id_token()`, `.without_refresh_access_token()`,
+  `.keeps_refresh_token()`, `.renewed_as(sub)` and `.userinfo_without(claim)`
+  shape renewal, and `idp.follow(&server.broker_clock)` issues person tokens
+  at the broker's test clock. `idp.token_requests()`,
+  `idp.authorize_requests()`, `idp.issued_refresh_tokens()`,
+  `idp.issued_access_tokens()`, `idp.userinfo_requests()` and
+  `idp.jwks_fetches()` report what the broker sent and got.
+- `broker_client.rs` sends token requests exactly as the pinned dbt clients
+  do (`client_credentials`, `token_exchange`, and the browser sign-in's
+  `authorization_code` as Fusion and as the Python client post it, and
+  `refresh_token`, whose form both clients share), and
+  `claims(jwt)` reads a token's claims unverified, as the clients do.
+  `SignIn::new()` is one browser sign-in as the clients start it (client id
+  `DBT_CLIENT_ID`, redirect `LOOPBACK_REDIRECT_URI`, PKCE S256, `state`);
+  `.client_id(id)`, `.redirect_uri(uri)`, `.without_pkce()`,
+  `.plain_pkce()` vary it, and `.authorize_url(auth_url)` is the URL the
+  client opens.
+- `browser.rs`: `Browser::new().route(ISSUER, &server.broker_url())`
+  follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
+  client's loopback handler (`Landing::Loopback(query)`) or a page
+  (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`, and
+  renewal in `tests/person_renewal.rs`.
+- `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
+- `rows.rs` reads `executions` and `node_states` back for assertions,
+  `decisions(&server, n)` the `node_decisions` rows once `n` are captured,
+  `principals(&server)` the Principal records and `tables(&server)` the
+  schema's tables;
+  `every_row_as_text(&server)` dumps the schema, to prove a value was never
+  stored.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
   `legacy::forget_rendered_volatile_values` and
@@ -133,6 +212,13 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   recorded before migration 0027 or 0028, and
   `legacy::forget_data_test_history_keys` makes State history look recorded
   before migration 0029 (#200).
+  `legacy::record_history_before_principals(&database, org)` migrates a
+  `TestDatabase` only to the migration before `principals` and records a
+  decision and an execution there, for upgrade tests of migration 0032
+  (#226);
+  `fault::fail_principal_records` makes every `principals` write fail;
+  `fault::fail_session_status` makes every person session status read
+  fail.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 

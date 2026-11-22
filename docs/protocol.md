@@ -26,17 +26,223 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
   `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, and in newer clients
   `x-dbt-invocation-id`.
 - The server reads three of them:
-  - `x-organization-id` scopes every store query. When absent the tenant is
-    `local`. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without a
-    non-empty value (`UNAUTHENTICATED`). This checks presence only; it does not
-    authenticate the organization.
+  - `x-organization-id` scopes every store query.
+    - In `DBT_STATE_AUTH=none` mode (the default), an absent header means the
+      `local` Organization. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects
+      requests without a non-empty value (`UNAUTHENTICATED`). This checks
+      presence only; it does not authenticate the Organization.
+    - In `DBT_STATE_AUTH=oidc` mode, see [Authentication](#authentication-oidc-mode).
   - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
   - Each call reads them once, into its request scope
     (`crates/server/src/request_scope.rs`). The handler and the decision
-    capture both take the Organization from that scope.
+    capture both take the Organization from that scope, and in `oidc` mode
+    the Principal: every decision (`node_decisions`) and every execution
+    row a Submit, RecordExecutions or RegisterClone writes (`executions`)
+    records the token's `sub` as `principal_id`. `none` mode records none.
 - `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
   under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
   that build age is measured against. Never enable that clock in a deployment.
+
+## Authentication (`oidc` mode)
+
+With `DBT_STATE_AUTH=oidc`, a layer in front of every service except
+`grpc.health.v1` (`crates/server/src/grpc_auth.rs`) authenticates each call
+before any handler runs, using the auth core (`crates/auth`) and the TOML
+auth config (`DBT_STATE_AUTH_CONFIG`, example in
+[`examples/auth/auth.toml`](../examples/auth/auth.toml)).
+
+- The token is the `authorization: Bearer` value: an RS256 JWT with `iss`
+  (the Token broker), `aud` (the configured dbt State API audience), `azp`,
+  `sub` (the Principal), `scope`, `iat` and `exp`, plus `sid` on person
+  tokens. The JOSE header's `kid` names one of the configured signing keys.
+- `scope` uses the runcache grammar: `runcache:scope:org:<ORG>:<role>` and
+  `runcache:scope:app:<ORG>:<role>` entries separated by single spaces. An
+  active Organization appears under both kinds, a disabled one only as `app`.
+  Roles are `developer` and `admin`. `*` is never issued or accepted.
+- `x-organization-id` must name an Organization that is active in config and
+  listed in an `org` entry of the token. Handlers take the Organization from
+  the authenticated context, never from the raw header.
+
+- A person token (one with `sid`) also needs an active Token broker
+  session: not revoked and not past its 12-hour cap. The server reads
+  `broker_person_sessions` from the Postgres it shares with the broker (in
+  process or standalone) and caches each status on the replica for at most
+  30 s (`dbt_state_broker::SESSION_STATUS_MAX_AGE`), so a revoked session's
+  tokens are refused within 30 s of the revocation. Machine tokens carry no
+  `sid` and are not checked. A status that cannot be read fails closed.
+- An operator revokes every session of a Principal with
+  `dbt-state-server revoke-sessions --issuer <upstream issuer> --subject
+  <upstream subject>` ([development.md](development.md#revoking-a-principals-sessions)).
+
+Refusals use fixed messages; the reason is logged at `warn`, never with the
+token (session refusals log `session_unknown`, `session_revoked`,
+`session_expired` or `session_status_unavailable`, with the `session`):
+
+| Code | Cause | Message |
+|---|---|---|
+| `UNAUTHENTICATED` | no token | `missing bearer token` |
+| | not `Bearer <JWT>`, not RS256, claims missing or `scope` outside the grammar | `malformed bearer token` |
+| | not signed by a configured key | `invalid bearer token signature` |
+| | another issuer | `bearer token has the wrong issuer` |
+| | another audience (for example a UI token) | `bearer token has the wrong audience` |
+| | past `exp` by more than 60 s | `bearer token has expired` |
+| | a person token whose `sid` session is unknown, revoked, or past its 12-hour cap | `bearer token session is not active` |
+| `UNAVAILABLE` | a person token's session status cannot be read from Postgres | `session status unavailable` |
+| `PERMISSION_DENIED` | no or empty `x-organization-id` | `missing x-organization-id metadata` |
+| | an Organization unknown or disabled in config, or not among the token's active entries | `access to the organization is denied` |
+
+Hosted's own codes and messages for these failures are not characterized.
+
+### Token broker (`crates/broker`)
+
+The Token broker serves HTTP/1.1 at its issuer URL: OIDC discovery at
+`/.well-known/openid-configuration`, its public keys at `/jwks`, the
+authorization endpoint at `/` (the dbt client's `RUN_CACHE_AUTH_URL`, used
+verbatim, as hosted's is its issuer root), the Upstream IdP's return at
+`/callback`, and the token endpoint at `/token` (the dbt client's
+`RUN_CACHE_TOKEN_URL`). Discovery advertises `authorization_endpoint`,
+`response_types_supported: ["code"]`, `grant_types_supported:
+["authorization_code", "client_credentials", "refresh_token"]`,
+`code_challenge_methods_supported: ["S256"]` and
+`token_endpoint_auth_methods_supported: ["none", "client_secret_basic"]`.
+
+**Browser sign-in.** Both pinned clients open the browser at
+`<auth URL>?response_type=code&client_id&redirect_uri=http://127.0.0.1:29525/handler&scope=runcache:scope:orgs&state&code_challenge&code_challenge_method=S256`
+and check that the loopback redirect echoes `state`
+(`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/browser_flow.rs`;
+`dbt-state==2.62.6` `auth/sso.py` `_login` with authlib). The broker:
+
+- accepts only the dbt client registration's client id (`[clients.dbt]
+  client_id`, default the clients' built-in
+  `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`) and exactly that redirect URI;
+  otherwise it answers an HTML error page (400) and never redirects;
+- requires PKCE S256, and caps pending sign-ins per client IP
+  (`[broker] max_pending_logins_per_ip`, default 20; behind a proxy, the last
+  entry of `[broker] client_ip_header`); a pending sign-in lasts 10 minutes;
+- redirects to the Upstream IdP's discovered `authorization_endpoint` as an
+  OIDC relying party: `[upstream] client_id`, `redirect_uri=<issuer>/callback`,
+  `[upstream] login_scope` (default `openid offline_access email profile`),
+  its own `state`, `nonce` and PKCE S256 challenge;
+- at `/callback`, takes the pending sign-in by `state` once, exchanges the
+  code with `private_key_jwt` (`[upstream] private_key_file`) or HTTP Basic
+  (`[upstream] client_secret_file`), and checks the ID token: signed by a key
+  the IdP publishes, the IdP's issuer, `aud` holding the broker's client id,
+  `azp` (when present, or with several audiences) the broker's client id,
+  current, and the `nonce` it sent;
+- identifies the Principal by the IdP issuer and `[upstream] subject_claim`
+  (default `sub`; machines too); `email` and `name` are display only;
+- applies the `kind = "person"` rules only, and requires an upstream refresh
+  token; then creates a person session (12-hour cap) storing the upstream
+  refresh token AES-256-GCM-encrypted (`[upstream] refresh_token_key_file`);
+- redirects to the loopback handler with a single-use `code`, valid 60 s and
+  bound to the client id, redirect URI and PKCE challenge, and the client's
+  `state`.
+
+After the redirect URI is checked, every refusal goes back to the loopback
+handler as `error`, `error_description` (fixed) and `state`, and is logged at
+`warn` as `sign-in refused` with `step`, `reason` and, when known,
+Principal, subject, client id and `missing_claims`:
+
+| `error` | Cause (log `reason`) |
+|---|---|
+| `invalid_request` | no PKCE S256 (`pkce_s256_required`) |
+| `unsupported_response_type` | `response_type` is not `code` |
+| `unauthorized_client` | no `[upstream] client_id` (`sign_in_not_configured`) |
+| `access_denied` | the IdP returned an error (`upstream_error`) or no code; refused the code (`upstream_refused_grant`); no or an untrusted ID token (`upstream_missing_id_token`, `upstream_token_*`, including `upstream_token_wrong_nonce`); no subject claim (`upstream_token_missing_subject`); no person rule matches (`no_matching_rule`, with `missing_claims`, for example `groups` under Entra group overage) |
+| `temporarily_unavailable` | too many pending sign-ins from the client IP (`too_many_pending_logins`); the IdP or its discovery is unavailable, including a plaintext `authorization_endpoint` (`upstream_unavailable`); the database (`database_unavailable`) |
+| `server_error` | the IdP rejected the broker's credential (`upstream_rejected_client`); it issued no refresh token (`upstream_missing_refresh_token`) |
+
+An unknown, used or expired `state` at `/callback` gets an error page.
+
+**Token endpoint.** `/token` serves three grants:
+
+- `authorization_code`, as both pinned clients send it: the form
+  `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`
+  with no client authentication (the Python client's authlib body also
+  carries `include_client_id=True`, ignored). The code is used up by its
+  first presentation, whatever the outcome; presenting it again revokes the
+  session it started. The `200` response is `{"id_token", "refresh_token",
+  "scope", "token_type": "Bearer", "expires_in"}` with `Cache-Control:
+  no-store`. The `id_token` is a person token: `sid` the person session,
+  `azp` the dbt client id, `email` and `name` when the IdP gave them, and
+  `[tokens] person_lifetime_minutes` (default 60). The refresh token is
+  opaque; only its SHA-256 is stored, as the first member of the session's
+  refresh-token family.
+- `refresh_token`, as both pinned clients send it: the form
+  `grant_type=refresh_token&refresh_token&client_id` with no client
+  authentication and no scope (`dbt-fusion@9977b6c` `oauth.rs`
+  `fetch_refresh`; `dbt-state==2.62.6` `auth/sso.py` `_refresh_token`,
+  authlib's `refresh_token(..., scope=None)` with auth method `none`). Both
+  persist the response's `refresh_token` (Fusion keeps none when it is
+  absent; authlib keeps the presented one), so the `200` response is the
+  code exchange's: `{"id_token", "refresh_token", "scope", "token_type":
+  "Bearer", "expires_in"}`, `Cache-Control: no-store`, a person token in the
+  same session (`sid`) and a new refresh token in its family. In one
+  transaction holding the session's row lock (`FOR UPDATE`), the broker:
+  1. refuses a revoked session or one past its 12-hour cap, and a refresh
+     token bound to another client id;
+  2. treats a refresh token presented again after its renewal as a replay,
+     and revokes the whole session (the 60 s grace window for shared logins
+     and retries is #224);
+  3. refreshes at the Upstream IdP with the session's upstream refresh
+     token and its own credential (as at `/callback`), and stores the IdP's
+     rotated refresh token encrypted when it rotates;
+  4. takes fresh evidence: the refresh response's ID token, checked as at
+     sign-in but without a nonce (OIDC Core §12.2), or, when the IdP returns
+     none, the discovered `userinfo_endpoint`'s JSON for the new access
+     token (OIDC Core §5.3). The evidence must name the session's subject
+     (`[upstream] subject_claim`); its issuer is the configured Upstream
+     IdP, which must still be the session's;
+  5. re-applies the `kind = "person"` rules to the evidence, so Role and
+     Organization changes at the IdP take effect, and records the new
+     scope, email and name on the session and the Principal.
+
+  An IdP refusal, missing, untrusted or unusable evidence, another subject,
+  or no grant denies renewal and ends the session (`revoked_at`); the
+  person signs in again. When the broker cannot ask the IdP (unreachable,
+  failing, or refusing the broker's own credential) it answers 503 and
+  leaves the session as it was, so the same refresh token can be retried.
+- `client_credentials`, as both pinned clients send it: HTTP Basic
+  `client_id:secret` and the form `grant_type=client_credentials&scope=runcache:scope:orgs`
+  (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/oauth.rs`
+  `fetch_client_credentials`; `dbt-state@b0f3030` `auth/sso.py`
+  `_login_with_client_credentials`). The broker forwards the Basic header
+  unchanged to the Upstream IdP's `client_credentials` grant with
+  `[upstream] client_credentials_scope`, ignoring the requested scope. It
+  accepts only an RS256 JWT access token signed by a key the IdP publishes,
+  with the IdP's issuer, an `aud` holding `[upstream] api_audience`, and
+  current; then names the Principal by the issuer and `[upstream]
+  subject_claim` and applies the `kind = "machine"` rules. The `200` response is
+  `{"id_token", "scope", "token_type": "Bearer", "expires_in"}` with
+  `Cache-Control: no-store` and no refresh token. The `id_token` is a machine
+  token (no `sid`), `azp` the client id, `sub` the opaque Principal id of the
+  IdP issuer and subject claim.
+
+Refusals are OAuth errors (`{"error", "error_description"}`, fixed
+descriptions), logged at `warn` with the reason:
+
+| Status | `error` | Cause (log `reason`) |
+|---|---|---|
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without the dbt client id (`missing_client_id`, `unknown_client`) |
+| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client id or redirect URI than the authorize request (`client_mismatch`, `redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
+| 400 | `invalid_grant` | `refresh_token`, with the description "the session has ended or cannot be renewed; sign in again": an unknown refresh token (`unknown_refresh_token`), another client id than the session's (`client_mismatch`), a revoked session (`session_revoked`) or one past its 12-hour cap (`session_expired`), a broker without `[upstream] client_id` (`sign_in_not_configured`). These end the session (log `session_ended=true`): a replay (`refresh_token_replayed_session_revoked`); the IdP refused the refresh, for example a disabled person (`upstream_refused_grant`, with the IdP's `upstream` error); an untrusted refreshed ID token (`upstream_token_*`); neither an ID token nor a userinfo endpoint and access token (`upstream_missing_evidence`); userinfo refused or not JSON (`upstream_userinfo_refused`, `upstream_userinfo_unusable`); no subject claim (`upstream_evidence_missing_subject`) or another subject (`upstream_subject_mismatch`); no person rule matches (`no_matching_rule`, with `missing_claims`); another `[upstream] issuer` than the session's (`upstream_issuer_changed`); a stored upstream refresh token that does not decrypt (`upstream_refresh_token_unreadable`) |
+| 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
+| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
+| 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier`; `refresh_token` without `refresh_token` (`missing_parameter`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); the database (`database_unavailable`) |
+
+Each issued token is logged at `info` with grant, Principal, kind, IdP
+subject, client id, scope, lifetime and (for a person) session, and for a
+renewal the `evidence` (`id_token` or `userinfo`); each completed sign-in as
+`sign-in completed`. Secrets and token values are never
+logged, and stored only as hashes or, for the upstream refresh token,
+encrypted.
+
+The broker records each Principal it issues tokens to in `principals`: keyed
+by the IdP issuer and subject, with the opaque id the token carries as `sub`,
+the kind and any email. A machine is recorded before its token is issued (a
+failed write is 503 `temporarily_unavailable`, `principal_not_recorded`); a
+person with its session at `/callback` (`database_unavailable`).
 
 ## Services
 
@@ -656,7 +862,11 @@ client.
 | Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | 2.0.11: run 1 entry 6; cells entries 59, 159 | none |
-| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 | other Databricks functions render nothing (#198) |
+| Databricks | `rand()`, `random()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl`, controls 85–86, `databricks_volatile_priority.jsonl` | cells below |
+| Databricks | `uuid()` | `UUID()` | lowercase version 4 UUID | priority entries 16, 52 | FULL first build and unchanged rerun |
+| Databricks | `current_timestamp()`, bare `current_timestamp`, `now()` | `CURRENT_TIMESTAMP()` | UTC timestamp with six fractional digits | priority entries 15, 19, 22, 53, 54, 58; function builds entry 13 | FULL cells below |
+| Databricks | `current_date()`, bare `current_date` | `CURRENT_DATE` | UTC date | `databricks_volatile_function_builds.jsonl` entries 8, 9 | FULL first builds with evaluation on |
+| Databricks | `rand(0)`, `rand(-7)`, `rand(42)` | `RAND(0)`, `RAND(-7)`, `RAND(42)` | constants `0.8444218515250481`, `0.32383276483316237`, `0.6394267984578837` | function builds entries 10–12 | other seeds uncaptured |
 
 A constant is hosted's value for exactly the captured arguments, not a value
 the server computes. The other function forms render nothing:
@@ -696,14 +906,16 @@ says "empty".
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
 | Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
-| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification (its Target relation as built, its inputs unchanged) and a query-changed rebuild over its existing Target relation; empty for the refusal after the table was dropped, after an External modification or over changed inputs (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
-| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun (its inputs unchanged, its cached results complete); empty for the refusal after an upstream changed or over incomplete cached results (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
-| Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
-| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
+| Databricks | FULL model, root SQL, `ready_to_execute` | captured forms on first build, unseeded RAND/UUID/current timestamp on unchanged refusal, unseeded RAND on query change, and unseeded RAND after the captured input/target changes: one plain projection over one Delta input | unseeded RAND and current timestamp on first build | `databricks_volatile_evaluation.jsonl`, controls 85–86, priority and function-build fixtures |
+| Databricks | FULL model, root SQL, `skip_execution` | checked `rand(42)` on unchanged source-less Reuse; same-day date Reuse pending rollover evidence | unseeded RAND and current timestamp on unchanged Reuse | priority entries 56, 58; [maintainer decisions](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions) |
+| Databricks | Source-less APPEND, MERGE, DELETE_INSERT, root SQL | unseeded RAND first build and unchanged refusal | empty, uncaptured | priority entries 13, 14, 18, 59–61 |
+| Databricks | data test without a Target relation (`__target_query__`), its own SQL | unseeded RAND on first execution and unchanged rerun with complete results | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 10, 22 |
+| Databricks | table downstream of a volatile model | — | empty map on first build, within-tolerance Reuse, zero-tolerance rebuild after ordinary volatile data drift, and both consumers rebuilding after the captured producer transition | `databricks_volatile_evaluation.jsonl` entries 9, 26; priority entries 35, 69; producer entries 9, 10, 22, 23, 32, 33, 44, 45 |
+| Databricks | other rebuilds and refusals, node kinds, query dependencies, mixed cases, and Result copy; SQL calling a captured form beside another function, or not one query (rendered before #213, narrowed by `Cell::with_functions`) | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
 
-The [Databricks characterization](databricks-volatile.md) records the complete
-#198 history, Warehouse values, exact replay and persisted Explain coverage.
+The [Databricks characterization](databricks-volatile.md) records the
+#198 and #213 histories, Warehouse values, replay and persisted Explain coverage.
 
 A Snowflake build renders only for a captured decision reason
 (`warehouse/snowflake.rs` cells). With evaluation on: a first build
@@ -737,7 +949,22 @@ the table was dropped or modified externally, or over changed inputs. Hosted
 was captured only for the unchanged rerun: the refused build an ordinary
 build, a table's Target relation as built, a data test's cached results
 complete, and every upstream with the epoch and Upstream producer recorded
-at the refused build (`reuse_candidate::Selection::unchanged_rerun`). Every
+at the refused build (`reuse_candidate::RerunEvidence::Unchanged`). #213
+added the FULL `rand()` refusals after the Target relation was modified or
+dropped and after an External modification of the sole input
+(`Outcome::RefusedVolatileSqlChangedRerun`). They render only for the
+captured shape: one plain projection of columns and `rand()` over one
+directly read input whose latest State is an ordinary FULL Delta build with
+no pending write that accounts for the input as recorded at the refused
+build (`warehouse/databricks.rs` `ChangedRerun`). A join, a WHERE clause or
+an input confirmed in another table format keeps an empty map. Every
+Databricks cell is also narrowed to SQL calling exactly one distinct
+captured function form from its list and no other function, as a single
+query without query dependencies (`Cell::with_functions`, #213). Before
+#213 the #198 `rand()` cells also rendered `rand()` beside other calls and
+with query dependencies that call no Volatile function; those forms are
+uncaptured, so this narrowing only removes values hosted was not seen
+returning. Every
 other Databricks refusal keeps an empty map and prints no volatile lines;
 the Snowflake refusal cells are not narrowed (its External-modification
 rerun is captured). Databricks has no checked
@@ -795,7 +1022,7 @@ data test with the same SQL, the later-confirmed run of its history key
 **Not captured.** The remaining Snowflake cells, each with its tracking
 issue or whether client 2.0.11 can reach it, are listed in
 [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
-#198's captured Databricks cells and remaining limits are in the
+#198 and #213's captured Databricks cells and remaining limits are in the
 [characterization note](databricks-volatile.md); the remaining Databricks
 cells are tracked in #213.
 

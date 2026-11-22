@@ -165,6 +165,11 @@ Do not weaken these without new evidence.
 Each item needs a controlled capture before the server changes. Until then the
 server keeps the conservative behavior described.
 
+- Which source does a Databricks FULL submit copy when two eligible builds
+  have the same physical completion epoch? With distinct epochs, hosted
+  selected the later one in all three two-source ordering controls.
+  [Captured decisions and confirmation order](reports/databricks-copy-candidates-2026-11-21.md)
+
 - **Speculative decisions beyond a data test without upstreams (#103).**
   Hosted SKIPs an unchanged data test with no upstreams on the
   `SubmitEnrichedSQLSpeculative` call (`explain_rebuild_reason_gaps.jsonl`
@@ -232,22 +237,29 @@ server keeps the conservative behavior described.
     as hosted does, and the entry replays. Decision 3: a model's rebuild refused at Reuse
     qualification records the refused build as its Explain anchor (ADR 0005
     "Amended by #201").
-  - Databricks (#198): #198 captured a FULL table's first build and
-    unchanged rerun, a data test without a Target relation's first execution
-    and rerun, their exact Explain, and a downstream table's reuse within Lag
-    tolerance (`databricks_volatile_evaluation.jsonl`,
-    [characterization note](databricks-volatile.md)); with the query-changed
-    FULL rebuild (controls entries 85, 86) these are the cells that render.
-    The reruns render only as captured, unchanged: the refused build's
-    Target relation as built, a data test's cached results complete, and
-    every upstream unchanged since it (`Selection::unchanged_rerun`).
-    Uncaptured (#213): other execution types and rebuild reasons, refusals for
-    another cause (among them under `compare_unrendered_code`), the same
-    volatile refusal after the table was dropped or modified externally or
-    over changed inputs, a data test's logic change, a data test with a Target relation, volatile query
-    dependencies, evaluation off, and functions other than unseeded
-    `rand()`. Databricks never reuses with evaluation
-    requested, because it has no checked Volatile function detector.
+  - Databricks (#198, #213): FULL and non-storing data-test `rand()`
+    builds and unchanged reruns, the query-changed FULL rebuild, and
+    one-hour consumer Reuse were already captured. #213 added FULL
+    evaluation-off BUILD/SKIP for RAND and current timestamp, additional
+    FULL first-build and rerun function forms, APPEND/MERGE/DELETE_INSERT
+    first builds and unchanged source-less reruns, and the FULL `rand()`
+    graph with known upstream drift, Target modification or drop. The
+    zero-tolerance consumer rebuilt after ordinary volatile data drift.
+    [Characterization and open cells](databricks-volatile.md#priority-follow-up-213).
+    Uncaptured (#213): other function forms and combinations, date rollover,
+    evaluation off outside the pinned cases, volatile query dependencies,
+    stored-failure/logic-changed/changed-input data tests, other FULL
+    target/input combinations, additional qualification refusals (including
+    `compare_unrendered_code`), views, snapshots, custom materializations,
+    INSERT_OVERWRITE, MICROBATCH, and other incremental, consumer, rebuild
+    and Result copy cells.
+    The maintainer approved checked evaluation-on Reuse for ordinary
+    source-less FULL literal projections and `rand(42)`, and the bounded
+    producer transition after an External modification to the sole input of
+    the FULL `rand()` model. The paired Lag-tolerant consumer's rebuild and
+    subsequent stale Reuse replay. [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#databricks-volatile-producer-after-external-modification-213).
+    Same-day `current_date()` Reuse is observed and remains a known difference
+    until rollover policy is captured. [Check-in evidence](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions).
   - Snowflake, not reachable through client 2.0.11: a data test with a
     Target relation. The client sends `target_table: null` even for a
     `store_failures` test (cells entries 61, 145), so this server renders
@@ -768,11 +780,19 @@ local-only and renders no Explain tree.
 
 ## Deployment gaps
 
-- **Auth and TLS.** Header-based organization selection is isolation, not
-  authentication. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without
-  `x-organization-id` but does not verify it against a trusted token. OAuth,
-  TLS and identity mapping are deployment work. The UI reads one configured
-  organization (`DBT_STATE_UI_ORG_ID`).
+- **Auth and TLS.** In the default `DBT_STATE_AUTH=none` mode,
+  header-based organization selection is isolation, not authentication, and
+  the server refuses a non-loopback address unless
+  `DBT_STATE_ALLOW_INSECURE=true`. `DBT_STATE_AUTH=oidc` verifies a
+  Token-broker-signed token and its Organization on every RPC except health
+  ([protocol.md](protocol.md#authentication-oidc-mode)). Each decision and
+  execution names its Principal (`principal_id`, #226), whom the Token
+  broker records by Upstream IdP issuer and subject. Person sessions renew
+  only on fresh Upstream IdP evidence (#221). Person tokens need an active
+  broker session on every RPC (cached at most 30 s per replica), and
+  `dbt-state-server revoke-sessions` revokes a Principal's sessions (#225).
+  TLS and the refresh grace window are still open (#219, #222–#224). The UI reads one
+  configured organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`

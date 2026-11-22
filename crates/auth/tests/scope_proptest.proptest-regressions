@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 22dbb887fc8cd017fa3bfa621823ac1114f0754779deefce889d683d8dbdd57a # shrinks to id = ""
+cc 025ba0e2d8e0fb8e0b1c2fe02ad34b53a08c3addebd6e57869e7ee9c80697f4d # shrinks to claim = "runcache:scope:org:a:developer"
+cc 9748d91903bd122805fa49c1f0ed46de3bdf22607d2415306e44c3b747e19b43 # shrinks to (grants, declared) = ([(OrganizationId("a"), Developer)], [(OrganizationId("a"), false)]), probe = OrganizationId("a")

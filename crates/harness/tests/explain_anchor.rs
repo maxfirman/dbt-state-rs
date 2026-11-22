@@ -28,6 +28,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         template_comparison: None,
         volatile_evaluation: Default::default(),
         org_id: ORG.into(),
+        principal_id: None,
         external_invocation_id: None,
         session_id: None,
         project_external_id: Some("project".into()),

@@ -15,12 +15,15 @@ path = "src/lib.rs"
 
 [dependencies]
 dbt-state-proto = { path = "../proto" }
+dbt-state-auth = { path = "../auth" }
+dbt-state-broker = { path = "../broker" }
 tonic.workspace = true
 tonic-prost.workspace = true
 tonic-health.workspace = true
 prost.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+tower.workspace = true
 async-trait.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
@@ -36,7 +39,9 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
 proptest = "1"
+tempfile.workspace = true

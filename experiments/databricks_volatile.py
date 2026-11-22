@@ -36,23 +36,27 @@ def check_physical(actual, properties, name, run_id):
 
 class VolatileScope(LeaseScope):
     profile_roles = ('prod',)
+    names = ('volatile', 'control', 'consumer')
+    auxiliary_suffixes = ()
+    object_prefix = 'p198_'
 
     def __init__(self, run, ledger, object_id):
         super().__init__(run, ledger)
         if uuid.UUID(object_id).version != 4 or uuid.UUID(object_id).hex != object_id:
             raise Refused('volatile: expected UUID4 object identity')
-        self.relation_prefix = 'p198_' + object_id + '_'
+        self.relation_prefix = self.object_prefix + object_id + '_'
         self.allowed = {f'cdo_demo_db.{self.schema("prod")}.{self.relation_prefix}{name}'
-                        for name in ('volatile', 'control', 'consumer')}
+                        for name in (*self.names, *self.auxiliary_suffixes)}
 
 
 class Volatile(Campaign):
     inventory = Baseline.inventory
     run = Baseline.run
+    scope_type = VolatileScope
 
     def __init__(self, args):
         self.lease = json.loads(Path(args.schema_lease).read_text())
-        scope = VolatileScope(args.run_id, self.lease, args.object_id)
+        scope = self.scope_type(args.run_id, self.lease, args.object_id)
         super().__init__(args, scope)
         self.save('volatile-runner.py', Path(__file__).read_text())
         self.save('schema-lease.json', self.lease)
@@ -70,7 +74,7 @@ class Volatile(Campaign):
                     raise Refused('volatile: schema ownership changed')
         self.before_inventory = self.inventory()
         check_inventory(self.scope, self.lease, self.before_inventory)
-        if len(self.before_inventory[self.scope.schema('prod')]) + 4 > 100:
+        if len(self.before_inventory[self.scope.schema('prod')]) + len(self.scope.allowed) + 1 > 100:
             raise Refused('volatile: insufficient schema capacity')
         self.save('lease-inventory-before.json', self.before_inventory)
         self.save('warehouse.json', self.sql('version', 'SELECT current_version() AS runtime_version'))
@@ -175,8 +179,8 @@ class Volatile(Campaign):
             previous = physical
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def argument_parser(description):
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--dbt', required=True)
     parser.add_argument('--proxy', required=True)
     parser.add_argument('--rust-url', help='opt-in owned loopback Rust server, http://127.0.0.1:PORT')
@@ -187,11 +191,15 @@ def main():
     parser.add_argument('--work-dir', required=True)
     parser.add_argument('--object-id', default=uuid.uuid4().hex)
     parser.add_argument('--run-id', default=datetime.now(timezone.utc).strftime('%Y%m%d') + uuid.uuid4().hex[:6])
+    return parser
+
+
+def run_campaign(parser, campaign):
     args = parser.parse_args()
     if args.rust_url and not re.fullmatch(r'http://127\.0\.0\.1:\d+', args.rust_url):
         parser.error('--rust-url must be an owned loopback endpoint')
-    return Volatile(args).run()
+    return campaign(args).run()
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(run_campaign(argument_parser(__doc__), Volatile))

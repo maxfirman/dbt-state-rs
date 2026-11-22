@@ -199,6 +199,7 @@ fn submit_capture(
     let record = outcome.record();
     crate::capture::CaptureInput {
         org_id: scope.organization().to_owned(),
+        principal_id: scope.principal().map(|p| p.as_str().to_owned()),
         external_invocation_id: scope.invocation_id().map(str::to_owned),
         session_id: scope.session_id().map(str::to_owned),
         project_external_id: node_state.and_then(|s| s.project_id.clone()),
@@ -315,6 +316,7 @@ fn capture_register(
         state,
         CaptureInput {
             org_id: scope.organization().to_owned(),
+            principal_id: scope.principal().map(|p| p.as_str().to_owned()),
             external_invocation_id: scope.invocation_id().map(str::to_owned),
             session_id: scope.session_id().map(str::to_owned),
             project_external_id: None,
@@ -432,6 +434,7 @@ impl Sql for SqlService {
         let decided = crate::submit_decision::submit_sql_explained(
             &self.0.store,
             scope.organization(),
+            scope.principal(),
             &raw_req,
             &sources,
         )
@@ -471,6 +474,7 @@ impl Sql for SqlService {
         let outcome = crate::submit_decision::submit_values(
             &self.0.store,
             scope.organization(),
+            scope.principal(),
             &req,
             now_ms,
         )
@@ -505,6 +509,7 @@ impl Sql for SqlService {
         let decided = crate::submit_decision::speculative_sql_explained(
             &self.0.store,
             scope.organization(),
+            scope.principal(),
             &raw_req,
             now_ms,
         )
@@ -603,17 +608,21 @@ impl Execution for ExecutionService {
         let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
-        let stored =
-            crate::execution::record_batch(&self.0.store, scope.organization(), &req.records)
-                .await
-                .map_err(|e| match e {
-                    RecordError::MissingInput { index } => Status::invalid_argument(format!(
-                        "Record at index {index} has no input set"
-                    )),
-                    RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
-                    RecordError::InvalidOutcome => Status::internal("Database operation failed"),
-                    RecordError::Store(e) => store_status(e),
-                })?;
+        let stored = crate::execution::record_batch(
+            &self.0.store,
+            scope.organization(),
+            scope.principal(),
+            &req.records,
+        )
+        .await
+        .map_err(|e| match e {
+            RecordError::MissingInput { index } => {
+                Status::invalid_argument(format!("Record at index {index} has no input set"))
+            }
+            RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
+            RecordError::InvalidOutcome => Status::internal("Database operation failed"),
+            RecordError::Store(e) => store_status(e),
+        })?;
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,
@@ -671,12 +680,17 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
-        let outcome = crate::copy_registration::register(&self.0.store, scope.organization(), &req)
-            .await
-            .map_err(|error| match error {
-                RegisterError::Unsupported(reason) => Status::unimplemented(reason),
-                RegisterError::Store(error) => store_status(error),
-            })?;
+        let outcome = crate::copy_registration::register(
+            &self.0.store,
+            scope.organization(),
+            scope.principal(),
+            &req,
+        )
+        .await
+        .map_err(|error| match error {
+            RegisterError::Unsupported(reason) => Status::unimplemented(reason),
+            RegisterError::Store(error) => store_status(error),
+        })?;
         let (ids, clone_sqls, required_source_epoch) = match outcome {
             RegisterOutcome::Refused(rejection) => {
                 return Ok(Response::new(unable_to_clone_response(

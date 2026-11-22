@@ -27,6 +27,7 @@ use std::ops::ControlFlow;
 
 use crate::decision::DecisionReason;
 use crate::query_cache as qc;
+use crate::reuse_candidate::RerunEvidence;
 
 /// What rendered values are drawn from. Injected by the gRPC adapter, so the
 /// pure decision engine and this module stay free of I/O.
@@ -72,6 +73,10 @@ pub struct Cell {
     pub outcome: Outcome,
     /// The SQL the values come from.
     pub queries: Queries,
+    /// The function forms a cell was captured with, one per submit
+    /// ([`Cell::with_functions`]). `None`: any rule.
+    functions: Option<&'static [Rule]>,
+    without_upstream_tables: bool,
 }
 
 /// A [`Cell`], for the Warehouses' const cell lists.
@@ -86,6 +91,25 @@ pub const fn cell(
         evaluation_requested,
         outcome,
         queries,
+        functions: None,
+        without_upstream_tables: false,
+    }
+}
+
+impl Cell {
+    /// Narrow the cell to the function forms it was captured with: it then
+    /// renders only SQL that calls exactly one distinct form of `functions`
+    /// and no other function, as a single query without query dependencies
+    /// (the Databricks cells, #213). Calling one listed form beside another,
+    /// listed or not, is uncaptured and renders nothing.
+    pub const fn with_functions(mut self, functions: &'static [Rule]) -> Self {
+        self.functions = Some(functions);
+        self
+    }
+
+    pub const fn without_upstream_tables(mut self) -> Self {
+        self.without_upstream_tables = true;
+        self
     }
 }
 
@@ -100,8 +124,12 @@ pub enum Outcome {
     RefusedVolatileSql,
     /// [`Outcome::RefusedVolatileSql`] in an unchanged rerun only: nothing
     /// but the volatile SQL is against the refused build
-    /// ([`Decided::RefusedVolatileSql`] `unchanged_rerun`).
+    /// ([`Decided::RefusedVolatileSql`] with [`RerunEvidence::Unchanged`]).
     RefusedVolatileSqlUnchangedRerun,
+    /// The same refusal after the Target relation or the sole input
+    /// changed, as the Warehouse established it from the input's State
+    /// (`Warehouse::changed_volatile_rerun`, #213).
+    RefusedVolatileSqlChangedRerun,
     /// A reuse (`skip_execution`).
     Reuse,
     /// A Result copy (`ready_to_clone`) into a Target relation that does not
@@ -116,7 +144,13 @@ impl Outcome {
             | (
                 Self::RefusedVolatileSqlUnchangedRerun,
                 Decided::RefusedVolatileSql {
-                    unchanged_rerun: true,
+                    rerun: RerunEvidence::Unchanged,
+                },
+            )
+            | (
+                Self::RefusedVolatileSqlChangedRerun,
+                Decided::RefusedVolatileSql {
+                    rerun: RerunEvidence::TargetChanged | RerunEvidence::InputModifiedExternally,
                 },
             )
             | (Self::Reuse, Decided::Reuse)
@@ -135,7 +169,7 @@ impl Outcome {
 /// What a submit was decided: values are only ever rendered for a build, a
 /// reuse or a Result copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decided {
+pub(crate) enum Decided {
     /// A build for this reason. A build refused at Reuse qualification for
     /// any cause other than [`Decided::RefusedVolatileSql`]'s is
     /// `Build(NoReuseCandidate(FailedReuseQualification))`.
@@ -144,11 +178,7 @@ pub enum Decided {
     /// compared by its rendered SQL
     /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
     RefusedVolatileSql {
-        /// Whether nothing else is against the refused build: its Target
-        /// relation is as built, a data test's cached results are complete,
-        /// and its inputs are unchanged since it
-        /// ([`crate::reuse_candidate::Selection::unchanged_rerun`]).
-        unchanged_rerun: bool,
+        rerun: RerunEvidence,
     },
     Reuse,
     /// A Result copy, and whether the decision saw the Target relation exist.
@@ -182,7 +212,7 @@ pub fn requested(req: &qc::SubmitEnrichedSqlRequest) -> bool {
 pub const TARGET_QUERY_KEY: &str = "__target_query__";
 
 /// A Volatile function hosted was captured rendering, and how.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rule {
     /// The builtin's name, lower case. Matches an unquoted, unqualified call
     /// written as [`Rule::call`], in any case.
@@ -337,21 +367,13 @@ impl Evidence {
 /// order). Each function is rendered once per query however often it is
 /// called. SQL that does not parse renders nothing, and so does a data test
 /// with a Target relation.
-pub fn evaluate(
+pub(crate) fn evaluate(
     req: &qc::SubmitEnrichedSqlRequest,
     rules: Option<Rules>,
     decided: Decided,
     sources: &Sources,
 ) -> Option<Rendered> {
     let rules = rules?;
-    let captured = |queries| {
-        rules.cells.iter().any(|cell| {
-            cell.execution_type as i32 == req.execution_type
-                && cell.evaluation_requested == requested(req)
-                && cell.outcome.covers(decided)
-                && cell.queries == queries
-        })
-    };
     let target = req.target_table.as_deref().filter(|t| !t.is_empty());
     // A data test with a Target relation (stored failures) is uncaptured.
     let own = if req.execution_type == qc::ModelExecutionType::DbtDataTest as i32 {
@@ -362,61 +384,105 @@ pub fn evaluate(
     } else {
         target
     };
-    let render = |queries: &mut dyn Iterator<Item = (&str, &str)>| {
-        let mut values: Vec<RenderedValue> = Vec::new();
-        for (query, sql) in queries {
-            for rule in called_rules(rules, sql) {
-                if !values
+    let root = called_rules(rules, &req.sql);
+    let own_calls: Vec<_> = own
+        .into_iter()
+        .flat_map(|query| root.rules.iter().copied().map(move |rule| (query, rule)))
+        .collect();
+    let dependency_calls: Vec<_> = req
+        .query_dependencies
+        .iter()
+        .flat_map(|dep| {
+            // A dependency's shape is never read: a `Cell::with_functions`
+            // cell, the only reader of `unchecked`, admits no query
+            // dependencies at all.
+            called_rules(rules, &dep.query)
+                .rules
+                .into_iter()
+                .map(|rule| (dep.name.as_str(), rule))
+        })
+        .collect();
+    let queries = match (own_calls.is_empty(), dependency_calls.is_empty()) {
+        (false, true) => Queries::Own,
+        (true, false) => Queries::Dependencies,
+        (false, false) => Queries::OwnAndDependencies,
+        (true, true) => return None,
+    };
+    let count = own_calls.len() + dependency_calls.len();
+    let calls = dependency_calls.into_iter().chain(own_calls);
+    let captured = rules.cells.iter().any(|cell| {
+        cell.execution_type as i32 == req.execution_type
+            && cell.evaluation_requested == requested(req)
+            && cell.outcome.covers(decided)
+            && cell.queries == queries
+            // `Cell::with_functions`: exactly one distinct listed form, in
+            // one checked query without dependencies.
+            && cell.functions.is_none_or(|functions| {
+                !root.unchecked
+                    && req.query_dependencies.is_empty()
+                    && count == 1
+                    && calls.clone().all(|(_, rule)| functions.contains(rule))
+            })
+            && (!cell.without_upstream_tables
+                || req
+                    .tables
                     .iter()
-                    .any(|v| v.query == query && v.function == rule.key)
-                {
-                    values.push(RenderedValue {
-                        query: query.to_owned(),
-                        function: rule.key.to_owned(),
-                        value: rule.value.render(sources),
-                    });
-                }
-            }
-        }
-        values
-    };
-    let own_values = render(&mut own.map(|query| (query, req.sql.as_str())).into_iter());
-    let dependency_values = render(
-        &mut req
-            .query_dependencies
+                    .all(|table| Some(&table.name) == req.target_table.as_ref())
+                    && crate::sql_identity::reads_relation(&req.sql, rules.dialect) == Some(false))
+    });
+    if !captured {
+        return None;
+    }
+    let mut values: Vec<RenderedValue> = Vec::new();
+    for (query, rule) in calls {
+        if !values
             .iter()
-            .map(|d| (d.name.as_str(), d.query.as_str())),
-    );
-    let values = match (own_values.is_empty(), dependency_values.is_empty()) {
-        (false, true) if captured(Queries::Own) => own_values,
-        (true, false) if captured(Queries::Dependencies) => dependency_values,
-        (false, false) if captured(Queries::OwnAndDependencies) => {
-            let mut values = dependency_values;
-            values.extend(own_values);
-            values
+            .any(|v| v.query == query && v.function == rule.key)
+        {
+            values.push(RenderedValue {
+                query: query.to_owned(),
+                function: rule.key.to_owned(),
+                value: rule.value.render(sources),
+            });
         }
-        _ => return None,
-    };
+    }
     Some(Rendered(values))
 }
 
-/// The rules `sql` calls, first call first; none when it does not parse.
-fn called_rules(rules: Rules, sql: &str) -> Vec<&'static Rule> {
+/// The rules one query calls.
+struct Calls {
+    /// Each rule the SQL calls, once, first call first.
+    rules: Vec<&'static Rule>,
+    /// Whether the SQL contains an unrecognized function or is outside the
+    /// checked single-query shape (it does not parse, or is not one query).
+    unchecked: bool,
+}
+
+/// The rules `sql` calls.
+fn called_rules(rules: Rules, sql: &str) -> Calls {
     let Ok(statements) = Parser::parse_sql(rules.dialect, sql) else {
-        return Vec::new();
+        return Calls {
+            rules: Vec::new(),
+            unchecked: true,
+        };
     };
     let mut finder = Finder {
         rules: rules.functions,
         found: Vec::new(),
+        unchecked: !matches!(statements.as_slice(), [sqlparser::ast::Statement::Query(_)]),
     };
     let _ = statements.visit(&mut finder);
-    finder.found
+    Calls {
+        rules: finder.found,
+        unchecked: finder.unchecked,
+    }
 }
 
 /// Collects the rules whose function the SQL calls, first call first.
 struct Finder {
     rules: &'static [Rule],
     found: Vec<&'static Rule>,
+    unchecked: bool,
 }
 
 impl Visitor for Finder {
@@ -424,9 +490,11 @@ impl Visitor for Finder {
 
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
         if let Some(rule) = called_rule(self.rules, expr) {
-            if !self.found.iter().any(|r| r.key == rule.key) {
+            if !self.found.contains(&rule) {
                 self.found.push(rule);
             }
+        } else if matches!(expr, Expr::Function(_)) {
+            self.unchecked = true;
         }
         ControlFlow::Continue(())
     }
@@ -436,6 +504,18 @@ impl Visitor for Finder {
 /// a rule names, without clauses. Comments and string literals never reach
 /// the visitor, and a quoted name is a user object.
 fn called_rule(rules: &'static [Rule], expr: &Expr) -> Option<&'static Rule> {
+    let (actual_name, args) = call_form(expr)?;
+    rules
+        .iter()
+        .find(|rule| matches_form(actual_name, args.as_deref(), rule.name, rule.call))
+}
+
+pub(crate) fn matches_call(expr: &Expr, name: &str, call: Call) -> bool {
+    call_form(expr)
+        .is_some_and(|(actual_name, args)| matches_form(actual_name, args.as_deref(), name, call))
+}
+
+fn call_form(expr: &Expr) -> Option<(&str, Option<String>)> {
     let Expr::Function(f) = expr else {
         return None;
     };
@@ -467,15 +547,17 @@ fn called_rule(rules: &'static [Rule], expr: &Expr) -> Option<&'static Rule> {
         }
         _ => return None,
     };
-    rules.iter().find(|rule| {
-        name.value.eq_ignore_ascii_case(rule.name)
-            && match (rule.call, arguments.as_deref()) {
-                (Call::Empty, Some(args)) => args.is_empty(),
-                (Call::Parenless, None) => true,
-                (Call::Arguments(expected), Some(args)) => {
-                    !expected.is_empty() && args.eq_ignore_ascii_case(expected)
-                }
-                _ => false,
+    Some((&name.value, arguments))
+}
+
+fn matches_form(actual_name: &str, args: Option<&str>, name: &str, call: Call) -> bool {
+    actual_name.eq_ignore_ascii_case(name)
+        && match (call, args) {
+            (Call::Empty, Some(args)) => args.is_empty(),
+            (Call::Parenless, None) => true,
+            (Call::Arguments(expected), Some(args)) => {
+                !expected.is_empty() && args.eq_ignore_ascii_case(expected)
             }
-    })
+            _ => false,
+        }
 }
