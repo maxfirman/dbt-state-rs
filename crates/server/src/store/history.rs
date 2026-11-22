@@ -565,7 +565,22 @@ impl Store {
         namespace: &str,
         dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
-        let mut query = current_physical_state(org_id, Some(namespace), dialect, Some(source));
+        self.current_delta_state_without_pending_writes(org_id, source, Some(namespace), dialect)
+            .await
+    }
+
+    /// The latest confirmed Delta-compatible row at a source, provided no
+    /// pending State write can account for the observed physical contents.
+    /// Its recorded inputs and cached results are proven decodable: corrupt
+    /// recorded evidence on it fails the lookup.
+    pub(crate) async fn current_delta_state_without_pending_writes(
+        &self,
+        org_id: &str,
+        source: &str,
+        namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        let mut query = current_physical_state(org_id, namespace, dialect, Some(source));
         query
             .push("SELECT ")
             .push(ExecutionRow::COLUMNS)

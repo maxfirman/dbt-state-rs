@@ -55,12 +55,12 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
 | `volatile_evaluation.rs` | Pure Volatile evaluation (#67): renders each Volatile function the Warehouse has a captured rule for (`Warehouse::volatile_rules`), in the cells it was captured rendering in (`Rules::cells`), from an injected clock and random source (`Sources`), for `transformed_nodes_by_query` and Explain. Snowflake and Databricks rules live in `warehouse/`. Called by `submit_decision` after the decision; never an input to identity, fingerprints, Upstream producers or Reuse qualification. |
-| `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). `ExplainNode::of_decision` maps a persisted row to the generator's input. |
+| `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). `ExplainNode::of_decision` maps a persisted row to the generator's input. A Warehouse's captured volatile forms come from `Warehouse::volatile_explain_forms`. |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
 | `sql_identity.rs` | Checked DuckDB strict identity and relation-read proofs. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
-| `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
+| `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time, Volatile evaluation cells, volatile Explain forms, the changed volatile rerun and producer revision retention), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
 | `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
 | `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest run under its history key or its latest scoped outcome by UID, copy candidates, copy-chain depth and copy-source lookups. Derives warehouse-family and canonical physical lookup keys through the centralized Warehouse naming rules to match generated persisted keys ([ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md)); Reuse qualification, freshness assessment and Result copy policy remain outside storage. |
 
@@ -372,7 +372,9 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
    detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
-   (#191 cell 3, maintainer decision, #194). A Snowflake model under
+   (#191 cell 3, maintainer decision, #194). Databricks also qualifies the
+   checked source-less FULL literal projection shape with an ordinary matching
+   build, including `rand(42)` (#213). A Snowflake model under
    `compare_unrendered_code` whose template identity equals the row's is not
    refused for volatile SQL (maintainer decision 1 on #201, #206; ADR 0005
    "Amended by #201"). A model's rebuild refused at Reuse qualification keeps
@@ -393,7 +395,9 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    (`diagnostics::decorate`). They only decorate codes and descriptions; none
    selects a reuse candidate, copy source or Explain anchor.
 9. `settle`: mint the ids, write the pending row for every outcome except SKIP,
-   and return the `SubmitOutcome`.
+   and return the `SubmitOutcome`. A confirmed Databricks FULL build
+   can publish the bounded producer revision from an externally modified input
+   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#databricks-volatile-producer-after-external-modification-213)).
 10. Volatile evaluation, once decided (`volatile_evaluation::evaluate`, ADR
     0005 "Amended by #67"): for a build, a reuse or a Result copy, render
     the Volatile functions the Warehouse has captured rules for
@@ -450,7 +454,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 
 | Table | Contents |
 |---|---|
-| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`; a Snowflake copy recorded since #200 keeps the build it was made from, `clone_source_execution_id`), and a Snowflake data test's history key (`data_test_key`, migration 0029). |
+| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`; a Snowflake copy recorded since #200 keeps the build it was made from, `clone_source_execution_id`), a Snowflake data test's history key (`data_test_key`, migration 0029), and a Databricks build's producer revision (`producer_revision`, migration 0030, #213). |
 | `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus retained `target_table` snapshot metadata. |
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |

@@ -89,6 +89,11 @@ pub async fn corrupt_input_tables(db: &impl Db) {
         .expect("corrupt input_tables");
 }
 
+/// Corrupt State: [`corrupt_input_tables`] for `rows` only.
+pub async fn corrupt_input_tables_of(db: &impl Db, rows: Rows<'_>) -> u64 {
+    rows.update(db, "input_tables = '{}'::jsonb", &[]).await
+}
+
 /// Corrupt State: every row gets valid (empty) inputs but undecodable cached
 /// `execution_results` bytes.
 pub async fn corrupt_execution_results(db: &impl Db) {
