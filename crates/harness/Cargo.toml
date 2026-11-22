@@ -50,6 +50,9 @@ reqwest = { workspace = true, features = ["cookies"] }
 sha2.workspace = true
 dbt-state-auth = { path = "../auth" }
 dbt-state-broker = { path = "../broker" }
+# The UI console, served in process for its sign-in tests.
+dbt-state-ui = { path = "../ui" }
+topcoat = "0.10"
 axum.workspace = true
 form_urlencoded.workspace = true
 ring.workspace = true

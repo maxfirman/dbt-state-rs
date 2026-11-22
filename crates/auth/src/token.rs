@@ -208,6 +208,12 @@ struct ReceivedClaims {
     exp: u64,
     #[serde(default)]
     sid: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 /// Signs tokens with the active signing key.
@@ -349,10 +355,18 @@ pub struct VerifiedToken {
     pub session: Option<String>,
     pub client_id: String,
     pub scope: Scope,
+    /// Its `exp`.
+    pub expires_at: SystemTime,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    /// The `nonce` an OIDC client's ID token echoes from its authorize
+    /// request; checking it is that client's job.
+    pub nonce: Option<String>,
 }
 
-/// Checks tokens: signature by a loaded key, issuer, the dbt State API
-/// audience, and expiry with [`CLOCK_SKEW`].
+/// Checks tokens: signature by a loaded key, issuer, one audience (the dbt
+/// State API's, or the UI's for the UI, [`crate::AuthConfig::ui_token_verifier`]),
+/// and expiry with [`CLOCK_SKEW`].
 #[derive(Debug, Clone)]
 pub struct TokenVerifier {
     issuer: String,
@@ -390,6 +404,9 @@ impl TokenVerifier {
             return Err(TokenError::Malformed);
         }
         let scope = Scope::parse(&claims.scope).map_err(|_| TokenError::Malformed)?;
+        let expires_at = UNIX_EPOCH
+            .checked_add(Duration::from_secs(claims.exp))
+            .ok_or(TokenError::Malformed)?;
         let kind = match &claims.sid {
             Some(sid) if sid.is_empty() => return Err(TokenError::Malformed),
             Some(_) => PrincipalKind::Person,
@@ -401,6 +418,10 @@ impl TokenVerifier {
             session: claims.sid,
             client_id: claims.azp,
             scope,
+            expires_at,
+            email: claims.email,
+            name: claims.name,
+            nonce: claims.nonce,
         })
     }
 }
