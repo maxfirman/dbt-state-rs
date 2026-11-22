@@ -11,7 +11,8 @@
 
 use crate::analyzed_workload::Purpose;
 use crate::query_cache as qc;
-use crate::store::{logic_identity, InputTable, Producer, Store};
+use crate::store::{producer_identity, InputTable, Producer, Store};
+use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -61,6 +62,8 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
+    /// Witness of the input producer transition on an ordinary FULL build (#213).
+    pub(crate) producer_revision: Option<crate::store::ProducerRevision>,
     pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
@@ -221,6 +224,7 @@ impl ExecutionEvidence {
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
+            producer_revision: None,
             analyzed_copy_proof: None,
             direct_copy_provenance: None,
             submit_copy_provenance: None,
@@ -413,6 +417,10 @@ pub(crate) async fn record_batch(
         }
     }
 
+    retain_recorded_producer_revisions(store, org_id, &mut batch)
+        .await
+        .map_err(RecordError::Store)?;
+
     // Producers are resolved against State history AND the batch itself: a
     // consumer recorded alongside the upstream build it read records that
     // build, as the batch's builds are not yet in history (ADR 0007).
@@ -448,6 +456,50 @@ pub(crate) async fn record_batch(
     Ok(stored)
 }
 
+/// RecordExecutions carries existing producer revisions forward for the
+/// same rendered identity where the Warehouse retains them
+/// (`Warehouse::retains_producer_revision`). A historical record predating
+/// the current build cannot inherit its revision.
+async fn retain_recorded_producer_revisions(
+    store: &Store,
+    org_id: &str,
+    batch: &mut [(ExecutionEvidence, qc::ExecutionOutcome)],
+) -> sqlx::Result<()> {
+    let eligible = |e: &ExecutionEvidence| {
+        !e.target_table.is_empty()
+            && Warehouse::from_dialect(&e.dialect).retains_producer_revision(e.execution_type)
+    };
+    // Each scope's targets, with a dialect of that warehouse family.
+    let mut targets_by_scope: HashMap<BatchScope, (String, Vec<String>)> = HashMap::new();
+    for (e, _) in batch.iter().filter(|(e, _)| eligible(e)) {
+        targets_by_scope
+            .entry(BatchScope::of(e))
+            .or_insert_with(|| (e.dialect.clone(), Vec::new()))
+            .1
+            .push(e.target_table.clone());
+    }
+    let mut history = HashMap::new();
+    for (scope, (dialect, targets)) in targets_by_scope {
+        let builds = store
+            .current_target_states(org_id, &targets, scope.table_namespace.as_deref(), &dialect)
+            .await?;
+        history.insert(scope, builds);
+    }
+    for (e, outcome) in batch.iter_mut().filter(|(e, _)| eligible(e)) {
+        e.producer_revision = history
+            .get(&BatchScope::of(e))
+            .and_then(|builds| builds.get(&e.target_table))
+            .filter(|build| {
+                build.is_ordinary_build_of(e.execution_type)
+                    && build
+                        .built_relative_to(outcome.last_modified_epoch)
+                        .is_some_and(std::cmp::Ordering::is_le)
+            })
+            .and_then(|build| build.retained_producer_revision(e.node_sql_hash.as_deref()));
+    }
+    Ok(())
+}
+
 /// The physical scope a producer is resolved in: connection namespace and
 /// warehouse family (the organization is the batch's).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -478,10 +530,11 @@ fn batch_builds(
 ) -> HashMap<(String, BatchScope), BatchBuilds> {
     let mut builds: HashMap<_, Vec<_>> = HashMap::new();
     for (e, outcome) in batch.iter().filter(|(e, _)| !e.target_table.is_empty()) {
-        let Some(identity) = logic_identity(
+        let Some(identity) = producer_identity(
             e.node_sql_hash.as_deref(),
             e.node_namespace_logic_hash.as_deref(),
             e.values_hash.as_deref(),
+            e.producer_revision,
         ) else {
             continue;
         };

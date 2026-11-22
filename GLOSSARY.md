@@ -75,9 +75,9 @@ _Avoid_: Staleness, upstream lag
 
 **Upstream producer**:
 The recorded build whose result an upstream relation held when a workload
-read it, or none, for a source or after an External modification. When the
-current producer's logic differs from the one the workload consumed, the
-upstream's query has changed, which Lag tolerance does not cover.
+read it, or none, for a source or after an External modification. A change
+of producer under the Warehouse's rules counts as an upstream query change,
+which Lag tolerance does not cover.
 _Avoid_: Upstream build, writer
 
 **Volatile function**:

@@ -41,6 +41,8 @@ const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cell
 /// and rerun, deterministic controls and a consumer (`docs/databricks-volatile.md`).
 const DATABRICKS_EVALUATION: &str =
     include_str!("../../../golden/fixtures/databricks_volatile_evaluation.jsonl");
+const DATABRICKS_PRODUCER: &str =
+    include_str!("../../../golden/fixtures/databricks_volatile_producer.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
 const RAND_SUBMIT: usize = 85;
 /// Hosted's Explain of that decision.
@@ -138,11 +140,16 @@ async fn replay_where(
             "SubmitEnrichedSQL" if !submits(entry) => left_out.extend(hosted),
             "SubmitEnrichedSQL" => {
                 let req = captured_submit(&entry.request).build();
-                let response = sql
-                    .submit_enriched_sql(support::captured_request(req, entry))
-                    .await
-                    .unwrap()
-                    .into_inner();
+                let request = if entry.request["dialect"] == "databricks" {
+                    support::captured_request_at(
+                        req,
+                        entry,
+                        support::databricks_decision_time(entry).unwrap(),
+                    )
+                } else {
+                    support::captured_request(req, entry)
+                };
+                let response = sql.submit_enriched_sql(request).await.unwrap().into_inner();
                 if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
                     local_ids.insert(hosted.to_owned(), local);
                 }
@@ -1850,8 +1857,343 @@ async fn databricks_cells_explain_as_hosted_including_after_a_restart() {
     .await;
 }
 
-/// The captured Databricks cells are the only ones that render: each submit
-/// here is a captured one in another cell, and keeps an empty map.
+/// The four promoted #213 histories also match after reopening State.
+#[tokio::test]
+async fn databricks_priority_cells_match_hosted_including_after_a_restart() {
+    for (name, fixture, count) in [
+        (
+            "databricks_volatile_priority",
+            include_str!("../../../golden/fixtures/databricks_volatile_priority.jsonl"),
+            27,
+        ),
+        (
+            "databricks_volatile_function_builds",
+            include_str!("../../../golden/fixtures/databricks_volatile_function_builds.jsonl"),
+            6,
+        ),
+        (
+            "databricks_volatile_checked_reuse",
+            include_str!("../../../golden/fixtures/databricks_volatile_checked_reuse.jsonl"),
+            4,
+        ),
+        ("databricks_volatile_producer", DATABRICKS_PRODUCER, 14),
+    ] {
+        let database = std::sync::Arc::new(support::TestDatabase::new(name).await);
+        let server = support::start_server_on_database(database.clone()).await;
+        let capture = entries(fixture);
+        let responses = replay(
+            &Scenario::connect(&server).await,
+            &capture,
+            capture.len() - 1,
+        )
+        .await;
+        let mut explains = Vec::new();
+        for (index, submit) in capture.iter().enumerate() {
+            let Some(response) = responses.get(&index) else {
+                continue;
+            };
+            let case = format!("{name} entry {index}");
+            assert_matches_hosted(response, submit, &case);
+            let id = support::hosted_submit_edid(&submit.response).unwrap();
+            let explain = capture
+                .iter()
+                .find(|entry| {
+                    entry.method == "GetExplainMessages"
+                        && entry.response["messages"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|message| message["execution_decision_id"] == id)
+                })
+                .expect("native Explain for each ordinary submit");
+            explains.push(HostedExplain::of_response(case, explain, submit, response));
+        }
+        assert_eq!(explains.len(), count);
+        assert_explains_match_hosted(&database, server, &explains, std::convert::identity).await;
+    }
+}
+
+#[tokio::test]
+async fn databricks_checked_reuse_refuses_unproven_sql() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let submit = captured_submit(&request(DATABRICKS_EVALUATION, DB_TABLE_FIRST));
+    for sql in [
+        "select rand()",
+        "select rand(0)",
+        "select current_date()",
+        "select current_timestamp",
+        "select rand(42), uuid()",
+        "select example.rand(42)",
+        "select rand(42) from values (1)",
+    ] {
+        let org = sc.org(sql);
+        let request = submit.clone().sql(sql);
+        org.build(request.clone(), OWN_EPOCH).await;
+        org.expect_execute(request.own_epoch(Some(OWN_EPOCH))).await;
+    }
+}
+
+// ── Databricks producer history (#213) ──────────────────────────────────────
+//
+// Evidence: `golden/fixtures/databricks_volatile_producer.jsonl`
+// (`docs/reports/databricks-volatile-priority-2026-11-21.md`). The managed
+// input's first build (entry 3, confirmed in 5) and the FULL `rand()` model
+// over it (6). The rerun phase ends with its Explain (26). After an External
+// modification of the input, the model rebuilds (30, confirmed in 31) and both
+// consumers rebuild (strict 32, tolerant 33). On the next rerun the model
+// rebuilds again (42, confirmed in 43) and the tolerant consumer reuses (44).
+
+const INPUT_FIRST: usize = 3;
+const INPUT_FIRST_CONFIRM: usize = 5;
+const PRODUCER_FIRST: usize = 6;
+const PRODUCER_FIRST_CONFIRM: usize = 8;
+const PRODUCER_RERUN_EXPLAIN: usize = 26;
+const PRODUCER_AFTER_INPUT_EDIT: usize = 30;
+const PRODUCER_AFTER_INPUT_EDIT_CONFIRM: usize = 31;
+const STRICT_AFTER_INPUT_EDIT: usize = 32;
+const TOLERANT_AFTER_INPUT_EDIT: usize = 33;
+const PRODUCER_AFTER_TRANSITION: usize = 42;
+const PRODUCER_AFTER_TRANSITION_CONFIRM: usize = 43;
+const TOLERANT_AFTER_TRANSITION: usize = 44;
+
+#[tokio::test]
+async fn databricks_producer_revision_requires_a_confirmed_source_and_cannot_revert() {
+    let capture = entries(DATABRICKS_PRODUCER);
+    let producer = target(&capture[PRODUCER_AFTER_INPUT_EDIT].request);
+    let source = target(&capture[INPUT_FIRST].request);
+    let first_edit_epoch = capture[PRODUCER_AFTER_INPUT_EDIT].request["tables"][0]
+        ["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let consumer = captured_submit(&capture[TOLERANT_AFTER_INPUT_EDIT].request);
+    for (pending_source, ambiguous_target) in [(true, false), (false, false), (false, true)] {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
+        if pending_source {
+            sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]) - 1)
+                .expect_execute(
+                    captured_submit(&capture[INPUT_FIRST].request)
+                        .sql("select 1 as id, 9 as revision")
+                        .own_epoch(Some(
+                            capture[PRODUCER_FIRST].request["tables"][0]["last_modified_epoch"]
+                                .as_i64()
+                                .unwrap(),
+                        )),
+                )
+                .await;
+        }
+        let built = capture[PRODUCER_AFTER_INPUT_EDIT_CONFIRM].request["last_modified_epoch"]
+            .as_i64()
+            .unwrap();
+        sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+            .build(
+                captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request),
+                built,
+            )
+            .await;
+        if pending_source {
+            // The source epoch can belong to an unconfirmed write. The
+            // consumer sees drift and can Reuse within Lag tolerance.
+            let skip = sc
+                .at(submitted_at(&capture[TOLERANT_AFTER_INPUT_EDIT]))
+                .expect_skip(consumer.clone())
+                .await;
+            assert!(skip.explained_decision.unwrap().is_stale);
+        } else {
+            // Leave the consumer on its first result across both edits.
+            // A later edit of the already external input cannot restore the
+            // producer identity the consumer recorded before either edit.
+            let built_again = capture[PRODUCER_AFTER_TRANSITION_CONFIRM].request
+                ["last_modified_epoch"]
+                .as_i64()
+                .unwrap();
+            let mut submit = captured_submit(&capture[PRODUCER_AFTER_TRANSITION].request)
+                .upstream(&source, first_edit_epoch + 1_000);
+            if ambiguous_target {
+                submit = submit.tolerate_nondeterminism(true).table(&producer, None);
+            }
+            sc.at(submitted_at(&capture[PRODUCER_AFTER_TRANSITION]))
+                .build(submit, built_again)
+                .await;
+            let sc = sc.at(submitted_at(&capture[TOLERANT_AFTER_TRANSITION]));
+            let ready = sc
+                .expect_execute(consumer.clone().upstream(&producer, built_again))
+                .await;
+            let tree = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+            assert!(texts(&tree)
+                .iter()
+                .any(|line| line == "an upstream model query has changed"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn databricks_record_preserves_the_producer_revision_in_and_after_the_batch() {
+    let capture = entries(DATABRICKS_PRODUCER);
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
+
+    let producer = target(&capture[PRODUCER_AFTER_INPUT_EDIT].request);
+    let first_build = capture[PRODUCER_AFTER_INPUT_EDIT_CONFIRM].request["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+        .build(
+            captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request),
+            first_build,
+        )
+        .await;
+
+    let recorded_build = first_build + 1_000;
+    let recorded_consumer = recorded_build + 1_000;
+    let strict = captured_submit(&capture[STRICT_AFTER_INPUT_EDIT].request)
+        .upstream(&producer, recorded_build);
+    let sc = sc.at(submitted_at(&capture[TOLERANT_AFTER_TRANSITION]));
+    assert_eq!(
+        sc.record([
+            captured_submit(&capture[PRODUCER_AFTER_TRANSITION].request)
+                .record(built_at(recorded_build)),
+            strict.record(built_at(recorded_consumer)),
+        ])
+        .await
+        .unwrap(),
+        2
+    );
+
+    // The untouched consumer still sees a producer change. The consumer
+    // recorded in the batch already holds the revised producer.
+    let tolerant = captured_submit(&capture[TOLERANT_AFTER_INPUT_EDIT].request)
+        .upstream(&producer, recorded_build);
+    sc.expect_execute(tolerant).await;
+    let skip = sc
+        .expect_skip(strict.own_epoch(Some(recorded_consumer)))
+        .await;
+    assert!(!skip.explained_decision.unwrap().is_stale);
+}
+
+/// The FULL `rand()` model's reruns after its sole input was modified
+/// externally, or after its Target relation was modified or dropped, were
+/// captured for one plain projection over one Delta input
+/// (`PRODUCER_AFTER_INPUT_EDIT`; `databricks_volatile_priority.jsonl`
+/// entries 86 and 93). The same reruns of a join, of a WHERE clause or over
+/// an input confirmed in another table format are uncaptured: an empty map
+/// and no volatile Explain lines. The captured projection is the positive
+/// control in each situation; a dropped Target relation renders its map but
+/// prints only the absent-table analysis.
+#[tokio::test]
+async fn databricks_changed_reruns_render_only_the_captured_projection_over_a_delta_input() {
+    use support::scenario::outcome;
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let capture = entries(DATABRICKS_PRODUCER);
+    let epoch = |entry: usize| {
+        capture[entry].request["last_modified_epoch"]
+            .as_i64()
+            .unwrap()
+    };
+    let input = captured_submit(&capture[INPUT_FIRST].request);
+    let source = target(&capture[INPUT_FIRST].request);
+    let input_built = epoch(INPUT_FIRST_CONFIRM);
+    let built = epoch(PRODUCER_FIRST_CONFIRM);
+    let producer = captured_submit(&capture[PRODUCER_FIRST].request);
+    let projection = capture[PRODUCER_FIRST].request["sql"].as_str().unwrap();
+    let join = format!(
+        "\nselect a.id, a.revision, rand() as value, a.run_id from {source} a \
+         join {source} b on a.id = b.id"
+    );
+    let filtered = format!("{projection} where revision > 0");
+    // The captured confirmation of the input reported no table type.
+    let delta = outcome().epoch(input_built).runtime(10);
+    let parquet = delta.clone().table_type("PARQUET");
+
+    for (shape, sql, input_confirmed, renders) in [
+        ("captured projection", projection, &delta, true),
+        ("join", join.as_str(), &delta, false),
+        ("WHERE clause", filtered.as_str(), &delta, false),
+        ("non-Delta input", projection, &parquet, false),
+    ] {
+        let producer = producer.clone().sql(sql);
+        for (situation, rerun, lines) in [
+            (
+                "input modified externally",
+                producer
+                    .clone()
+                    .upstream(&source, input_built + 1_000)
+                    .own_epoch(Some(built)),
+                renders,
+            ),
+            (
+                "Target relation modified",
+                producer.clone().own_epoch(Some(built + 1_000)),
+                renders,
+            ),
+            (
+                "Target relation dropped",
+                producer.clone().own_epoch(None),
+                false,
+            ),
+        ] {
+            let case = format!("{shape}, {situation}");
+            let org = sc.org(&case);
+            org.build_with(input.clone(), input_confirmed.clone()).await;
+            org.build(producer.clone(), built).await;
+            let ready = org.expect_execute(rerun).await;
+            assert_eq!(
+                ready
+                    .explained_decision
+                    .as_ref()
+                    .unwrap()
+                    .skip_rejection_reason,
+                Some(qc::RejectionReason::NoSuitableMatchFound as i32),
+                "{case}: refused at Reuse qualification"
+            );
+            assert_eq!(
+                !rendered(&ready).is_empty(),
+                renders,
+                "{case}: {:?}",
+                rendered(&ready)
+            );
+            let explained = explain(&org, ready.execution_decision_id.as_deref().unwrap()).await;
+            assert_eq!(
+                prints_volatile_lines(&explained),
+                lines,
+                "{case}: {explained}"
+            );
+        }
+    }
+}
+
+/// The rebuild after an External modification of the producer's input reads
+/// that input's State as evidence. Corrupt recorded evidence on it fails the
+/// submit, as it fails a direct copy source lookup, instead of establishing a
+/// producer revision.
+#[tokio::test]
+async fn databricks_producer_input_with_corrupt_state_fails_the_submit() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let capture = entries(DATABRICKS_PRODUCER);
+    replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
+    let source = target(&capture[INPUT_FIRST].request);
+    assert_eq!(
+        support::legacy::corrupt_input_tables_of(
+            &server,
+            support::legacy::Rows::ConfirmedTarget(&source)
+        )
+        .await,
+        1
+    );
+    let err = sc
+        .at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+        .try_submit(captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Internal);
+}
+
+/// Neighbouring uncaptured Databricks cells keep an empty map.
 #[tokio::test]
 async fn databricks_uncaptured_cells_render_nothing() {
     use support::scenario::{outcome, test_results, ExecutionType};
@@ -1864,20 +2206,52 @@ async fn databricks_uncaptured_cells_render_nothing() {
         assert!(rendered(ready).is_empty(), "{case}: {:?}", rendered(ready));
     };
 
-    // First builds with evaluation off, or of another execution type.
+    // First builds of uncaptured node kinds or with uncaptured functions.
     for (case, submit) in [
-        (
-            "table, evaluation off",
-            table.clone().tolerate_nondeterminism(true),
-        ),
         (
             "data test, evaluation off",
             test.clone().tolerate_nondeterminism(true),
         ),
         ("view", table.clone().execution_type(ExecutionType::View)),
         (
-            "append incremental",
-            table.clone().execution_type(ExecutionType::Append),
+            "append incremental over an upstream table",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .upstream("catalog.schema.input", OWN_EPOCH),
+        ),
+        (
+            "append incremental with UUID()",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .sql("select uuid()"),
+        ),
+        (
+            "mixed recognized call forms",
+            table.clone().sql("select rand(), uuid()"),
+        ),
+        (
+            "recognized and uncaptured RAND forms",
+            table.clone().sql("select rand(), rand(17)"),
+        ),
+        (
+            "uncaptured alias with evaluation off",
+            table
+                .clone()
+                .tolerate_nondeterminism(true)
+                .sql("select now()"),
+        ),
+        (
+            "incremental with uncaptured RAND alias",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .sql("select random()"),
+        ),
+        (
+            "table with an uncaptured RAND seed",
+            table.clone().sql("select rand(17)"),
         ),
         (
             "snapshot",
@@ -1928,7 +2302,7 @@ async fn databricks_uncaptured_cells_render_nothing() {
 }
 
 /// The Databricks reruns refused for their volatile SQL alone were captured
-/// as unchanged reruns only: the table over its Target relation as built,
+/// as unchanged reruns for this graph: the table has no upstreams,
 /// the data test over unchanged inputs (`DB_TABLE_RERUN`, `DB_TEST_RERUN`).
 /// The same refusal after the table was dropped or modified externally, or
 /// after the data test's upstream changed, is uncaptured: an empty map and

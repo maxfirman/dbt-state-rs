@@ -142,7 +142,44 @@ pub struct ExplainNode {
     pub anchor: Option<ExecutionRow>,
 }
 
+/// The forms, beyond the shared ones, that Explain prints for a Warehouse's
+/// captured volatile decisions (#213), from
+/// `Warehouse::volatile_explain_forms`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VolatileForms {
+    /// Kinds whose rebuild refused for its volatile SQL after its Target
+    /// relation was dropped prints only the absent-table analysis.
+    pub(crate) dropped_target_refusal: &'static [ModelExecutionType],
+    /// Kinds, beyond the shared ones, whose refusal without upstreams or
+    /// query dependencies says `no upstream dependencies`.
+    pub(crate) sourceless_refusal: &'static [ModelExecutionType],
+    /// Kinds whose refusal after an External modification of the sole
+    /// input lists that upstream against the refused build.
+    pub(crate) input_modified_externally_refusal: &'static [ModelExecutionType],
+    /// Whether a reuse with Volatile evaluation requested (a checked
+    /// reuse) says its query has not changed, with no tolerance line.
+    pub(crate) requested_reuse: bool,
+}
+
+impl VolatileForms {
+    /// The shared forms only.
+    pub(crate) const NONE: Self = Self {
+        dropped_target_refusal: &[],
+        sourceless_refusal: &[],
+        input_modified_externally_refusal: &[],
+        requested_reuse: false,
+    };
+}
+
 impl ExplainNode {
+    /// The volatile Explain forms of the anchored build's Warehouse; the
+    /// shared forms only without an anchor.
+    fn volatile_forms(&self) -> VolatileForms {
+        self.anchor.as_ref().map_or(VolatileForms::NONE, |prior| {
+            crate::warehouse::Warehouse::from_dialect(&prior.dialect).volatile_explain_forms()
+        })
+    }
+
     fn noun(&self) -> &'static str {
         match ModelExecutionType::try_from(self.execution_type) {
             Ok(ModelExecutionType::DbtDataTest) => "test",
@@ -993,12 +1030,20 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             == Some(DecisionReason::NoReuseCandidate(
                 NoCandidate::FailedReuseQualification,
             ))
-        && node.template_comparison.as_ref().is_none_or(|c| !c.enabled)
-        && node.own_target_exists();
+        && node.template_comparison.as_ref().is_none_or(|c| !c.enabled);
     if !captured {
         return None;
     }
     let kind = K::try_from(node.execution_type).ok()?;
+    // #213: a refusal after a drop may still render its map, while Explain
+    // only describes the absent Target relation.
+    let forms = node.volatile_forms();
+    if forms.dropped_target_refusal.contains(&kind) && node.own_target_absent() {
+        return Some(vec![first_build_table_analysis(node)]);
+    }
+    if !node.own_target_exists() {
+        return None;
+    }
     let mut query = vec![leaf(
         format!("the {} query has changed", node.noun()),
         Some(MARKER_FAIL),
@@ -1014,8 +1059,10 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         node.genuine_upstreams().is_empty(),
         node.query_dependencies.is_empty(),
     ) {
-        (K::Full | K::DbtCustom | K::View, true, true)
-            if kind != K::View || view_reads_no_relation(node) =>
+        (kind, true, true)
+            if matches!(kind, K::Full | K::DbtCustom)
+                || kind == K::View && view_reads_no_relation(node)
+                || forms.sourceless_refusal.contains(&kind) =>
         {
             section(
                 "data freshness analysis",
@@ -1027,10 +1074,12 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             upstream_data_up_to_date()
         }
         (K::Full | K::Append | K::Snapshot, false, true)
-            if upstreams_fresh_against_anchor(node) =>
+            if upstreams_fresh_against_anchor(node)
+                || forms.input_modified_externally_refusal.contains(&kind)
+                    && sole_upstream_modified_externally(node) =>
         {
             query.push(upstream_queries_unchanged);
-            data_freshness_analysis_fresh(node)
+            data_freshness_analysis_against_anchor(node)
         }
         _ => return None,
     };
@@ -1052,6 +1101,19 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
                 .upstreams
                 .iter()
                 .all(|u| !u.drifted && !u.unprovable && !u.producer_changed)
+    })
+}
+
+/// #213: the one genuine upstream drifted since the anchored build because
+/// it was modified externally after that build read it from a recorded
+/// build (`databricks_volatile_producer.jsonl` entries 30 and 38).
+fn sole_upstream_modified_externally(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|anchor| {
+        crate::reuse_candidate::sole_upstream_modified_externally(
+            &decision::upstream_freshness(freshness_inputs(node), anchor),
+            anchor,
+            &node.input_tables,
+        )
     })
 }
 
@@ -1084,6 +1146,15 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     }
     let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
+        Some(true)
+            if node.decision == DecisionKind::Skip && node.volatile_forms().requested_reuse =>
+        {
+            (
+                format!("the {noun} query has not changed"),
+                BADGE_NODE_QUERY_UNCHANGED,
+                None,
+            )
+        }
         Some(true) => (
             format!("the {noun} query has changed"),
             BADGE_NODE_QUERY_CHANGED,
@@ -1192,7 +1263,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let freshness = if upstreams.is_empty() {
         upstream_data_up_to_date()
     } else {
-        data_freshness_analysis_fresh(node)
+        data_freshness_analysis_against_anchor(node)
     };
     vec![
         table_analysis_exists(node),
@@ -1531,7 +1602,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             table_analysis_exists(node),
             section("query analysis", Vec::new()),
             if node.genuine_upstreams().is_empty() {
-                data_freshness_analysis_fresh(node)
+                data_freshness_analysis_against_anchor(node)
             } else {
                 // #150: a partial physical result has no confirmed build to
                 // judge freshness against. List current source timestamps,
@@ -1560,13 +1631,13 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             vec![
                 table,
                 query_analysis_unchanged(node),
-                data_freshness_analysis_fresh(node),
+                data_freshness_analysis_against_anchor(node),
             ]
         }
         Some(Shape::QueryObservedOutsideScope) => vec![
             table_analysis_exists(node),
             query_analysis_unchanged(node),
-            data_freshness_analysis_fresh(node),
+            data_freshness_analysis_against_anchor(node),
         ],
         Some(Shape::QueryChanged) => query_changed_tree(node),
         Some(Shape::ResolutionContextChanged) => resolution_context_changed_tree(node),
@@ -1689,7 +1760,7 @@ fn skip_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         out.push(table_analysis_exists(node));
     }
     out.push(query_analysis_unchanged(node));
-    out.push(data_freshness_analysis_fresh(node));
+    out.push(data_freshness_analysis_against_anchor(node));
     out
 }
 
@@ -1762,8 +1833,8 @@ fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
         )
 }
 
-/// `data freshness analysis` body for a SKIP, by upstream situation.
-fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
+/// `data freshness analysis` body against an anchored build, by upstream situation.
+fn data_freshness_analysis_against_anchor(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     if upstreams.is_empty() {
         // No genuine upstreams. A FULL model, custom node, data test or a
@@ -2306,7 +2377,7 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         if table_to_view {
             section("data freshness analysis", Vec::new())
         } else {
-            data_freshness_analysis_fresh(&judged)
+            data_freshness_analysis_against_anchor(&judged)
         },
     ]
 }
@@ -2399,7 +2470,7 @@ fn input_binding_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
                 ),
             ],
         ),
-        data_freshness_analysis_fresh(&judged),
+        data_freshness_analysis_against_anchor(&judged),
     ]
 }
 
@@ -3009,6 +3080,68 @@ mod tests {
         let mut out = Vec::new();
         flat(&explain_lines(node), 0, &mut out);
         out
+    }
+
+    /// #213: a Databricks FULL rebuild refused for its volatile SQL lists
+    /// an upstream that changed since the refused build only in the captured
+    /// situation: an External modification of its sole input, which the
+    /// refused build read from a recorded build
+    /// (`databricks_volatile_producer.jsonl` entries 30 and 38). A persisted
+    /// map in any other upstream situation, such as that input rebuilt by
+    /// another producer, prints no volatile lines.
+    #[test]
+    fn databricks_volatile_refusal_lists_only_an_externally_modified_sole_input() {
+        const TARGET: &str = "`c`.`s`.`t`";
+        const UP: &str = "`c`.`s`.`up`";
+        let input = |epoch, producer| InputTable {
+            name: UP.into(),
+            last_modified_epoch: Some(epoch),
+            producer,
+            read_copy: None,
+        };
+        for (case, current, prints) in [
+            ("modified externally", input(200, Producer::NoBuild), true),
+            (
+                "rebuilt by another producer",
+                input(200, Producer::Build("up-v2".into())),
+                false,
+            ),
+        ] {
+            let mut n = node(
+                DecisionKind::Build,
+                ModelExecutionType::Full as i32,
+                decision::DESC_EXECUTE,
+            );
+            n.reason = Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::FailedReuseQualification,
+            ));
+            n.target_table = Some(TARGET.into());
+            n.input_tables = vec![tbl(TARGET), current];
+            n.volatile_evaluation = crate::volatile_evaluation::Evidence {
+                requested: Some(true),
+                values: vec![crate::volatile_evaluation::RenderedValue {
+                    query: TARGET.into(),
+                    function: "RAND()".into(),
+                    value: "0.5".into(),
+                }],
+            };
+            n.anchor = Some(ExecutionRow {
+                dialect: "databricks".into(),
+                target_table: TARGET.into(),
+                execution_type: ModelExecutionType::Full as i32,
+                last_modified_epoch: Some(100),
+                input_tables: vec![input(100, Producer::Build("up-v1".into()))],
+                ..ExecutionRow::default()
+            });
+            let lines = render(&n);
+            assert_eq!(
+                lines
+                    .iter()
+                    .any(|(_, text, _, _)| text == "non-deterministic functions detected in query"),
+                prints,
+                "{case}: {lines:?}"
+            );
+        }
     }
 
     #[test]
