@@ -18,7 +18,17 @@
 //!   [`BROKER_CLIENT_SECRET`] or a `private_key_jwt` assertion signed by
 //!   `upstream-rp-key.pem`, checks the code's redirect URI and PKCE
 //!   verifier, and returns an ID token (with the nonce of the authorize
-//!   request), an access token and a refresh token.
+//!   request), an access token and a refresh token;
+//! - `POST /token`, grant `refresh_token`: authenticates the Token broker
+//!   as above and renews the person the refresh token was issued to, with
+//!   their current claims: a new access token, an ID token unless the
+//!   person gets none on refresh ([`UpstreamPerson::without_refresh_id_token`]),
+//!   and a new refresh token (the presented one is used up) unless the IdP
+//!   keeps it ([`UpstreamPerson::keeps_refresh_token`]). A disabled person
+//!   ([`FakeIdp::disable`]) or a used refresh token gets `invalid_grant`,
+//!   and [`FakeIdp::fail_refresh`] makes every refresh fail;
+//! - `GET /userinfo`: the current claims of the person an access token was
+//!   issued to (OIDC Core §5.3), by `Authorization: Bearer`.
 //!
 //! Tests register machines with the claims they carry and how their token
 //! goes wrong ([`UpstreamMachine::audience`], [`UpstreamMachine::opaque`],
@@ -27,12 +37,12 @@
 //! sent ([`FakeIdp::token_requests`], [`FakeIdp::authorize_requests`]) and
 //! how often it fetched the keys ([`FakeIdp::jwks_fetches`]).
 //!
-//! Renewal (#221) extends the same state: the `refresh_token` grant can
-//! look up [`IdpState::refresh_tokens`] and the current [`IdpState::people`]
-//! (whose claims a test changes by signing the person in again, or
-//! disables), and a userinfo route joins [`router`].
+//! A test changes a person's claims at the IdP with [`FakeIdp::update`] (or
+//! by signing them in again); the next refresh and userinfo answer with the
+//! new ones. Person tokens are issued at the IdP's clock, which can follow a
+//! Token broker's test clock ([`FakeIdp::follow`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -52,6 +62,7 @@ use serde_json::{json, Map, Value};
 use sha2::Digest;
 
 use super::http::HttpServer;
+use super::resources::TestClock;
 
 /// The `aud` the deployment's `[upstream] api_audience` names, and machine
 /// tokens carry by default.
@@ -74,6 +85,23 @@ pub struct UpstreamPerson {
     claims: Map<String, Value>,
     id_token: IdTokenShape,
     refresh_token: bool,
+    renewal: RenewalShape,
+}
+
+/// How the fake IdP answers a person's refresh and userinfo requests.
+#[derive(Debug, Clone, Default)]
+struct RenewalShape {
+    /// No ID token in refresh responses.
+    no_id_token: bool,
+    /// No access token in refresh responses.
+    no_access_token: bool,
+    /// The presented refresh token stays valid and none is returned.
+    keeps_refresh_token: bool,
+    /// The `sub` refresh ID tokens and userinfo name, instead of the
+    /// person's.
+    subject: Option<String>,
+    /// Claims userinfo leaves out.
+    userinfo_omits: BTreeSet<String>,
 }
 
 /// How the fake IdP's ID token for a person goes wrong, if at all.
@@ -98,6 +126,7 @@ impl UpstreamPerson {
             claims,
             id_token: IdTokenShape::default(),
             refresh_token: true,
+            renewal: RenewalShape::default(),
         }
     }
 
@@ -150,6 +179,38 @@ impl UpstreamPerson {
     /// The token response has no refresh token.
     pub fn without_refresh_token(mut self) -> Self {
         self.refresh_token = false;
+        self
+    }
+
+    /// Refresh responses carry no ID token (OIDC Core §12.2 allows it), so
+    /// the person's claims are only at userinfo.
+    pub fn without_refresh_id_token(mut self) -> Self {
+        self.renewal.no_id_token = true;
+        self
+    }
+
+    /// Refresh responses carry no access token.
+    pub fn without_refresh_access_token(mut self) -> Self {
+        self.renewal.no_access_token = true;
+        self
+    }
+
+    /// The IdP does not rotate refresh tokens: a refresh returns none, and
+    /// the presented one stays valid.
+    pub fn keeps_refresh_token(mut self) -> Self {
+        self.renewal.keeps_refresh_token = true;
+        self
+    }
+
+    /// Refresh ID tokens and userinfo name `subject` as `sub`.
+    pub fn renewed_as(mut self, subject: &str) -> Self {
+        self.renewal.subject = Some(subject.into());
+        self
+    }
+
+    /// Userinfo leaves out `claim`.
+    pub fn userinfo_without(mut self, claim: &str) -> Self {
+        self.renewal.userinfo_omits.insert(claim.into());
         self
     }
 }
@@ -290,8 +351,49 @@ pub struct IdpState {
     signed_in: Option<String>,
     authorize_requests: Vec<BTreeMap<String, String>>,
     codes: BTreeMap<String, IssuedCode>,
-    /// Every refresh token issued, with its person's subject.
+    /// Every refresh token issued and still valid, with its person's
+    /// subject.
     pub refresh_tokens: BTreeMap<String, String>,
+    /// Every refresh token ever issued.
+    issued_refresh_tokens: Vec<String>,
+    /// Every person access token issued, with its person's subject.
+    access_tokens: BTreeMap<String, String>,
+    /// Every person access token issued, in order.
+    issued_access_tokens: Vec<String>,
+    /// Subjects of disabled people.
+    disabled: BTreeSet<String>,
+    /// What every refresh answers instead, while set.
+    refresh_failure: Option<(StatusCode, &'static str)>,
+    /// The bearer token of every userinfo request.
+    userinfo_requests: Vec<Option<String>>,
+    /// The IdP's clock, when it follows a test clock.
+    clock: Option<TestClock>,
+}
+
+impl IdpState {
+    fn now(&self) -> u64 {
+        let now = match &self.clock {
+            Some(clock) => clock.broker_clock().now(),
+            None => SystemTime::now(),
+        };
+        now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    /// A new refresh token for `subject`.
+    fn issue_refresh_token(&mut self, subject: &str) -> String {
+        let token = format!("idp-rt-{}", uuid::Uuid::new_v4().simple());
+        self.refresh_tokens.insert(token.clone(), subject.into());
+        self.issued_refresh_tokens.push(token.clone());
+        token
+    }
+
+    /// A new access token for `subject`.
+    fn issue_access_token(&mut self, subject: &str) -> String {
+        let token = format!("idp-at-{}", uuid::Uuid::new_v4().simple());
+        self.access_tokens.insert(token.clone(), subject.into());
+        self.issued_access_tokens.push(token.clone());
+        token
+    }
 }
 
 /// See the module docs. Dropping it stops the IdP.
@@ -365,20 +467,70 @@ impl FakeIdp {
         self
     }
 
+    /// Replace `person`'s claims and token shapes at the IdP, without
+    /// signing the browser in as them: their next refresh and userinfo
+    /// answer with these.
+    pub fn update(&self, person: UpstreamPerson) -> &Self {
+        self.state
+            .lock()
+            .unwrap()
+            .people
+            .insert(person.subject.clone(), person);
+        self
+    }
+
+    /// Disable the person with `subject`: their refresh tokens and access
+    /// tokens stop working.
+    pub fn disable(&self, subject: &str) -> &Self {
+        self.state.lock().unwrap().disabled.insert(subject.into());
+        self
+    }
+
+    /// Enable the person with `subject` again.
+    pub fn enable(&self, subject: &str) -> &Self {
+        self.state.lock().unwrap().disabled.remove(subject);
+        self
+    }
+
+    /// Every refresh answers `status` with OAuth `error` (and uses up
+    /// nothing) until [`Self::restore_refresh`].
+    pub fn fail_refresh(&self, status: u16, error: &'static str) -> &Self {
+        self.state.lock().unwrap().refresh_failure =
+            Some((StatusCode::from_u16(status).expect("an HTTP status"), error));
+        self
+    }
+
+    /// Refreshes work again.
+    pub fn restore_refresh(&self) -> &Self {
+        self.state.lock().unwrap().refresh_failure = None;
+        self
+    }
+
+    /// Issue person tokens at `clock`'s time (the host's plus its advances),
+    /// so they stay current for a Token broker on that clock.
+    pub fn follow(&self, clock: &TestClock) -> &Self {
+        self.state.lock().unwrap().clock = Some(clock.clone());
+        self
+    }
+
+    /// Every access token it issued to a person, in order.
+    pub fn issued_access_tokens(&self) -> Vec<String> {
+        self.state.lock().unwrap().issued_access_tokens.clone()
+    }
+
+    /// The bearer token of every userinfo request, in order.
+    pub fn userinfo_requests(&self) -> Vec<Option<String>> {
+        self.state.lock().unwrap().userinfo_requests.clone()
+    }
+
     /// The query of every request its authorization endpoint received.
     pub fn authorize_requests(&self) -> Vec<BTreeMap<String, String>> {
         self.state.lock().unwrap().authorize_requests.clone()
     }
 
-    /// Every refresh token it issued.
+    /// Every refresh token it issued, in order.
     pub fn issued_refresh_tokens(&self) -> Vec<String> {
-        self.state
-            .lock()
-            .unwrap()
-            .refresh_tokens
-            .keys()
-            .cloned()
-            .collect()
+        self.state.lock().unwrap().issued_refresh_tokens.clone()
     }
 
     /// Every request its token endpoint received, in order.
@@ -405,6 +557,7 @@ fn router(state: Shared) -> Router {
         .route("/jwks", get(jwks))
         .route("/authorize", get(authorize))
         .route("/token", post(token))
+        .route("/userinfo", get(userinfo))
         .with_state((state, keys))
 }
 
@@ -418,6 +571,7 @@ async fn discovery(State((state, _)): State<AppState>) -> Json<Value> {
         "authorization_endpoint": format!("{issuer}/authorize"),
         "token_endpoint": format!("{issuer}/token"),
         "jwks_uri": format!("{issuer}/jwks"),
+        "userinfo_endpoint": format!("{issuer}/userinfo"),
         "response_types_supported": ["code"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
@@ -481,6 +635,7 @@ async fn token(
     match form.get("grant_type").map(String::as_str) {
         Some("client_credentials") => {}
         Some("authorization_code") => return code_grant(&mut state, &keys, &form, basic),
+        Some("refresh_token") => return refresh_grant(&mut state, &keys, &form, basic),
         _ => return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     }
     let Some((client_id, secret)) = basic else {
@@ -627,15 +782,7 @@ fn code_grant(
     basic: Option<(String, String)>,
 ) -> Response {
     let get = |key: &str| form.get(key).map(String::as_str);
-    let authenticated = match get("client_assertion_type") {
-        Some(JWT_BEARER) => {
-            get("client_id").is_none_or(|id| id == BROKER_CLIENT_ID)
-                && get("client_assertion")
-                    .is_some_and(|assertion| broker_assertion(&state.issuer, keys, assertion))
-        }
-        _ => basic == Some((BROKER_CLIENT_ID.into(), BROKER_CLIENT_SECRET.into())),
-    };
-    if !authenticated {
+    if !broker_authenticated(state, keys, form, basic) {
         return oauth_error(StatusCode::UNAUTHORIZED, "invalid_client");
     }
     let Some(code) = get("code").and_then(|code| state.codes.remove(code)) else {
@@ -648,10 +795,7 @@ fn code_grant(
     }
     let person = state.people[&code.subject].clone();
     let shape = &person.id_token;
-    let iat = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let iat = state.now();
     let mut claims = person.claims.clone();
     claims.insert(
         "iss".into(),
@@ -678,7 +822,7 @@ fn code_grant(
         &keys.published
     };
     let mut body = json!({
-        "access_token": format!("idp-at-{}", uuid::Uuid::new_v4().simple()),
+        "access_token": state.issue_access_token(&person.subject),
         "token_type": "Bearer",
         "expires_in": 3600,
     });
@@ -686,13 +830,105 @@ fn code_grant(
         body["id_token"] = json!(sign(key, &Value::Object(claims)));
     }
     if person.refresh_token {
-        let refresh_token = format!("idp-rt-{}", uuid::Uuid::new_v4().simple());
-        state
-            .refresh_tokens
-            .insert(refresh_token.clone(), person.subject.clone());
-        body["refresh_token"] = json!(refresh_token);
+        body["refresh_token"] = json!(state.issue_refresh_token(&person.subject));
     }
     Json(body).into_response()
+}
+
+/// Whether a token request authenticates the Token broker: by HTTP Basic
+/// [`BROKER_CLIENT_SECRET`], or a `private_key_jwt` assertion.
+fn broker_authenticated(
+    state: &IdpState,
+    keys: &Keys,
+    form: &BTreeMap<String, String>,
+    basic: Option<(String, String)>,
+) -> bool {
+    let get = |key: &str| form.get(key).map(String::as_str);
+    match get("client_assertion_type") {
+        Some(JWT_BEARER) => {
+            get("client_id").is_none_or(|id| id == BROKER_CLIENT_ID)
+                && get("client_assertion")
+                    .is_some_and(|assertion| broker_assertion(&state.issuer, keys, assertion))
+        }
+        _ => basic == Some((BROKER_CLIENT_ID.into(), BROKER_CLIENT_SECRET.into())),
+    }
+}
+
+/// `POST /token`, grant `refresh_token`, for the Token broker.
+fn refresh_grant(
+    state: &mut IdpState,
+    keys: &Keys,
+    form: &BTreeMap<String, String>,
+    basic: Option<(String, String)>,
+) -> Response {
+    if !broker_authenticated(state, keys, form, basic) {
+        return oauth_error(StatusCode::UNAUTHORIZED, "invalid_client");
+    }
+    if let Some((status, error)) = state.refresh_failure {
+        return oauth_error(status, error);
+    }
+    let presented = form.get("refresh_token").cloned().unwrap_or_default();
+    let Some(subject) = state.refresh_tokens.get(&presented).cloned() else {
+        return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    };
+    if state.disabled.contains(&subject) {
+        return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    }
+    let person = state.people[&subject].clone();
+    let renewal = &person.renewal;
+    let mut body = json!({"token_type": "Bearer", "expires_in": 3600});
+    if !renewal.no_access_token {
+        body["access_token"] = json!(state.issue_access_token(&subject));
+    }
+    if !renewal.no_id_token {
+        let iat = state.now();
+        let mut claims = person.claims.clone();
+        claims.insert("iss".into(), json!(state.issuer));
+        claims.insert(
+            "sub".into(),
+            json!(renewal.subject.as_deref().unwrap_or(&subject)),
+        );
+        claims.insert("aud".into(), json!(BROKER_CLIENT_ID));
+        claims.insert("iat".into(), json!(iat));
+        claims.insert("exp".into(), json!(iat + 3600));
+        let key = if person.id_token.impostor {
+            &keys.impostor
+        } else {
+            &keys.published
+        };
+        body["id_token"] = json!(sign(key, &Value::Object(claims)));
+    }
+    if !renewal.keeps_refresh_token {
+        state.refresh_tokens.remove(&presented);
+        body["refresh_token"] = json!(state.issue_refresh_token(&subject));
+    }
+    Json(body).into_response()
+}
+
+/// `GET /userinfo`: the claims of the person the bearer access token was
+/// issued to.
+async fn userinfo(State((state, _)): State<AppState>, headers: HeaderMap) -> Response {
+    let bearer = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned);
+    let mut state = state.lock().unwrap();
+    state.userinfo_requests.push(bearer.clone());
+    let Some(subject) = bearer.and_then(|token| state.access_tokens.get(&token).cloned()) else {
+        return oauth_error(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    if state.disabled.contains(&subject) {
+        return oauth_error(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let person = &state.people[&subject];
+    let mut claims = person.claims.clone();
+    claims.retain(|claim, _| !person.renewal.userinfo_omits.contains(claim));
+    claims.insert(
+        "sub".into(),
+        json!(person.renewal.subject.as_deref().unwrap_or(&subject)),
+    );
+    Json(Value::Object(claims)).into_response()
 }
 
 /// A compact RS256 JWS of `claims`, under [`IDP_KEY_ID`].
