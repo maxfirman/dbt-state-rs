@@ -77,11 +77,14 @@ except health, for an Organization in the TOML auth config at
 
 The Token broker issues those tokens. Set `DBT_STATE_BROKER_LISTEN` (for
 example `127.0.0.1:8080`) to run it in the server process on its own HTTP/1.1
-listener, sharing the config's `[signing]` keys; the gRPC listener stays
-HTTP/2. It needs `[signing]` and `[upstream]` in the auth config, and is a
-startup error in `none` mode. To run it on its own instead:
+listener, sharing the config's `[signing]` keys and the server's Postgres;
+the gRPC listener stays HTTP/2. It needs `[signing]` and `[upstream]` in the
+auth config, and is a startup error in `none` mode. To run it on its own
+instead (it keeps its state in the server's schema and migrates it at
+startup, so several brokers can share it):
 
 ```bash
+DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
 DBT_STATE_AUTH_CONFIG=auth.toml DBT_STATE_BROKER_LISTEN=127.0.0.1:8080 \
   cargo run -p dbt-state-broker
 ```
@@ -98,6 +101,18 @@ its client id and secret (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
 `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`). The broker forwards the
 credentials to the IdP's `client_credentials` grant, checks the access token
 it returns, and applies the `kind = "machine"` mapping rules.
+
+A person signs in through the browser: point the dbt client's auth URL
+(`RUN_CACHE_AUTH_URL`) at the broker's issuer and its token URL at
+`<broker>/token`, and set no client id or secret (the client's built-in id
+is the dbt client registration's default, `[clients.dbt] client_id`). The
+broker must be registered at the Upstream IdP as an OIDC client
+(`[upstream] client_id`, with `private_key_file` or `client_secret_file`,
+and `refresh_token_key_file`; see the [example](../examples/auth/auth.toml))
+with redirect URI `<broker.issuer>/callback`. It applies the
+`kind = "person"` mapping rules, and the code exchange returns a person
+token (`sid`) and a refresh token. Refreshing it is not implemented yet
+(#221).
 
 ## Running the UI
 

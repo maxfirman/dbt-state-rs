@@ -133,23 +133,51 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   machine (`.machine(sub)`) tokens with `.grant(org, role)` and
   `.issued_ago(d)`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
   send them. `capture_logs()` / `captured_logs()` capture the process's log
-  lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`,
-  `.rule(kind, claim, value, org, role)`, `.machine_lifetime_minutes(m)`,
-  `.issuer(url)` and `.without_signing()`.
+  lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`
+  (which also registers the broker for browser sign-in with
+  `BROKER_CLIENT_SECRET` from a file and a refresh-token key file),
+  `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
+  `.subject_claim(c)`, `.dbt_client_id(id)`,
+  `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
+  `.rule(kind, claim, value, org, role)`, `.person_lifetime_minutes(m)`,
+  `.machine_lifetime_minutes(m)`, `.issuer(url)` and `.without_signing()`.
 - `start_server_with_broker(&auth)` runs the gRPC server and the Token
   broker in one process on separate listeners (`server.broker_url()`), as
-  `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder)` runs a standalone
-  broker whose issuer is its own URL (`TestBroker::url()`, `.auth`).
+  `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
+  standalone broker on its own migrated schema whose issuer is its own URL
+  (`TestBroker::url()`, `.auth`, `.clock`). `server.broker_clock` (a
+  `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
+  codes and pending logins.
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
   Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
   .claim(name, value))` registers an app registration; `.audience(aud)`,
   `.issuer(iss)`, `.opaque()`, `.signed_by_impostor()` and `.expired()`
-  spoil its access token. `idp.token_requests()` and `idp.jwks_fetches()`
-  report what the broker sent.
+  spoil its access token. `idp.sign_in(UpstreamPerson::new(sub)
+  .claim(name, value))` signs the browser in as a person, whom the
+  auto-approving `/authorize` approves at once; `.wrong_nonce()`,
+  `.signed_by_impostor()`, `.audience(aud)`, `.issuer(iss)`,
+  `.without_id_token()` and `.without_refresh_token()` spoil its token
+  response. The `authorization_code` grant authenticates the broker by
+  `BROKER_CLIENT_SECRET` or a `private_key_jwt` assertion
+  (`upstream-rp-key.pem`) and checks redirect URI and PKCE.
+  `idp.token_requests()`, `idp.authorize_requests()`,
+  `idp.issued_refresh_tokens()` and `idp.jwks_fetches()` report what the
+  broker sent and got. `IdpState::people` and `refresh_tokens` are where
+  renewal (#221) plugs in.
 - `broker_client.rs` sends token requests exactly as the pinned dbt clients
-  do (`client_credentials`, `token_exchange`), and `claims(jwt)` reads a
-  token's claims unverified, as the clients do.
+  do (`client_credentials`, `token_exchange`, and the browser sign-in's
+  `authorization_code` as Fusion and as the Python client post it), and
+  `claims(jwt)` reads a token's claims unverified, as the clients do.
+  `SignIn::new()` is one browser sign-in as the clients start it (client id
+  `DBT_CLIENT_ID`, redirect `LOOPBACK_REDIRECT_URI`, PKCE S256, `state`);
+  `.client_id(id)`, `.redirect_uri(uri)`, `.without_pkce()`,
+  `.plain_pkce()` vary it, and `.authorize_url(auth_url)` is the URL the
+  client opens.
+- `browser.rs`: `Browser::new().route(ISSUER, &server.broker_url())`
+  follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
+  client's loopback handler (`Landing::Loopback(query)`) or a page
+  (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`.
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions;
   `every_row_as_text(&server)` dumps the schema, to prove a value was never
