@@ -45,6 +45,8 @@ tracing-subscriber.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+# The test browser keeps cookies, as the Keycloak login form needs.
+reqwest = { workspace = true, features = ["cookies"] }
 sha2.workspace = true
 dbt-state-auth = { path = "../auth" }
 dbt-state-broker = { path = "../broker" }

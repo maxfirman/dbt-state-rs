@@ -138,7 +138,10 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   send them. `capture_logs()` / `captured_logs()` capture the process's log
   lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`
   (which also registers the broker for browser sign-in with
-  `BROKER_CLIENT_SECRET` from a file and a refresh-token key file),
+  `BROKER_CLIENT_SECRET` from a file and a refresh-token key file), or
+  `.upstream_registration(UpstreamRegistration { issuer, api_audience,
+  client_credentials_scope, client_id, client_secret })` for another
+  Upstream IdP (Keycloak),
   `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
   `.subject_claim(c)`, `.dbt_client_id(id)`,
   `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
@@ -235,9 +238,18 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
 - `browser.rs`: `Browser::new().route(ISSUER, &server.broker_url())`
   follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
   client's loopback handler (`Landing::Loopback(query)`) or a page
-  (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`, and
-  renewal in `tests/person_renewal.rs` and, across replicas,
-  `tests/shared_logins.rs`.
+  (`Landing::Page { status, body }`), keeping cookies;
+  `submit(action, fields, loopback)` posts a page's form and follows on.
+  Tests: `tests/person_login.rs`, and renewal in `tests/person_renewal.rs`
+  and, across replicas, `tests/shared_logins.rs`.
+- `keycloak.rs`: Keycloak as the Upstream IdP for the opt-in
+  [Keycloak suite](#keycloak-upstream-suite). `Keycloak::from_env().await`
+  is `None` (the test returns) unless `DBT_STATE_KEYCLOAK=1`;
+  `.registration()` (client secret) and `.private_key_jwt_registration()`
+  are the realm's `[upstream]`; `.sign_in(&browser, url, (user, password),
+  loopback)` fills in Keycloak's login form; `.create_person(&groups)`,
+  `.disable(&person)`, `.leave_group(&person, group)` and
+  `.user_id(username)` use the realm's admin REST API.
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions,
   `decisions(&server, n)` the `node_decisions` rows once `n` are captured,
@@ -267,6 +279,33 @@ hand, destructures decisions, runs SQL, or when raw State writes appear outside
 `legacy.rs`/`fault.rs`. The capture database test lives in
 `crates/server/tests/capture.rs`, so server library tests stay independent of
 Postgres.
+
+## Keycloak upstream suite
+
+`crates/harness/tests/keycloak.rs` runs the Token broker against Keycloak
+26.8.2 in Docker instead of the fake Upstream IdP: a browser sign-in
+through Keycloak's own login form, renewal that re-checks the person at
+Keycloak (and is denied once they are disabled or leave the mapped group),
+`client_credentials` passed through to Keycloak, a Keycloak token for
+another audience refused, and the broker's `private_key_jwt` credential.
+Every test skips unless `DBT_STATE_KEYCLOAK=1`, so `cargo test` needs no
+Docker. To run it locally (Docker and Postgres at `$DATABASE_URL`):
+
+```bash
+./scripts/keycloak.sh start      # pinned image, imports crates/harness/keycloak/dbt-state-realm.json
+DBT_STATE_KEYCLOAK=1 cargo test -p dbt-state-harness --test keycloak
+./scripts/keycloak.sh stop
+```
+
+The script publishes Keycloak on `127.0.0.1:18080` (`DBT_STATE_KEYCLOAK_PORT`;
+point the suite elsewhere with `DBT_STATE_KEYCLOAK_URL`). Tests create
+their own people through the admin REST API, so reruns against one
+Keycloak need no restart. CI's `keycloak` job runs the suite on the weekly
+schedule, on manual dispatch, and on pull requests that change the auth
+crates, broker migrations or the suite. The realm's objects and the
+Keycloak configuration lessons the suite established (mappers, audiences,
+`offline_access`) are in
+[crates/harness/keycloak/README.md](../crates/harness/keycloak/README.md).
 
 ## Offline regressions
 

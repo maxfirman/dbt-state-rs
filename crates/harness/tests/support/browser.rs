@@ -1,8 +1,8 @@
 //! A browser for sign-in tests: it follows HTTP redirects the way a real
-//! one does, without cookies or scripts (the broker and the fake Upstream
-//! IdP need neither), until it reaches the dbt client's loopback handler.
-//! It never connects there: the handler's query is what the dbt client
-//! would read.
+//! one does, keeps cookies and submits forms (as a real Upstream IdP's
+//! login page needs; see `support/keycloak.rs`), without scripts, until it
+//! reaches the dbt client's loopback handler. It never connects there: the
+//! handler's query is what the dbt client would read.
 //!
 //! The broker's public URL (its issuer, for example
 //! `https://broker.dbt-state.test`) is routed to the test listener, as a
@@ -46,6 +46,7 @@ impl Browser {
         Self {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .cookie_store(true)
                 .build()
                 .expect("browser HTTP client"),
             routes: Vec::new(),
@@ -75,7 +76,20 @@ impl Browser {
     /// Open `url` and follow redirects until one points at `loopback` (the
     /// dbt client's redirect URI) or a page answers.
     pub async fn visit(&self, url: &str, loopback: &str) -> Landing {
-        let mut url = url.to_owned();
+        self.follow(url.to_owned(), None, loopback).await
+    }
+
+    /// Submit a page's form: POST `fields` to its `action` URL, form-encoded,
+    /// then follow redirects as [`Self::visit`] does.
+    pub async fn submit(&self, action: &str, fields: &[(&str, &str)], loopback: &str) -> Landing {
+        let body = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(fields)
+            .finish();
+        self.follow(action.to_owned(), Some(body), loopback).await
+    }
+
+    /// Request `url` (a POST of `form`, if given) and follow redirects.
+    async fn follow(&self, mut url: String, mut form: Option<String>, loopback: &str) -> Landing {
         for _ in 0..10 {
             if let Some(query) = url.strip_prefix(loopback) {
                 let query = query.strip_prefix('?').unwrap_or_default();
@@ -85,12 +99,15 @@ impl Browser {
                         .collect(),
                 );
             }
-            let response = self
-                .http
-                .get(self.routed(&url))
-                .send()
-                .await
-                .expect("browser request");
+            let request = match form.take() {
+                Some(body) => self
+                    .http
+                    .post(self.routed(&url))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(body),
+                None => self.http.get(self.routed(&url)),
+            };
+            let response = request.send().await.expect("browser request");
             if response.status().is_redirection() {
                 url = response.headers()["location"]
                     .to_str()
