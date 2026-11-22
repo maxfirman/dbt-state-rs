@@ -786,9 +786,15 @@ local-only and renders no Explain tree.
   token's expiry, so a run shorter than the person lifetime minus 5
   minutes needs no new token (#223, `crates/harness/tests/fusion_client.rs`,
   opt-in CI job `fusion`). Its token requests trust only public roots, so
-  a Token broker needs a publicly trusted certificate for Fusion; the
+  a Token broker needs a publicly trusted certificate for that build; the
   driver adds native roots through a reqwest build feature to reach the
-  test CA. The broker registers the UI as its
+  test CA. The released dbt 2.0.11 binary also trusts `SSL_CERT_FILE` for
+  token requests: in an opt-in live run it built a project on Snowflake
+  (`CDO_DEMO_DB`) against a local `oidc` deployment with the test CA, once
+  as a machine (`client_credentials`) and once as a person (browser flow,
+  which it runs only from an interactive terminal), and each build's
+  decisions were recorded under its own Principal (#232,
+  `crates/harness/tests/fusion_snowflake.rs`, `scripts/fusion-snowflake.sh`). The broker registers the UI as its
   own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
   tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`). In
   `oidc` mode the UI signs people in as that client and shows only their

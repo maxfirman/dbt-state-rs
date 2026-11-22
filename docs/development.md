@@ -132,7 +132,10 @@ requests trust only the public Mozilla roots built into it, and no setting
 adds a CA, so the Token broker's URLs must present a certificate from a
 publicly trusted CA for Fusion (or a TLS-terminating proxy must). The
 [pinned Fusion driver](../crates/harness/fusion-driver/README.md) works
-around this only for its tests.
+around this only for its tests. The released dbt 2.0.11 binary differs: its
+token requests also trust `SSL_CERT_FILE`, so a private CA added there works
+for both its gRPC channel and the Token broker (observed live, #232,
+[testing.md](testing.md#live-fusion-acceptance-on-snowflake)).
 
 A CI machine authenticates with its Upstream IdP app registration: point the
 dbt client's token URL (`RUN_CACHE_TOKEN_URL`) at `<broker>/token` and set
@@ -151,7 +154,10 @@ and `refresh_token_key_file`; see the [example](../examples/auth/auth.toml))
 with redirect URI `<broker.issuer>/callback`. It applies the
 `kind = "person"` mapping rules, and the code exchange returns a person
 token (`sid`) and a refresh token, which the `refresh_token` grant renews
-after re-checking the person at the Upstream IdP (#221).
+after re-checking the person at the Upstream IdP (#221). dbt 2.0.11 runs the
+browser flow only from an interactive terminal; without one it builds
+without dbt State ("dbt State authentication requires an interactive
+terminal", #232).
 
 The UI signs people in as its own client of the broker (`[clients.ui]`:
 `client_id`, its one `redirect_uri`, and the `public_key_file` of the key
