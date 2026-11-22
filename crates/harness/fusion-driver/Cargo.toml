@@ -1,0 +1,77 @@
+# The pinned Fusion driver: dbt Fusion's own dbt State client code
+# (`dbt-run-cache` at dbt-labs/dbt-fusion@9977b6c), driven against a dbt
+# State deployment by `crates/harness/tests/fusion_client.rs`.
+#
+# Outside the workspace (the root `Cargo.toml` excludes it) and never part
+# of `cargo build` / `cargo test`: dbt-fusion is licensed under the Elastic
+# License 2.0. This crate only compiles against it at build time, as a git
+# dependency Cargo fetches; no Fusion source is vendored, copied or
+# redistributed, and the built driver is a test tool that is never
+# published or shipped. See README.md.
+
+[package]
+name = "dbt-state-fusion-driver"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+# The driver's own code. Fusion's code it links stays under ELv2.
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "fusion-driver"
+path = "src/main.rs"
+
+[dependencies]
+# Fusion's dbt State client: config, token acquisition and storage, the
+# browser flow and the gRPC client. Pinned to the full commit SHA.
+dbt-run-cache = { git = "https://github.com/dbt-labs/dbt-fusion", rev = "9977b6cbb1b761065536300037560d8e3c037011" }
+# Fusion's token requests go through reqwest 0.12 with `rustls-tls`, which
+# trusts only the public Mozilla roots built into webpki-roots: no setting
+# adds a CA, so pinned Fusion cannot reach a Token broker whose certificate
+# chains to a private CA. To reach the test broker over TLS, the driver
+# enables `rustls-tls-native-roots` on that same reqwest, so Cargo builds
+# it trusting the native roots as well (which `SSL_CERT_FILE` names, as it
+# does for Fusion's gRPC channel). This is the driver's one change to how
+# Fusion behaves, a build-time feature, not a source change; see README.md.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots"] }
+# The dbt binary installs aws-lc-rs as rustls's process-wide crypto provider
+# when it starts (`dbt-main`'s `do_execute_fs`); the driver does the same.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+serde_json = "1"
+libc = "0.2"
+url = "2"
+
+# Fusion's workspace patches these crates to its public forks; a git
+# dependency does not inherit a workspace's patches, so the driver repeats
+# them (same repositories and revisions as dbt-fusion@9977b6c's
+# `Cargo.toml`).
+[patch.crates-io]
+datafusion-common = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" }
+datafusion-expr = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" }
+sqlparser = { git = "https://github.com/sdf-labs/datafusion-sqlparser-rs", rev = "36843ce564b129a0e0a15b58997d8c132b7ce6d4" }
+arrow = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-arith = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-array = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-buffer = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-cast = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-csv = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-data = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-ipc = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-json = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-ord = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-row = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-schema = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-select = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+arrow-string = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" }
+
+# A test tool: build fast and small.
+[profile.dev]
+debug = false
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
