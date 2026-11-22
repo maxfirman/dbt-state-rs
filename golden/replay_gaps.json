@@ -382,13 +382,13 @@
     "fixture": "copy_source_choice.jsonl",
     "entry": 3,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 2 (#239, history old_alone, control-only run): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 2 (#239, history old_alone, control-only run): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
     "entry": 7,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 6 (#239, history old_alone): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 6 (#239, history old_alone): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
@@ -442,13 +442,13 @@
     "fixture": "copy_source_choice.jsonl",
     "entry": 33,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 32 (#239, history old_new): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 32 (#239, history old_new): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
     "entry": 39,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 38 (#239, history old_new_rev): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 38 (#239, history old_new_rev): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
@@ -478,19 +478,19 @@
     "fixture": "copy_source_choice.jsonl",
     "entry": 61,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 60 (#239, history old_mid_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 60 (#239, history old_mid_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
     "entry": 67,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 66 (#239, history old_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 66 (#239, history old_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",
     "entry": 75,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 74 (#239, history old_mid_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Outside #239's source-choice scope; needs its own issue. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 74 (#239, history old_mid_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   },
   {
     "fixture": "copy_source_choice.jsonl",

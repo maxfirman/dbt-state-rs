@@ -209,7 +209,7 @@ upstream without a badge or anchor line
 ([explain-catalog.md](../explain-catalog.md#clone-model)); its Databricks
 copy tree matches hosted's `<FRESH>` listing (`databricks_submit_copy.jsonl`
 entry 13). The seven CLONE trees whose decisions agree are keyed as Explain
-gaps (entries 3, 7, 33, 39, 61, 67, 75). This needs its own issue.
+gaps (entries 3, 7, 33, 39, 61, 67, 75). Tracked in #252.
 
 Replay: `copy_source_choice.jsonl` is in the generic conformance replay
 (corpus 153). Every other response, confirmation and Explain matches hosted

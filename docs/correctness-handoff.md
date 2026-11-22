@@ -695,7 +695,7 @@ upstream relations) is not observable in these histories. These decision
 gaps are open for #242 and #243, not accepted divergences. Separately,
 hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
 that this server renders on Databricks only; those Explain gaps (entries 3,
-7, 33, 39, 61, 67, 75) need their own issue
+7, 33, 39, 61, 67, 75) are tracked in #252
 ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 
 ### Accepted divergences

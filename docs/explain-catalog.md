@@ -1687,7 +1687,7 @@ upstream `<FRESH>` with `no updates since "«destination FQN»" last executed`
 (`copy_source_choice.jsonl`, eleven trees, #239) and on Databricks
 (`databricks_submit_copy.jsonl` entry 13). This server renders that listing on
 Databricks only; the Snowflake trees are keyed gaps in
-`golden/replay_gaps.json` (open, outside #239's source-choice scope). When the copy keeps the Target
+`golden/replay_gaps.json` (open, #252). When the copy keeps the Target
 relation's own build as its anchor, the listing is the anchored SKIP one
 (`lag_copy_candidates` `de`). A copy of a stale equivalent ends with
 `upstream data is outdated` [FAIL] and, with a non-zero tolerance, the Lag
