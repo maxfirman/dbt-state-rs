@@ -886,6 +886,22 @@ impl Warehouse {
             .flatten()
     }
 
+    /// Whether a build of `execution_type` keeps the producer revision its
+    /// latest ordinary build of the same rendered SQL established (#213):
+    /// Databricks FULL only, the captured volatile producer.
+    pub(crate) fn retains_producer_revision(self, execution_type: i32) -> bool {
+        self == Self::Databricks && databricks::retains_producer_revision(execution_type)
+    }
+
+    /// The forms, beyond the shared ones, Explain prints for this
+    /// Warehouse's captured volatile decisions (#213).
+    pub(crate) fn volatile_explain_forms(self) -> crate::explain::VolatileForms {
+        match self {
+            Self::Databricks => databricks::VOLATILE_EXPLAIN_FORMS,
+            _ => crate::explain::VolatileForms::NONE,
+        }
+    }
+
     /// Whether a model whose SQL calls a Volatile function, with Volatile
     /// evaluation requested, is reused by its unchanged unrendered code under
     /// `compare_unrendered_code` instead of being refused at Reuse

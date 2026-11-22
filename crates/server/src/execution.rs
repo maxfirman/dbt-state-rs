@@ -456,8 +456,9 @@ pub(crate) async fn record_batch(
     Ok(stored)
 }
 
-/// RecordExecutions carries existing Databricks FULL producer revisions
-/// forward for the same rendered identity. A historical record predating
+/// RecordExecutions carries existing producer revisions forward for the
+/// same rendered identity where the Warehouse retains them
+/// (`Warehouse::retains_producer_revision`). A historical record predating
 /// the current build cannot inherit its revision.
 async fn retain_recorded_producer_revisions(
     store: &Store,
@@ -465,28 +466,28 @@ async fn retain_recorded_producer_revisions(
     batch: &mut [(ExecutionEvidence, qc::ExecutionOutcome)],
 ) -> sqlx::Result<()> {
     let eligible = |e: &ExecutionEvidence| {
-        e.execution_type == qc::ModelExecutionType::Full as i32
-            && !e.target_table.is_empty()
-            && Warehouse::from_dialect(&e.dialect) == Warehouse::Databricks
+        !e.target_table.is_empty()
+            && Warehouse::from_dialect(&e.dialect).retains_producer_revision(e.execution_type)
     };
-    let mut targets_by_namespace: HashMap<_, Vec<_>> = HashMap::new();
+    // Each scope's targets, with a dialect of that warehouse family.
+    let mut targets_by_scope: HashMap<BatchScope, (String, Vec<String>)> = HashMap::new();
     for (e, _) in batch.iter().filter(|(e, _)| eligible(e)) {
-        targets_by_namespace
-            .entry(e.table_namespace.clone().filter(|name| !name.is_empty()))
-            .or_default()
+        targets_by_scope
+            .entry(BatchScope::of(e))
+            .or_insert_with(|| (e.dialect.clone(), Vec::new()))
+            .1
             .push(e.target_table.clone());
     }
     let mut history = HashMap::new();
-    for (namespace, targets) in targets_by_namespace {
+    for (scope, (dialect, targets)) in targets_by_scope {
         let builds = store
-            .current_target_states(org_id, &targets, namespace.as_deref(), "databricks")
+            .current_target_states(org_id, &targets, scope.table_namespace.as_deref(), &dialect)
             .await?;
-        history.insert(namespace, builds);
+        history.insert(scope, builds);
     }
     for (e, outcome) in batch.iter_mut().filter(|(e, _)| eligible(e)) {
-        let namespace = e.table_namespace.clone().filter(|name| !name.is_empty());
         e.producer_revision = history
-            .get(&namespace)
+            .get(&BatchScope::of(e))
             .and_then(|builds| builds.get(&e.target_table))
             .filter(|build| {
                 build.execution_type == e.execution_type

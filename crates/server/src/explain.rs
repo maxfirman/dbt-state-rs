@@ -142,11 +142,41 @@ pub struct ExplainNode {
     pub anchor: Option<ExecutionRow>,
 }
 
+/// The forms, beyond the shared ones, that Explain prints for a Warehouse's
+/// captured volatile decisions (#213), from
+/// `Warehouse::volatile_explain_forms`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VolatileForms {
+    /// Kinds whose rebuild refused for its volatile SQL after its Target
+    /// relation was dropped prints only the absent-table analysis.
+    pub(crate) dropped_target_refusal: &'static [ModelExecutionType],
+    /// Kinds, beyond the shared ones, whose refusal without upstreams or
+    /// query dependencies says `no upstream dependencies`.
+    pub(crate) sourceless_refusal: &'static [ModelExecutionType],
+    /// Kinds whose refusal after an External modification of the sole
+    /// input lists that upstream against the refused build.
+    pub(crate) input_modified_externally_refusal: &'static [ModelExecutionType],
+    /// Whether a reuse with Volatile evaluation requested (a checked
+    /// reuse) says its query has not changed, with no tolerance line.
+    pub(crate) requested_reuse: bool,
+}
+
+impl VolatileForms {
+    /// The shared forms only.
+    pub(crate) const NONE: Self = Self {
+        dropped_target_refusal: &[],
+        sourceless_refusal: &[],
+        input_modified_externally_refusal: &[],
+        requested_reuse: false,
+    };
+}
+
 impl ExplainNode {
-    fn has_databricks_anchor(&self) -> bool {
-        self.anchor.as_ref().is_some_and(|prior| {
-            crate::warehouse::Warehouse::from_dialect(&prior.dialect)
-                == crate::warehouse::Warehouse::Databricks
+    /// The volatile Explain forms of the anchored build's Warehouse; the
+    /// shared forms only without an anchor.
+    fn volatile_forms(&self) -> VolatileForms {
+        self.anchor.as_ref().map_or(VolatileForms::NONE, |prior| {
+            crate::warehouse::Warehouse::from_dialect(&prior.dialect).volatile_explain_forms()
         })
     }
 
@@ -1005,10 +1035,10 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         return None;
     }
     let kind = K::try_from(node.execution_type).ok()?;
-    // #213: a Databricks FULL refusal after a drop still renders its map,
-    // while Explain only describes the absent Target relation.
-    let databricks = node.has_databricks_anchor();
-    if databricks && kind == K::Full && node.own_target_absent() {
+    // #213: a refusal after a drop may still render its map, while Explain
+    // only describes the absent Target relation.
+    let forms = node.volatile_forms();
+    if forms.dropped_target_refusal.contains(&kind) && node.own_target_absent() {
         return Some(vec![first_build_table_analysis(node)]);
     }
     if !node.own_target_exists() {
@@ -1032,7 +1062,7 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         (kind, true, true)
             if matches!(kind, K::Full | K::DbtCustom)
                 || kind == K::View && view_reads_no_relation(node)
-                || databricks && matches!(kind, K::Append | K::Merge | K::DeleteInsert) =>
+                || forms.sourceless_refusal.contains(&kind) =>
         {
             section(
                 "data freshness analysis",
@@ -1045,7 +1075,8 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         }
         (K::Full | K::Append | K::Snapshot, false, true)
             if upstreams_fresh_against_anchor(node)
-                || databricks && kind == K::Full && sole_upstream_modified_externally(node) =>
+                || forms.input_modified_externally_refusal.contains(&kind)
+                    && sole_upstream_modified_externally(node) =>
         {
             query.push(upstream_queries_unchanged);
             data_freshness_analysis_against_anchor(node)
@@ -1115,11 +1146,15 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     }
     let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
-        Some(true) if node.decision == DecisionKind::Skip && node.has_databricks_anchor() => (
-            format!("the {noun} query has not changed"),
-            BADGE_NODE_QUERY_UNCHANGED,
-            None,
-        ),
+        Some(true)
+            if node.decision == DecisionKind::Skip && node.volatile_forms().requested_reuse =>
+        {
+            (
+                format!("the {noun} query has not changed"),
+                BADGE_NODE_QUERY_UNCHANGED,
+                None,
+            )
+        }
         Some(true) => (
             format!("the {noun} query has changed"),
             BADGE_NODE_QUERY_CHANGED,

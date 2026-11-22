@@ -178,6 +178,32 @@ pub(super) fn checked_volatile_reuse(req: &crate::query_cache::SubmitEnrichedSql
         }).is_some_and(|query| query == "SELECT checked_projection")
 }
 
+/// A FULL build keeps its producer revision: the captured `rand()`
+/// producer's revision held across its ordinary reruns
+/// (`databricks_volatile_producer.jsonl`, #213).
+pub(super) fn retains_producer_revision(execution_type: i32) -> bool {
+    execution_type == crate::query_cache::ModelExecutionType::Full as i32
+}
+
+/// How Explain describes the captured volatile decisions (#213,
+/// `docs/reports/databricks-volatile-priority-2026-11-21.md`):
+/// a FULL `rand()` refusal after its Target relation was dropped prints only
+/// the absent-table analysis; source-less APPEND, MERGE and DELETE_INSERT
+/// refusals say `no upstream dependencies` (`databricks_volatile_priority.jsonl`);
+/// a FULL refusal after an External modification of its sole input lists
+/// that upstream (`databricks_volatile_producer.jsonl` entries 30 and 38);
+/// and the checked `rand(42)` reuse says its query has not changed
+/// (priority entries 56 and 58).
+pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
+    use crate::query_cache::ModelExecutionType::{Append, DeleteInsert, Full, Merge};
+    crate::explain::VolatileForms {
+        dropped_target_refusal: &[Full],
+        sourceless_refusal: &[Append, Merge, DeleteInsert],
+        input_modified_externally_refusal: &[Full],
+        requested_reuse: true,
+    }
+};
+
 /// Prove the direct input to a captured FULL RAND() model independently of
 /// rendering. The producer transition is limited to this one-input shape.
 pub(super) fn volatile_producer_input(
