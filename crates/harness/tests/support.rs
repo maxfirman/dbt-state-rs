@@ -22,6 +22,9 @@ pub mod broker_client;
 /// A browser following a dbt client's sign-in redirects.
 #[path = "support/browser.rs"]
 pub mod browser;
+/// What the pinned dbt client drivers share: process, pauses, port lock.
+#[path = "support/client_driver.rs"]
+pub mod client_driver;
 /// Request shapes from the live clone captures in the demo database.
 #[path = "support/demo.rs"]
 pub mod demo;
