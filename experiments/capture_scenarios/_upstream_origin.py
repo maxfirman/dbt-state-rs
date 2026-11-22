@@ -28,7 +28,11 @@ build of every case, explained and read again. Last, a State-disabled
 `--full-refresh` Reference execution of every dev node, read back.
 `experiments/upstream_origin.py WORK_DIR` prints the per-case record.
 """
-from explain_capture import Build, Explain, Read, Reference, Sql, Write
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from explain_capture import Build, Explain, Read, Reference, Sql, Write  # noqa: E402
 
 PROD = "CDO_DEMO_DB.PROD_STATE_DEMO"
 DEV = "CDO_DEMO_DB.DEV_CLONE_DEMO"

@@ -663,7 +663,7 @@ class Run:
         return env
 
     def read_env(self):
-        """A Read runs without dbt State: no proxy, no State RPC, no metering."""
+        """A Read or Reference runs without dbt State: no proxy, no State RPC, no metering."""
         env = dict(os.environ)
         for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL", "RUN_CACHE_API_SECURE", "PROBE_URL"):
             env.pop(k, None)

@@ -675,11 +675,13 @@ build of the same logic over a dev input with the same row (C) or another row
 (D). Hosted builds all three, and this server copies prod's downstream (keyed
 gaps I28, I36, I44, T34, T45, T57, with their Explains). For C and D's dev
 upstream, this server also reports prod's upstream as an equivalent where
-hosted reports none (field-scoped gaps I34, I42, T39, T51; both build).
+hosted reports none (field-scoped gaps I34, I42, T39, T51, and the Explains
+T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
+(I23, T29, T36), the rendering gap #239 also reports.
 **Correctness finding:** in D the copy
 serves rows computed from prod's input. A native run of the table scenario
 against this server served `v='prod'` where the State-disabled Reference
-execution serves `v='dev'`. Same cause as #239 entry 10. Open for #242 and
+execution serves `v='dev'`. #239 reports the same cause. Open for #242 and
 #243, not an accepted divergence
 ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
 

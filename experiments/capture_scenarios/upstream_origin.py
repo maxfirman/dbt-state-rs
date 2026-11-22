@@ -9,8 +9,8 @@ absent) and confirms; C and D set `pre_clone: never`, so dev builds it.
 
 Outcome (2026-11-21, run 234451b8ea12): only A's downstream was copied; B, C
 and D found no copy source ("there is no other table that the model could be
-cloned from"), so this upstream kind does not separate the cases. Run 2
-(`upstream_origin_table.py`) uses a table upstream.
+cloned from"). Run 2 (`upstream_origin_table.py`) repeats the cases with a
+table upstream, with the same outcome.
 """
 import os
 import sys

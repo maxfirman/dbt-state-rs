@@ -15,7 +15,7 @@ import upstream_origin as uo  # noqa: E402
 
 RUN = "120000abcdef"
 NAMES = {f"o{c}_{k}": f"o{c}_{k}_{RUN}" for c in "abcd" for k in ("in", "up", "dn")}
-P, D = '"CDO_DEMO_DB"."PROD_STATE_DEMO"', '"CDO_DEMO_DB"."DEV_CLONE_DEMO"'
+PROD_SCHEMA, DEV_SCHEMA = '"CDO_DEMO_DB"."PROD_STATE_DEMO"', '"CDO_DEMO_DB"."DEV_CLONE_DEMO"'
 
 
 def rel(schema, logical):
@@ -47,7 +47,7 @@ def register_clone(logical, rid, source):
                "explained_decision": {"decision": 3, "skip_rejection_reason": 5,
                                       "clone_rejection_reason": None, "decision_description": ""}}
     return {"method": "RegisterClone",
-            "request": {"target_table": rel(D, logical), "execution_type": 3,
+            "request": {"target_table": rel(DEV_SCHEMA, logical), "execution_type": 3,
                         "clone_source_table": source, "clone_chain_depth_limit": None,
                         "labels": {"dbt_node_name": NAMES[logical]}},
             "response": {"ready_to_clone": payload}}
@@ -62,27 +62,27 @@ def confirm(rid, failed=False, success=True):
 CLONE = "an equivalent model exists under another name so we cloned that one"
 ROWS = [
     # prod
-    submit(P, "ob_up", 3, "ready_to_execute", "pbu", 1, "did not exist", 6, 6), confirm("pbu"),
-    submit(P, "od_up", 3, "ready_to_execute", "pdu", 1, "did not exist", 6, 6), confirm("pdu"),
-    submit(P, "ob_dn", 1, "ready_to_execute", "pbd", 1, "did not exist", 6, 6), confirm("pbd"),
-    submit(P, "od_dn", 1, "ready_to_execute", "pdd", 1, "did not exist", 6, 6,
-           tables=[(rel(P, "od_up"), 1990)]), confirm("pdd"),
+    submit(PROD_SCHEMA, "ob_up", 3, "ready_to_execute", "pbu", 1, "did not exist", 6, 6), confirm("pbu"),
+    submit(PROD_SCHEMA, "od_up", 3, "ready_to_execute", "pdu", 1, "did not exist", 6, 6), confirm("pdu"),
+    submit(PROD_SCHEMA, "ob_dn", 1, "ready_to_execute", "pbd", 1, "did not exist", 6, 6), confirm("pbd"),
+    submit(PROD_SCHEMA, "od_dn", 1, "ready_to_execute", "pdd", 1, "did not exist", 6, 6,
+           tables=[(rel(PROD_SCHEMA, "od_up"), 1990)]), confirm("pdd"),
     # B first dev round: upstream copied by RegisterClone, then its post-copy SKIP; downstream copied
-    register_clone("ob_up", "rbu", rel(P, "ob_up")), confirm("rbu"),
-    submit(D, "ob_up", 3, "skip_execution", "sbu", 0, "no-op"),
-    submit(D, "ob_dn", 1, "undecided", "spec", 4, "", method="SubmitEnrichedSQLSpeculative"),
-    submit(D, "ob_dn", 1, "ready_to_clone", "dbd", 3, CLONE, 1, source=rel(P, "ob_dn")),
+    register_clone("ob_up", "rbu", rel(PROD_SCHEMA, "ob_up")), confirm("rbu"),
+    submit(DEV_SCHEMA, "ob_up", 3, "skip_execution", "sbu", 0, "no-op"),
+    submit(DEV_SCHEMA, "ob_dn", 1, "undecided", "spec", 4, "", method="SubmitEnrichedSQLSpeculative"),
+    submit(DEV_SCHEMA, "ob_dn", 1, "ready_to_clone", "dbd", 3, CLONE, 1, source=rel(PROD_SCHEMA, "ob_dn")),
     confirm("dbd"),
     # D first dev round: upstream built, downstream copied from prod
-    submit(D, "od_up", 3, "ready_to_execute", "dud", 1, "did not exist", 1, 6), confirm("dud"),
-    submit(D, "od_dn", 1, "ready_to_clone", "ddd", 3, CLONE, 1, source=rel(P, "od_dn"),
-           tables=[(rel(D, "od_up"), 2000)]),
+    submit(DEV_SCHEMA, "od_up", 3, "ready_to_execute", "dud", 1, "did not exist", 1, 6), confirm("dud"),
+    submit(DEV_SCHEMA, "od_dn", 1, "ready_to_clone", "ddd", 3, CLONE, 1, source=rel(PROD_SCHEMA, "od_dn"),
+           tables=[(rel(DEV_SCHEMA, "od_up"), 2000)]),
     confirm("ddd"),
     # next unchanged round
-    submit(D, "ob_up", 3, "skip_execution", "sbu2", 0, "no-op"),
-    submit(D, "ob_dn", 1, "skip_execution", "sbd2", 0, "no-op"),
-    submit(D, "od_up", 3, "skip_execution", "sud2", 0, "no-op"),
-    submit(D, "od_dn", 1, "skip_execution", "sdd2", 0, "no-op"),
+    submit(DEV_SCHEMA, "ob_up", 3, "skip_execution", "sbu2", 0, "no-op"),
+    submit(DEV_SCHEMA, "ob_dn", 1, "skip_execution", "sbd2", 0, "no-op"),
+    submit(DEV_SCHEMA, "od_up", 3, "skip_execution", "sud2", 0, "no-op"),
+    submit(DEV_SCHEMA, "od_dn", 1, "skip_execution", "sdd2", 0, "no-op"),
 ]
 
 
@@ -117,13 +117,13 @@ b, d = rec["b"], rec["d"]
 
 check("the dev upstream's origin is a confirmed RegisterClone copy of prod's (B)",
       (b["dev_upstream"]["origin"], b["dev_upstream"]["copy_source"], b["dev_upstream"]["confirmed"]),
-      ("copied", rel(P, "ob_up"), True))
-check("the dev upstream's origin is an independent confirmed build (D)",
+      ("copied", rel(PROD_SCHEMA, "ob_up"), True))
+check("the dev upstream's origin is an independent confirmed build (DEV_SCHEMA)",
       (d["dev_upstream"]["origin"], d["dev_upstream"]["confirmed"]), ("built", True))
 first = d["dev_downstream"][0]
 check("the first dev downstream decision is an ordinary submit, with its source and codes",
       (first["method"], first["decision"], first["codes"], first["source"]),
-      ("SubmitEnrichedSQL", "CLONE", [1, None], rel(P, "od_dn")))
+      ("SubmitEnrichedSQL", "CLONE", [1, None], rel(PROD_SCHEMA, "od_dn")))
 check("a speculative submit is not the downstream decision",
       [x["method"] for x in b["dev_downstream"]], ["SubmitEnrichedSQL", "SubmitEnrichedSQL"])
 check("the copy permissions are taken from the downstream's own submit",
@@ -137,13 +137,13 @@ check("no pre-copy of the downstream", (b["downstream_register_clones"], d["down
       (0, 0))
 check("each downstream submit's upstream epoch is set against that upstream's confirmed epochs",
       (d["prod_downstream"][0]["upstream_epochs"], first["upstream_epochs"]),
-      ([{"name": rel(P, "od_up"), "submitted": 1990, "confirmed": [2000]}],
-       [{"name": rel(D, "od_up"), "submitted": 2000, "confirmed": [2000]}]))
+      ([{"name": rel(PROD_SCHEMA, "od_up"), "submitted": 1990, "confirmed": [2000]}],
+       [{"name": rel(DEV_SCHEMA, "od_up"), "submitted": 2000, "confirmed": [2000]}]))
 check("served and Reference rows are attributed by phase",
       (d["rows"]["prod"], d["rows"]["served"], d["rows"]["after_next"], d["rows"]["reference"]),
       ([{"ID": 1, "V": "prod"}], [{"ID": 1, "V": "prod"}], [{"ID": 1, "V": "prod"}],
        [{"ID": 1, "V": "dev"}]))
-check("rows that differ from the Reference are a wrong-marker finding (D)", d["wrong_marker"], True)
+check("rows that differ from the Reference are a wrong-marker finding (DEV_SCHEMA)", d["wrong_marker"], True)
 check("rows equal to the Reference are not a finding (B)", b["wrong_marker"], False)
 check("cases absent from the capture are not recorded", sorted(rec), ["b", "d"])
 text = uo.render(rec)

@@ -53,6 +53,11 @@ def _confirms(rows):
     return out
 
 
+def _accepted(conf):
+    """An accepted confirmation that is not a client fallback after a failed copy."""
+    return bool(conf) and conf.get("success") is True and not conf.get("failed_to_clone")
+
+
 def _confirmed_epochs(rows, confirms):
     """Target relation -> the epochs its accepted confirmations recorded, in order."""
     out = {}
@@ -108,16 +113,14 @@ def _upstream(rows, node, confirms):
     granted = next((r for r in copies if variant(r)[0] == "ready_to_clone"), None)
     if granted is not None:
         v, p = variant(granted)
-        conf = confirms.get(p.get("request_id")) or {}
         return {"origin": "copied", "copy_source": p.get("clone_source"),
-                "confirmed": conf.get("success") is True and not conf.get("failed_to_clone"),
+                "confirmed": _accepted(confirms.get(p.get("request_id"))),
                 "register_clone": _decision(granted, confirms), "decisions": decisions}
     first = decisions[0] if decisions else None
     origin = {"ready_to_execute": "built", "ready_to_clone": "copied on submit",
               "skip_execution": "skipped"}.get(first and first["variant"])
-    conf = (first or {}).get("confirm") or {}
     return {"origin": origin, "copy_source": (first or {}).get("source"),
-            "confirmed": conf.get("success") is True and not conf.get("failed_to_clone"),
+            "confirmed": _accepted((first or {}).get("confirm")),
             "register_clone": None, "decisions": decisions}
 
 

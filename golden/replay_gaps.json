@@ -382,43 +382,43 @@
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 28,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case B): the dev upstream is a confirmed RegisterClone copy of prod's (entries 25-26), read in dev_clone_demo. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). Rows agree here: the copy holds prod's upstream rows. Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case B): the dev upstream is a confirmed RegisterClone copy of prod's (entries 25-26), read in dev_clone_demo. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). Rows agree here: the copy holds prod's upstream rows. Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 36,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case C): the dev upstream was built in dev (entry 34) from a dev input holding the same row as prod's input. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). Rows agree only because the inputs hold the same row. Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case C): the dev upstream was built in dev (entry 34) from a dev input holding the same row as prod's input. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). Rows agree only because the inputs hold the same row. Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 44,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case D): the dev upstream was built in dev (entry 42) from a dev input holding v='dev' where prod's holds v='prod'. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). CORRECTNESS FINDING: the local copy serves prod's 'prod' row where hosted and the State-disabled Reference execution serve 'dev' (wrong marker). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 1, merge-incremental upstream, case D): the dev upstream was built in dev (entry 42) from a dev input holding v='dev' where prod's holds v='prod'. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). CORRECTNESS FINDING (deduced; run 1 has no native rehearsal): the local copy would serve prod's 'prod' row where hosted and the State-disabled Reference execution serve 'dev' (wrong marker); the run 2 rehearsal observed it (entry 57). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 34,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case B): the dev upstream is a confirmed submit-time copy of prod's (entries 32-33), read in dev_clone_demo. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). Rows agree here (native rehearsal: served 'prod', Reference 'prod'). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case B): the dev upstream is a confirmed submit-time copy of prod's (entries 32-33), read in dev_clone_demo. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). Rows agree here (native rehearsal: served 'prod', Reference 'prod'). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 45,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case C): the dev upstream was built in dev without copy permission (entry 39) from a dev input holding the same row as prod's input. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). Rows agree only because the inputs hold the same row (native rehearsal: served 'same', Reference 'same'). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case C): the dev upstream was built in dev without copy permission (entry 39) from a dev input holding the same row as prod's input. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). Rows agree only because the inputs hold the same row (native rehearsal: served 'same', Reference 'same'). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 57,
     "local_variant": "ready_to_clone",
-    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case D): the dev upstream was built in dev without copy permission (entry 51) from a dev input holding v='dev' where prod's holds v='prod'. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 found the same local behaviour for a source in the environment pattern). CORRECTNESS FINDING: the native rehearsal against this server served 'prod' where hosted and the State-disabled Reference execution serve 'dev' (wrong marker). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN DIVERGENCE (#237 run 2, table upstream, case D): the dev upstream was built in dev without copy permission (entry 51) from a dev input holding v='dev' where prod's holds v='prod'. Hosted finds no copy source for the absent FULL dev downstream ('there is no other table that the model could be cloned from') and builds; this server copies prod's downstream (#239 reports the same local behaviour for a source whose upstream sits in its own Target's schema). CORRECTNESS FINDING: the native rehearsal against this server served 'prod' where hosted and the State-disabled Reference execution serve 'dev' (wrong marker). Open for #242/#243, not an accepted divergence. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 23,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 21 (#237, case A): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the same open Snowflake rendering gap as copy_source_choice.jsonl entry 3 (#239). See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 21 (#237, case A): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the open Snowflake rendering gap #239 also reports. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_incremental.jsonl",
@@ -460,7 +460,7 @@
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 34,
     "local_variant": "ready_to_execute",
-    "reason": "OPEN DIVERGENCE (#237, case C (run 1)): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). Both build. The environment-pattern candidate is the one #239 entry 10 describes. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
+    "reason": "OPEN DIVERGENCE (#237, case C (run 1)): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). Both build. #239 reports the same candidate: an upstream in its own Target's schema. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason"
     ]
@@ -469,7 +469,7 @@
     "fixture": "explain_upstream_origin_incremental.jsonl",
     "entry": 42,
     "local_variant": "ready_to_execute",
-    "reason": "OPEN DIVERGENCE (#237, case D (run 1)): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). Both build. The environment-pattern candidate is the one #239 entry 10 describes. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
+    "reason": "OPEN DIVERGENCE (#237, case D (run 1)): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). Both build. #239 reports the same candidate: an upstream in its own Target's schema. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason"
     ]
@@ -478,13 +478,13 @@
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 29,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 27 (#237, case A): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the same open Snowflake rendering gap as copy_source_choice.jsonl entry 3 (#239). See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 27 (#237, case A): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the open Snowflake rendering gap #239 also reports. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 36,
     "local_variant": "explain",
-    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 32 (#237, case B, the dev upstream copied on submit): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the same open Snowflake rendering gap as copy_source_choice.jsonl entry 3 (#239). See docs/reports/snowflake-upstream-origin-2026-11-22.md."
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 32 (#237, case B, the dev upstream copied on submit): both copy prod's downstream, which read the submit's upstream relation at the epoch the submit reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies), the open Snowflake rendering gap #239 also reports. See docs/reports/snowflake-upstream-origin-2026-11-22.md."
   },
   {
     "fixture": "explain_upstream_origin_table.jsonl",
@@ -526,7 +526,7 @@
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 39,
     "local_variant": "ready_to_execute",
-    "reason": "OPEN DIVERGENCE (#237, case C (run 2), built on dev_noclone): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6, \"model was executed because its table did not exist\"); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). With allow_clones: false it answers 1 / 10, \"model was executed because cloning is disabled\". Both build. The environment-pattern candidate is the one #239 entry 10 describes. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
+    "reason": "OPEN DIVERGENCE (#237, case C (run 2), built on dev_noclone): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6, \"model was executed because its table did not exist\"); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). With allow_clones: false it answers 1 / 10, \"model was executed because cloning is disabled\". Both build. #239 reports the same candidate: an upstream in its own Target's schema. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
     "ignore_fields": [
       "explained_decision.decision_description",
       "explained_decision.skip_rejection_reason",
@@ -537,7 +537,7 @@
     "fixture": "explain_upstream_origin_table.jsonl",
     "entry": 51,
     "local_variant": "ready_to_execute",
-    "reason": "OPEN DIVERGENCE (#237, case D (run 2), built on dev_noclone): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6, \"model was executed because its table did not exist\"); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). With allow_clones: false it answers 1 / 10, \"model was executed because cloning is disabled\". Both build. The environment-pattern candidate is the one #239 entry 10 describes. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
+    "reason": "OPEN DIVERGENCE (#237, case D (run 2), built on dev_noclone): the dev upstream reads its input in dev_clone_demo, prod's upstream read it in prod_state_demo, so the SQL matches once schemas are abstracted. Hosted reports no equivalent (6 / 6, \"model was executed because its table did not exist\"); this server finds prod's upstream as an equivalent under another name (skip_rejection_reason 1, TARGET_TABLE_MISMATCH). With allow_clones: false it answers 1 / 10, \"model was executed because cloning is disabled\". Both build. #239 reports the same candidate: an upstream in its own Target's schema. See docs/reports/snowflake-upstream-origin-2026-11-22.md.",
     "ignore_fields": [
       "explained_decision.decision_description",
       "explained_decision.skip_rejection_reason",

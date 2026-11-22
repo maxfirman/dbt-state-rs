@@ -25,12 +25,12 @@ code. The comparison with Databricks (#238) and any policy change belong to
   downstream in B, C and D in both runs. In D that serves the prod marker:
   replaying run 2 natively against this server (dbt 2.0.11, Snowflake)
   served `v='prod'` where the Reference execution serves `v='dev'`. This is
-  the dev-input case #236 user story 2 describes, and it matches the #239
-  finding that this server copies a source in the environment pattern that
-  hosted does not consider
-  ([copy source choice](snowflake-copy-source-choice-2026-11-21.md), entry 10).
-  Keyed as open gaps, not accepted divergences, for policy review in #242 and
-  #243.
+  the dev-input case #236 user story 2 describes. The #239 crafted histories
+  report the same local behaviour: this server copies a source whose upstream
+  sits in its own Target's schema, which hosted does not consider. Keyed as
+  open gaps, not accepted divergences, for policy review in #242 and #243.
+  This finding rests on the rehearsal's warehouse reads, which are kept out
+  of the tree (see Provenance).
 
 ## Provenance
 
@@ -57,9 +57,11 @@ code. The comparison with Databricks (#238) and any policy change belong to
   added to the local `~/.dbt/profiles.yml` for this run.
 - Raw windows, dbt logs, `reads.json` and the per-case records
   (`run*.record.{txt,json}`) are out of the tree at
-  `~/projects/worktrees/dbt-state-rs/notes-237/`. Everything below is
-  reproducible from the fixtures. The rows come from the State-free `dbt show`
-  reads in `reads.json`.
+  `~/projects/worktrees/dbt-state-rs/notes-237/`. The fixtures hold every
+  request and response quoted below. They hold no warehouse rows: the rows in
+  the Results table come from the State-free `dbt show` reads in each run's
+  `reads.json`, and the Rust rehearsal (its window and reads) is kept only
+  there too. Both are reproduced by rerunning the scenarios (Reproduce).
 
 ## Setup (both runs)
 
@@ -126,20 +128,25 @@ so no copy fell back to a build on the client.
   sent `allow_clones: false` / `clone_chain_depth_limit: 0` and got 6 / 6,
   not 1 / 10 ("cloning is disabled"). A different physical input is not an
   equivalent for hosted. A same-input upstream (B) was copied.
-- **Epochs (Observed).** Each downstream submit listed its upstream with the
-  epoch the warehouse reported. For prod's upstreams, that epoch is earlier
-  than the epoch the client confirmed for the build: by 727–774 ms in run 1
-  and 211–281 ms in run 2. Run 2's B dev
-  downstream (T34) listed the dev upstream at exactly the confirmed copy
-  epoch.
+- **Epochs (Observed).** The upstream epoch a downstream submit lists is
+  sometimes the epoch the client confirmed for the upstream's build and
+  sometimes the warehouse's, a few hundred ms earlier. Prod downstreams
+  listed the warehouse epoch (727–774 ms earlier in run 1, 211–281 ms in run
+  2), and so did A's dev submits (I21, T27), which were copied. The first dev
+  downstream submit listed the confirmed epoch exactly in run 1 B, C and D
+  (I28, I36, I44) and run 2 B (T34), and the warehouse epoch in run 2 C and D
+  (T45, T57, 936 and 201 ms earlier). Every next submit listed the warehouse
+  epoch. Since hosted refused under both epoch sources and copied under the
+  warehouse epoch, the epoch source does not explain the refusals.
 
 ## Inferred
 
 - Hosted's 2.0.11 submit-copy search does not count a dev upstream as prod's
   upstream, whether it is a confirmed copy (B) or an independent build of the
-  same logic (C, D). The candidate must have read the physical upstream the
-  submit reads. Only A met that. This agrees with #239, where hosted never
-  copied a source reading another relation of the same name.
+  same logic (C, D). In these runs hosted copied only a candidate that had
+  read the physical upstream the submit reads (A). This agrees with #239,
+  where hosted never copied a source reading another relation of the same
+  name. Older captures contradict this as a general rule (next bullet).
 - Older captures show hosted copying a downstream over a dev-schema upstream:
   `explain_clone_history.jsonl` entry 12 (client 2.0.6, 2026-11-08, upstream
   copied on submit), `clone_fallback_zero_tolerance.jsonl` entry 2
@@ -150,10 +157,11 @@ so no copy fell back to a build on the client.
   2026-11-10. The question is open; see
   [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).
 - This server's copy of D serves rows computed from prod's input. The cause
-  is the same as for #239 entry 10. `submit_decision/copy_search.rs` takes an
-  equivalent in another environment, the schema-abstracted logic identity
-  holds, and nothing ties the candidate's recorded upstream read to the
-  physical upstream the submit reads.
+  is the one #239 reports for its middle source.
+  `submit_decision/copy_search.rs` takes an equivalent recorded under another
+  Target, the schema-abstracted logic identity holds, and nothing ties the
+  candidate's recorded upstream read to the physical upstream the submit
+  reads.
 
 ## Replay
 
@@ -161,21 +169,24 @@ Both fixtures replay in `conformance.rs`. 27 keyed open gaps
 (`golden/replay_gaps.json`) cover the differences; everything else matches
 exactly.
 
-- **Decision (6):** I28, I36, I44, T34, T45 and T57. At each, hosted builds
+- **Decision (6, with 12 Explains):** I28, I36, I44, T34, T45 and T57. At each, hosted builds
   and this server copies prod's downstream. The hosted confirmation and the
   next SKIP after each have no local counterpart and are not compared (six
   unknown baselines per fixture). Their Explains (I31, I39, I47, I57, I63,
   I69; T37, T48, T60, T70, T76, T82) each explain the other side's decision.
-- **Upstream rejection codes (4, field-scoped):** I34 and I42 (C and D's dev
-  upstream, run 1), T39 and T51 (the same, built on `dev_noclone`). Hosted
-  reports no equivalent (6 / 6). This server finds prod's upstream, which
-  read its input in `prod_state_demo`, as an equivalent under another name
-  (skip reason 1). With `allow_clones: false` it answers 1 / 10, "cloning is
-  disabled", and its Explains (T41, T53) name prod's upstream. Both build.
+- **Upstream rejection codes (4 field-scoped, 2 Explains):** I34 and I42
+  (C and D's dev upstream, run 1), T39 and T51 (the same, built on
+  `dev_noclone`). Hosted reports no equivalent (6 / 6). This server finds
+  prod's upstream, which read its input in `prod_state_demo`, as an
+  equivalent under another name (skip reason 1). With `allow_clones: false`
+  it answers 1 / 10, "cloning is disabled", and its Explains (T41, T53) name
+  prod's upstream. Both build.
 - **Copy trees (3):** I23, T29 (A) and T36 (B's dev upstream). Both copy.
   Hosted lists the upstream `<FRESH>` with "no updates since … last
-  executed"; this server omits the badge and the line. This is the same open
-  Snowflake rendering gap as #239 (`copy_source_choice.jsonl` entry 3).
+  executed"; this server omits the badge and the line. #239 reports the same
+  open Snowflake rendering gap.
+
+6 + 12 + 4 + 2 + 3 = 27.
 
 ## Reproduce
 

@@ -6,10 +6,14 @@ copies, e.g. `explain_clone_history.jsonl`). Cases and steps:
 B's dev upstream reads the shared prod input with prod's SQL, so hosted copies
 it on submit (`ready_to_clone`) and the client confirms the copy. C and D's
 dev upstream is first built on `dev_noclone` (`dev_clone` with
-`allow_clones: false`), so hosted must build it (codes 1 / 10); the
-`dev_clone` round that follows submits it again (expected SKIP over that
-build) and then the downstream. Only those builds use `dev_noclone`; every
-downstream submit carries `dev_clone`'s copy permissions.
+`allow_clones: false`), so hosted cannot copy it; the `dev_clone` round that
+follows submits it again (a SKIP over that build) and then the downstream.
+Only those builds use `dev_noclone`; every downstream submit carries
+`dev_clone`'s copy permissions.
+
+Outcome (2026-11-22, run 000858964de8): hosted built C and D's dev upstream
+with 6 / 6 (no equivalent, not 1 / 10), copied B's on submit, and copied only
+A's downstream. Report: docs/reports/snowflake-upstream-origin-2026-11-22.md.
 """
 import os
 import sys
