@@ -476,18 +476,7 @@ mod tests {
     const TARGET: &str = "c.s.t";
 
     fn first_build() -> Selection {
-        Selection {
-            candidate: None,
-            target_has_prior_build: false,
-            why_no_candidate: None,
-            rejected: None,
-            unqualified: None,
-            unmatched: None,
-            type_changed: None,
-            transition_display: None,
-            rerun_evidence: crate::reuse_candidate::RerunEvidence::Unverified,
-            producer_revision: None,
-        }
+        Selection::FIRST_BUILD
     }
 
     /// A Databricks literal submit: the scope every query diagnostic needs.

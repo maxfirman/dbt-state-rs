@@ -78,19 +78,14 @@ impl Selection {
         Selection {
             candidate: Some(row),
             target_has_prior_build: true,
-            why_no_candidate: None,
-            rejected: None,
-            unqualified: None,
-            unmatched: None,
-            type_changed: None,
-            transition_display: None,
-            rerun_evidence: RerunEvidence::Unverified,
-            producer_revision: None,
+            ..Selection::FIRST_BUILD
         }
     }
 
-    /// No confirmed build of the target exists in scope.
-    const FIRST_BUILD: Selection = Selection {
+    /// No confirmed build of the target exists in scope: nothing selected
+    /// and nothing established. Every other selection starts from it, so a
+    /// new field is set here once.
+    pub(crate) const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
         why_no_candidate: None,
@@ -149,9 +144,7 @@ impl Selection {
             unqualified,
             unmatched,
             type_changed,
-            transition_display: None,
-            rerun_evidence: RerunEvidence::Unverified,
-            producer_revision: None,
+            ..Selection::FIRST_BUILD
         }
     }
 

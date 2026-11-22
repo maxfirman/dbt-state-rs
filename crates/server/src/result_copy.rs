@@ -1848,13 +1848,7 @@ mod tests {
             candidate,
             target_has_prior_build: why_no_candidate.is_some(),
             why_no_candidate,
-            rejected: None,
-            unqualified: None,
-            unmatched: None,
-            type_changed: None,
-            transition_display: None,
-            rerun_evidence: crate::reuse_candidate::RerunEvidence::Unverified,
-            producer_revision: None,
+            ..Selection::FIRST_BUILD
         }
     }
 
