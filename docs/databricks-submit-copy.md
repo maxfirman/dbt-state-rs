@@ -47,6 +47,11 @@ Every genuine input must retain its exact positive epoch and matching complete
 NoBuild or recorded Build producer. Unknown/changed producers, missing epochs,
 pending/newer source writes and source copies prevent a grant.
 
+Hosted selected the oldest fresh source even with a newer stale source and a
+middle source reading a different input. When two sources read the same current
+input, exchanging their physical completion epochs changed the winner. Reversing
+confirmation order preserved it. [Nine crafted histories and their grants](reports/databricks-copy-candidates-2026-11-21.md)
+
 Ordinary source writes persist a separate versioned `analyzed_copy_proof` with
 identity, physical/dependency bindings and checked effect domain. Automatic FULL
 identity wraps that proof in `databricks-submit-copy-v2`; it never reinterprets
