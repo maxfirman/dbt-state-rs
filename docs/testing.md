@@ -22,6 +22,7 @@ python3 experiments/trace_validate_test.py               # warehouse-free experi
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
 python3 experiments/data_test_history_test.py            # #200 echo attribution and crafted probe plans
+python3 experiments/copy_source_choice_test.py           # #239 copy source choice plan and capture table
 python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
 python3 experiments/databricks_isolation_test.py         # offline concurrent campaign ownership/physical-peer gates
 python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates
@@ -285,8 +286,9 @@ differs only in its runtime values needs no gap. The only Volatile evaluation
 gap is `explain_volatile_cells.jsonl` entry 146, a field-scoped
 `execution_runtime_ms` gap keyed to #200 (maintainer decision 2 on #201,
 [correctness-handoff.md](correctness-handoff.md#known-divergences)). A
-field-scoped gap can also cover a submit `ready_to_clone` payload (#202
-entry 207 had one until #207).
+field-scoped gap can also cover a submit `ready_to_clone` payload when
+both sides copy from different sources (`copy_source_choice.jsonl` entries
+20 and 26, #239; #202 entry 207 had one until #207).
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the
