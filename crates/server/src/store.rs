@@ -221,6 +221,20 @@ impl ExecutionRow {
         .unwrap_or_else(|| format!("execution:{}", self.id))
     }
 
+    /// Whether this is an ordinary build (no copy origin) of
+    /// `execution_type`.
+    pub(crate) fn is_ordinary_build_of(&self, execution_type: i32) -> bool {
+        self.execution_type == execution_type && crate::copy_lifecycle::ordinary(self)
+    }
+
+    /// How this row's build epoch orders against `epoch`; `None` when either
+    /// is unknown, which orders nothing.
+    pub(crate) fn built_relative_to(&self, epoch: Option<i64>) -> Option<std::cmp::Ordering> {
+        self.last_modified_epoch
+            .zip(epoch)
+            .map(|(built, other)| built.cmp(&other))
+    }
+
     pub(crate) fn retained_producer_revision(&self, rendered_hash: Option<&str>) -> Option<i64> {
         if self.node_sql_hash.as_deref() == rendered_hash && crate::copy_lifecycle::ordinary(self) {
             self.producer_revision

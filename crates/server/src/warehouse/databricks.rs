@@ -292,8 +292,7 @@ impl ChangedRerun<'_> {
     pub(crate) fn judge(&self, built: Option<&crate::store::ExecutionRow>) -> JudgedRerun {
         use crate::reuse_candidate::RerunEvidence;
         let built = built.filter(|row| {
-            row.execution_type == crate::query_cache::ModelExecutionType::Full as i32
-                && crate::copy_lifecycle::ordinary(row)
+            row.is_ordinary_build_of(crate::query_cache::ModelExecutionType::Full as i32)
         });
         let accounts_for_recorded = built.is_some_and(|row| {
             crate::store::Producer::of(Some(row), self.recorded.last_modified_epoch)
@@ -301,10 +300,8 @@ impl ChangedRerun<'_> {
         });
         let modified_since_recorded_build = built.is_some_and(|row| {
             row.last_modified_epoch == self.recorded.last_modified_epoch
-                && row
-                    .last_modified_epoch
-                    .zip(self.current.last_modified_epoch)
-                    .is_some_and(|(built, observed)| built < observed)
+                && row.built_relative_to(self.current.last_modified_epoch)
+                    == Some(std::cmp::Ordering::Less)
         });
         match self.rerun {
             RerunEvidence::InputModifiedExternally

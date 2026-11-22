@@ -490,11 +490,10 @@ async fn retain_recorded_producer_revisions(
             .get(&BatchScope::of(e))
             .and_then(|builds| builds.get(&e.target_table))
             .filter(|build| {
-                build.execution_type == e.execution_type
+                build.is_ordinary_build_of(e.execution_type)
                     && build
-                        .last_modified_epoch
-                        .zip(outcome.last_modified_epoch)
-                        .is_some_and(|(previous, recorded)| previous <= recorded)
+                        .built_relative_to(outcome.last_modified_epoch)
+                        .is_some_and(std::cmp::Ordering::is_le)
             })
             .and_then(|build| build.retained_producer_revision(e.node_sql_hash.as_deref()));
     }
