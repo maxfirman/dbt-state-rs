@@ -400,8 +400,8 @@ server keeps the conservative behavior described.
   #239 covers part of the second question with crafted histories: after
   passing over a stale same-upstream source, hosted copied an older fresh
   one and never a source reading another relation in a fixed third schema;
-  a source in the environment pattern (each upstream in its reader's own
-  schema) was not among the candidates
+  a source whose upstream is in its own Target's schema, as a dbt `ref`
+  resolves it, was not among the candidates
   ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 - **Seed copy, uncaptured cases (#91).** A seed whose target forbids copies
   with `clone_chain_depth_limit: 0` alone (client 2.0.11 sends it only with
@@ -663,24 +663,27 @@ in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
 test that pins each.
 
 **Open — copy source choice among competing sources (#239, crafted,
-2026-11-21).** `copy_source_choice.jsonl` crafts twelve Snowflake histories
+2026-11-21).** `copy_source_choice.jsonl` crafts thirteen Snowflake histories
 in which an absent FULL destination could copy a fresh source that read its
 upstream relation (`old`), a source whose SQL matches once schemas are
 abstracted but reads another relation of the same name (`mid`), and a stale
 source that read the upstream before its change (`new`). Hosted copies `old`
 in every history that has it, whatever the completion and confirmation
-order, and builds when `mid` or `new` is alone. This server agrees in seven
-histories. It copies `mid` alone (entry 10), copies `mid` over `old` when
-`mid` completed later (entries 20, 26), and builds when all three compete
-and `mid` completed after `old` (entries 46, 54), because
-`submit_decision/copy_search.rs` copies an equivalent in another environment
-unjudged and stops at one after a freshness rejection. Entry 10 serves a
-result computed from another physical input than the destination reads.
-Why hosted refuses `mid` (logic identity or unprovable freshness) is not
-observable in these histories. Separately, hosted's copy trees list a
-same-input upstream `<FRESH>` with an anchor line that this server renders on
-Databricks only (Explain gaps at entries 3, 7, 33, 39, 61, 67, 75). All are
-open keyed gaps for #242 and #243, not accepted divergences
+order, and builds when `mid` or `new` is alone, also when `mid` read its
+relation at the destination's epoch. This server agrees in seven histories.
+It copies `mid` alone (entries 10, 78), copies `mid` over `old` when `mid`
+completed later (entries 20, 26), and builds when all three compete and
+`mid` completed after `old` (entries 46, 54). `submit_decision/copy_search.rs`
+copies an equivalent whose recorded upstream reads differ from the submit's
+unjudged when it is the first candidate offered, and stops at one after a
+freshness rejection. Entries 10 and 78 serve a result computed from another
+physical input than the destination reads. Why hosted refuses `mid` (logic
+identity, or a requirement that the source read the destination's own
+upstream relations) is not observable in these histories. These decision
+gaps are open for #242 and #243, not accepted divergences. Separately,
+hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
+that this server renders on Databricks only; those Explain gaps (entries 3,
+7, 33, 39, 61, 67, 75) need their own issue
 ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 
 ### Accepted divergences
