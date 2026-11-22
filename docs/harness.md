@@ -310,6 +310,11 @@ offline PR cloud gate. It checks the pinned executable digest and guarded
 complete typed physical results and failed artifacts, and requires clean
 capture certification. The Snowflake runner's guards are unchanged.
 
+The [Databricks upstream-origin experiment](reports/databricks-upstream-origin-2026-11-21.md)
+compares ordinary FULL submits over a shared upstream, a confirmed copy and
+independent builds. Its four captures pair each decision with served rows, a
+State-disabled dev Reference execution and the next unchanged submit.
+
 Commands, evidence and the copy/snapshot blockers are recorded in the
 [2026-11-12 capability report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-capabilities-2026-11-12.md).
 The runner's credential-free guard/comparison tests run under ordinary
