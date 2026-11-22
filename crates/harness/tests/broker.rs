@@ -278,6 +278,31 @@ async fn upstream_tokens_the_broker_cannot_verify_are_refused() {
     assert_eq!(response.status(), 200);
 }
 
+/// Discovered endpoints must use TLS (plain http only on loopback, like
+/// `[upstream] issuer`): the broker never sends a client's credentials to,
+/// or takes keys from, a plaintext endpoint elsewhere.
+#[tokio::test]
+async fn plaintext_discovered_endpoints_are_never_used() {
+    capture_logs();
+    for endpoint in ["token_endpoint", "jwks_uri"] {
+        let idp = FakeIdp::start().await;
+        idp.machine(ci_machine());
+        idp.advertise(endpoint, &format!("http://idp.example.test/{endpoint}"));
+        let server = start_server_with_broker(&deployment(&idp).build()).await;
+        assert_refused(
+            &server,
+            CI,
+            CI_SECRET,
+            503,
+            "temporarily_unavailable",
+            "upstream_unavailable",
+        )
+        .await;
+        assert!(idp.token_requests().is_empty(), "{endpoint}");
+        assert_eq!(idp.jwks_fetches(), 0, "{endpoint}");
+    }
+}
+
 /// Credentials the IdP rejects, or none at all, are `invalid_client`.
 #[tokio::test]
 async fn bad_client_credentials_are_invalid_client() {

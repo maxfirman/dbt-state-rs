@@ -107,7 +107,7 @@ descriptions), logged at `warn` with the reason:
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or has no `sub`; no machine rule matches (`no_matching_rule`, with `missing_claims`) |
 | 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
 | 400 | `invalid_request` | no `grant_type`, a repeated parameter |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded (`upstream_unavailable`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
 subject, client id, scope and lifetime. Secrets and token values are never

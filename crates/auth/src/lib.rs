@@ -12,7 +12,7 @@ mod scope;
 mod token;
 mod upstream;
 
-pub use config::{AuthConfig, ConfigError, TokenLifetimes, UpstreamConfig};
+pub use config::{secure_url, AuthConfig, ConfigError, TokenLifetimes, UpstreamConfig};
 pub use context::{
     AuthenticatedContext, OrganizationRefusal, Rejection, RejectionCode, RequestAuthenticator,
 };

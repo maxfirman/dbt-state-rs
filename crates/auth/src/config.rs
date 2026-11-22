@@ -287,8 +287,16 @@ impl AuthConfig {
         let jwks_url = raw
             .broker
             .jwks_url
-            .map(|url| http_url("broker.jwks_url", url, false))
+            .map(|url| secure_http_url("broker.jwks_url", url))
             .transpose()?;
+        if keys.is_none() && jwks_url.is_none() && !secure_url(&issuer) {
+            return Err(ConfigError::Invalid(
+                "broker.issuer must be an https URL (plain http only on a loopback address) \
+                 without [signing], since the Token broker's keys are fetched from it; or set \
+                 broker.jwks_url"
+                    .into(),
+            ));
+        }
 
         let organizations = raw
             .organizations
@@ -421,43 +429,39 @@ fn load_keys(signing: RawSigning, base: &Path) -> Result<SigningKeys, ConfigErro
     })
 }
 
-/// `url` as the value of `key`: an http(s) URL; with
-/// `https_unless_loopback`, plain http only for a loopback host.
-fn http_url(key: &str, url: String, https_unless_loopback: bool) -> Result<String, ConfigError> {
-    let rest = url
-        .strip_prefix("https://")
-        .map(|rest| (rest, true))
-        .or_else(|| url.strip_prefix("http://").map(|rest| (rest, false)));
-    let valid = match rest {
-        _ if url.chars().any(char::is_whitespace) => false,
-        None => false,
-        Some(("", _)) => false,
-        Some((_, true)) => true,
-        Some((_, false)) if !https_unless_loopback => true,
-        Some((rest, false)) => {
-            let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            let host = match host.rsplit_once(':') {
-                Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
-                _ => host,
-            };
-            matches!(host, "localhost" | "127.0.0.1" | "[::1]")
-        }
+/// Whether credentials may be sent to, or keys fetched from, `url`: an
+/// https URL, or plain http to a loopback host (local development).
+pub fn secure_url(url: &str) -> bool {
+    if url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if let Some(rest) = url.strip_prefix("https://") {
+        return !rest.is_empty();
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
     };
-    if valid {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+}
+
+/// `url` as the value of `key`, if [`secure_url`] accepts it.
+fn secure_http_url(key: &str, url: String) -> Result<String, ConfigError> {
+    if secure_url(&url) {
         Ok(url)
-    } else if https_unless_loopback {
-        Err(ConfigError::Invalid(format!(
-            "{key} must be an https URL (plain http only on a loopback address)"
-        )))
     } else {
         Err(ConfigError::Invalid(format!(
-            "{key} must be an http(s) URL"
+            "{key} must be an https URL (plain http only on a loopback address)"
         )))
     }
 }
 
 fn upstream(raw: RawUpstream) -> Result<UpstreamConfig, ConfigError> {
-    let issuer = http_url("upstream.issuer", raw.issuer, true)?;
+    let issuer = secure_http_url("upstream.issuer", raw.issuer)?;
     if raw.api_audience.trim().is_empty() {
         return Err(ConfigError::Invalid(
             "upstream.api_audience must not be empty".into(),

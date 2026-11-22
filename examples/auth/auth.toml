@@ -7,8 +7,9 @@
 # discovery document is at <issuer>/.well-known/openid-configuration.
 issuer = "https://auth.state.example.com"
 # Optional, for a gRPC server without [signing]: where to fetch the Token
-# broker's keys. Unset, they are found by OIDC discovery at `issuer`.
-# jwks_url = "http://dbt-state-broker.internal:8080/jwks"
+# broker's keys. Unset, they are found by OIDC discovery at `issuer`. Keys
+# are fetched only over https (plain http only on a loopback address).
+# jwks_url = "https://dbt-state-broker.internal/jwks"
 
 [api]
 # The dbt State API audience: the only `aud` the gRPC server accepts.
@@ -46,7 +47,8 @@ id = "finance"
 disabled = true
 
 # The Token broker's Upstream IdP, found by OIDC discovery at
-# <issuer>/.well-known/openid-configuration. Plain http only on loopback.
+# <issuer>/.well-known/openid-configuration. The issuer and the token and
+# JWKS endpoints it publishes must be https (plain http only on loopback).
 [upstream]
 issuer = "https://login.example.com/00000000-0000-0000-0000-000000000000/v2.0"
 # The `aud` an upstream access token must hold. Tokens for any other

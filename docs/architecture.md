@@ -508,7 +508,7 @@ and `DBT_STATE_AUTH_CONFIG`). It makes no request at startup.
 | `token_endpoint.rs` | `POST /token`. `client_credentials`: HTTP Basic forwarded verbatim to the Upstream IdP with `client_credentials_scope`; the access token is checked, `kind = "machine"` rules applied, and `id_token`, `scope`, `token_type`, `expires_in` returned. Token exchange and other grants are `unsupported_grant_type`. Every issue (`info`) and refusal (`warn`) is logged with grant, Principal, subject, client id and reason. |
 | `upstream.rs` | The Upstream IdP: discovered on first use (retried until it succeeds), the `client_credentials` forward, and access-token checks with a key refresh on an unknown key. |
 | `remote_keys.rs` | `RemoteKeys`: a JWKS fetched (from a URL or through discovery) and cached; refetched after `MAX_AGE` (5 min) or on a signature miss, at most once per `MIN_INTERVAL` (30 s); a failed fetch keeps the loaded keys. Used for the Upstream IdP's keys and, by a gRPC server without `[signing]`, the broker's. |
-| `discovery.rs` | OIDC discovery fetch; the document's `issuer` must equal the one asked for. |
+| `discovery.rs` | OIDC discovery fetch; the document's `issuer` must equal the one asked for, and its `token_endpoint` and `jwks_uri` must be https (plain http only on loopback, `dbt_state_auth::secure_url`). |
 | `oauth.rs` | OAuth error responses (RFC 6749 §5.2) with fixed descriptions; `Cache-Control: no-store`. |
 
 ## ui crate

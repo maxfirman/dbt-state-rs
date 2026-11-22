@@ -162,6 +162,8 @@ impl UpstreamTokenRequest {
 #[derive(Default)]
 struct IdpState {
     issuer: String,
+    /// Discovery members that replace the IdP's own.
+    advertised: Map<String, Value>,
     machines: BTreeMap<String, UpstreamMachine>,
     token_requests: Vec<UpstreamTokenRequest>,
     jwks_fetches: usize,
@@ -215,6 +217,17 @@ impl FakeIdp {
         self
     }
 
+    /// Discovery names `url` as its `member` (for example
+    /// `token_endpoint`) instead of the IdP's own endpoint.
+    pub fn advertise(&self, member: &str, url: &str) -> &Self {
+        self.state
+            .lock()
+            .unwrap()
+            .advertised
+            .insert(member.into(), json!(url));
+        self
+    }
+
     /// Every request its token endpoint received, in order.
     pub fn token_requests(&self) -> Vec<UpstreamTokenRequest> {
         self.state.lock().unwrap().token_requests.clone()
@@ -243,8 +256,9 @@ fn router(state: Shared) -> Router {
 type AppState = (Shared, Arc<Keys>);
 
 async fn discovery(State((state, _)): State<AppState>) -> Json<Value> {
-    let issuer = state.lock().unwrap().issuer.clone();
-    Json(json!({
+    let state = state.lock().unwrap();
+    let issuer = state.issuer.clone();
+    let mut discovery = json!({
         "issuer": issuer,
         "token_endpoint": format!("{issuer}/token"),
         "jwks_uri": format!("{issuer}/jwks"),
@@ -253,7 +267,11 @@ async fn discovery(State((state, _)): State<AppState>) -> Json<Value> {
         "id_token_signing_alg_values_supported": ["RS256"],
         "grant_types_supported": ["client_credentials"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic"],
-    }))
+    });
+    for (member, value) in &state.advertised {
+        discovery[member] = value.clone();
+    }
+    Json(discovery)
 }
 
 async fn jwks(State((state, keys)): State<AppState>) -> Json<Value> {

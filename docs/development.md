@@ -88,7 +88,8 @@ DBT_STATE_AUTH_CONFIG=auth.toml DBT_STATE_BROKER_LISTEN=127.0.0.1:8080 \
 
 A gRPC server whose auth config has no `[signing]` then checks tokens
 against that broker's published keys: fetched from `broker.jwks_url`, or by
-OIDC discovery at `broker.issuer`, and cached (refetched after 5 minutes, or
+OIDC discovery at `broker.issuer` (https, or plain http only on loopback),
+and cached (refetched after 5 minutes, or
 when a token's key is unknown, at most every 30 s).
 
 A CI machine authenticates with its Upstream IdP app registration: point the

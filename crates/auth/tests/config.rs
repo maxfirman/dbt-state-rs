@@ -327,6 +327,46 @@ fn signing_keys_are_optional() {
     assert!(config.upstream().is_none());
 }
 
+/// Without `[signing]`, the gRPC server fetches the Token broker's keys, so
+/// where it fetches them must use TLS (plain http only on loopback).
+#[test]
+fn fetched_keys_need_a_secure_location() {
+    let text = config_text("[[organizations]]\nid = \"analytics\"\n", "");
+    let start = text.find("[signing]").unwrap();
+    let end = text.find("[[organizations]]").unwrap();
+    let mut unsigned = text.clone();
+    unsigned.replace_range(start..end, "");
+    let issuer = "issuer = \"https://broker.example.test\"";
+    let cases = [
+        (unsigned.replace(issuer, "issuer = \"http://broker.example.test\""), "broker.issuer"),
+        (
+            unsigned.replace(
+                issuer,
+                "issuer = \"https://broker.example.test\"\njwks_url = \"http://broker.internal/jwks\"",
+            ),
+            "broker.jwks_url",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load(&text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+    }
+    for allowed in [
+        unsigned.replace(issuer, "issuer = \"http://127.0.0.1:8080\""),
+        unsigned.replace(
+            issuer,
+            "issuer = \"http://broker.example.test\"\njwks_url = \"https://broker.internal/jwks\"",
+        ),
+        // With [signing] nothing is fetched, so the issuer is only a name.
+        text.replace(issuer, "issuer = \"http://broker.example.test\""),
+    ] {
+        load(&allowed).unwrap_or_else(|error| panic!("{error}\n{allowed}"));
+    }
+}
+
 /// Each refusal of an `[upstream]` or `[[rules]]` mistake names it.
 #[test]
 fn invalid_upstream_and_rules_are_refused() {
