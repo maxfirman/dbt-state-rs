@@ -202,13 +202,15 @@ async fn assert_refused(response: reqwest::Response, status: u16, error: &str, r
 }
 
 /// A refresh token is used up by the renewal it starts. Presenting it again
-/// is a replay: it revokes the whole session, so the token that renewal
-/// returned stops working too.
+/// once its 60 s grace window has passed (`shared_logins.rs`) is a replay:
+/// it revokes the whole session, so the token that renewal returned stops
+/// working too.
 #[tokio::test]
 async fn a_rotated_refresh_token_presented_again_revokes_the_session() {
     capture_logs();
     let idp = FakeIdp::start().await;
     let server = start_server_with_broker(&deployment(&idp).build()).await;
+    idp.follow(&server.broker_clock);
     let login = signed_in(&server, &idp, alice()).await;
     let session = claims(field(&login, "id_token"))["sid"]
         .as_str()
@@ -216,6 +218,7 @@ async fn a_rotated_refresh_token_presented_again_revokes_the_session() {
         .to_owned();
     let renewed = json(renew(&server, field(&login, "refresh_token")).await).await;
 
+    server.broker_clock.advance(Duration::from_secs(60));
     let replay = renew(&server, field(&login, "refresh_token")).await;
     assert_refused(
         replay,

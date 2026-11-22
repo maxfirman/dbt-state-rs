@@ -150,8 +150,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
   standalone broker on its own migrated schema whose issuer is its own URL
   (`TestBroker::url()`, `.auth`, `.clock`), and
-  `start_broker_beside(&broker, builder)` another one on the same schema (a
-  replica, or the deployment restarted with another config). `server.broker_clock` (a
+  `start_broker_beside(&broker, builder)` another one on the same schema and
+  clock (a replica, or the deployment restarted with another config;
+  `tests/shared_logins.rs` renews through two replicas). `server.broker_clock` (a
   `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
   codes, pending logins and sessions; the gRPC server's person session
   check reads the same clock, so advancing it ages cached session statuses
@@ -211,7 +212,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   the refresh token, and `/userinfo` answers for a person's access token:
   `idp.update(person)` changes a person's claims, `idp.disable(sub)` /
   `idp.enable(sub)` a person, `idp.fail_refresh(status, error)` /
-  `idp.restore_refresh()` every refresh; `UpstreamPerson`
+  `idp.restore_refresh()` every refresh, `idp.delay_refresh(d)` slows every
+  refresh answer by `d` (a renewal then holds its session's row lock that
+  long); `UpstreamPerson`
   `.without_refresh_id_token()`, `.without_refresh_access_token()`,
   `.keeps_refresh_token()`, `.renewed_as(sub)` and `.userinfo_without(claim)`
   shape renewal, and `idp.follow(&server.broker_clock)` issues person tokens
@@ -233,7 +236,8 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
   client's loopback handler (`Landing::Loopback(query)`) or a page
   (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`, and
-  renewal in `tests/person_renewal.rs`.
+  renewal in `tests/person_renewal.rs` and, across replicas,
+  `tests/shared_logins.rs`.
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions,
   `decisions(&server, n)` the `node_decisions` rows once `n` are captured,

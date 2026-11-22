@@ -305,24 +305,29 @@ impl TestBroker {
 pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
     let database = TestDatabase::new("broker").await;
     database.migrate().await;
-    start_broker_on(std::sync::Arc::new(database), auth)
+    start_broker_on(std::sync::Arc::new(database), TestClock::default(), auth)
 }
 
-/// Start another standalone Token broker on `other`'s database, with the
-/// config `auth` builds and its own URL as issuer: another replica of the
-/// deployment, or the deployment restarted with a changed config.
+/// Start another standalone Token broker on `other`'s database and clock,
+/// with the config `auth` builds and its own URL as issuer: another replica
+/// of the deployment, or the deployment restarted with a changed config.
+/// Advancing either broker's clock advances both.
 pub fn start_broker_beside(other: &TestBroker, auth: super::oidc::TestAuthBuilder) -> TestBroker {
-    start_broker_on(std::sync::Arc::clone(&other.database), auth)
+    start_broker_on(
+        std::sync::Arc::clone(&other.database),
+        other.clock.clone(),
+        auth,
+    )
 }
 
 fn start_broker_on(
     database: std::sync::Arc<TestDatabase>,
+    clock: TestClock,
     auth: super::oidc::TestAuthBuilder,
 ) -> TestBroker {
     let listener = super::http::HttpServer::bind();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let auth = auth.issuer(&url).build();
-    let clock = TestClock::default();
     let (config, broker_clock) = (auth.config().clone(), clock.broker_clock());
     let pool = database.lazy_pool_factory();
     let server = super::http::HttpServer::start(listener, move || {

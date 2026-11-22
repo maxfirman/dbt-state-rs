@@ -130,10 +130,15 @@ pub(crate) struct RenewingSession {
     pub upstream_issuer: String,
     pub upstream_subject: String,
     pub client_id: String,
+    /// The grant of the last upstream evidence.
+    pub scope: String,
     /// The last email and name, for display.
     pub email: Option<String>,
     pub name: Option<String>,
     pub sealed_upstream_refresh_token: Vec<u8>,
+    /// When the upstream evidence was last renewed (at sign-in, then at
+    /// each renewal that asked the Upstream IdP).
+    pub upstream_renewed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -148,7 +153,7 @@ pub(crate) struct PresentedToken {
 
 /// One renewal of a person session: a transaction holding the session's
 /// row lock (`FOR UPDATE`), so renewals of one session serialize across
-/// replicas. It ends with exactly one of [`Self::renew`],
+/// replicas. It ends with exactly one of [`Self::renew`], [`Self::reissue`],
 /// [`Self::end_session`] or [`Self::keep_upstream_refresh_token`], each of
 /// which commits; dropping it rolls back and changes nothing.
 pub(crate) struct Renewal {
@@ -172,25 +177,13 @@ pub(crate) struct Renewed<'a> {
 }
 
 impl Renewal {
-    /// Record the renewal: the presented token is rotated, the next one
-    /// joins the family, the session takes the fresh evidence (scope,
-    /// email, name, renewal time and any rotated upstream refresh token),
-    /// and the Principal's record is refreshed.
+    /// Record the renewal: the presented token is rotated (one already
+    /// rotated keeps its first rotation time, which its grace window runs
+    /// from), the next one joins the family, the session takes the fresh
+    /// evidence (scope, email, name, renewal time and any rotated upstream
+    /// refresh token), and the Principal's record is refreshed.
     pub(crate) async fn renew(mut self, renewed: &Renewed<'_>) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE broker_refresh_tokens SET rotated_at = $2 WHERE token_hash = $1")
-            .bind(&self.presented.hash)
-            .bind(renewed.now)
-            .execute(&mut *self.tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO broker_refresh_tokens (token_hash, session_id, issued_at) \
-             VALUES ($1, $2, $3)",
-        )
-        .bind(renewed.next_token_hash)
-        .bind(self.session.id)
-        .bind(renewed.now)
-        .execute(&mut *self.tx)
-        .await?;
+        self.rotate(renewed.next_token_hash, renewed.now).await?;
         sqlx::query(
             "UPDATE broker_person_sessions SET scope = $2, email = $3, name = $4, \
              upstream_refresh_token = COALESCE($5, upstream_refresh_token), \
@@ -206,6 +199,45 @@ impl Renewal {
         .await?;
         record_principal(&mut *self.tx, renewed.principal).await?;
         self.tx.commit().await
+    }
+
+    /// Record a renewal through the grace window on the session's recent
+    /// evidence: the next refresh token joins the family and nothing else
+    /// changes (the presented token stays rotated as it was).
+    pub(crate) async fn reissue(
+        mut self,
+        next_token_hash: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        self.rotate(next_token_hash, now).await?;
+        self.tx.commit().await
+    }
+
+    /// Rotate the presented token at `now` unless it already was, and add
+    /// the token hashing to `next_token_hash` to the family.
+    async fn rotate(
+        &mut self,
+        next_token_hash: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE broker_refresh_tokens SET rotated_at = $2 \
+             WHERE token_hash = $1 AND rotated_at IS NULL",
+        )
+        .bind(&self.presented.hash)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO broker_refresh_tokens (token_hash, session_id, issued_at) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(next_token_hash)
+        .bind(self.session.id)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
     }
 
     /// End the session: nothing issued in it renews again.
@@ -244,9 +276,11 @@ fn renewing_session(row: &PgRow) -> Result<RenewingSession, sqlx::Error> {
         upstream_issuer: row.try_get("upstream_issuer")?,
         upstream_subject: row.try_get("upstream_subject")?,
         client_id: row.try_get("client_id")?,
+        scope: row.try_get("scope")?,
         email: row.try_get("email")?,
         name: row.try_get("name")?,
         sealed_upstream_refresh_token: row.try_get("upstream_refresh_token")?,
+        upstream_renewed_at: row.try_get("upstream_renewed_at")?,
         expires_at: row.try_get("expires_at")?,
         revoked_at: row.try_get("revoked_at")?,
     })
@@ -445,7 +479,7 @@ impl Store {
         let session_id: Uuid = code.try_get("session_id")?;
         let row = sqlx::query(
             "SELECT id, principal_id, upstream_subject, scope, email, name, expires_at, \
-             revoked_at FROM broker_person_sessions WHERE id = $1",
+             revoked_at FROM broker_person_sessions WHERE id = $1 FOR UPDATE",
         )
         .bind(session_id)
         .fetch_one(&mut *tx)
@@ -472,7 +506,8 @@ impl Store {
     /// Begin renewing the session of the refresh token hashing to
     /// `token_hash`: lock the session's row, then read the token as it is
     /// under that lock (a concurrent renewal of the same session has
-    /// committed or rolled back by then). `None` for an unknown token.
+    /// committed or rolled back by then, and the locked row is its latest
+    /// version). `None` for an unknown token.
     pub(crate) async fn begin_renewal(
         &self,
         token_hash: &[u8],
@@ -488,8 +523,8 @@ impl Store {
             return Ok(None);
         };
         let row = sqlx::query(
-            "SELECT id, principal_id, upstream_issuer, upstream_subject, client_id, email, \
-             name, upstream_refresh_token, expires_at, revoked_at \
+            "SELECT id, principal_id, upstream_issuer, upstream_subject, client_id, scope, \
+             email, name, upstream_refresh_token, upstream_renewed_at, expires_at, revoked_at \
              FROM broker_person_sessions WHERE id = $1 FOR UPDATE",
         )
         .bind(session)
