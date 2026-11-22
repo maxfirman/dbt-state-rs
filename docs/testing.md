@@ -46,7 +46,7 @@ build the `fuzz` feature, so it never contacts the hosted service.
 ## Ordinary SQL Result copy baseline
 
 The [public gRPC regression](../crates/harness/tests/result_copy_baseline.rs)
-runs six isolated histories with a fixed replay clock. Run it before and after
+runs seven isolated histories with a fixed replay clock. Run it before and after
 changing source selection. The command also runs the existing focused tests
 for Snowflake search, Databricks publication and DuckDB copy chains.
 
@@ -56,15 +56,23 @@ cargo test -p dbt-state-harness --test result_copy_baseline \
 ```
 
 The [baseline fixture](../crates/harness/tests/fixtures/result_copy_baseline.jsonl)
-records 49 exchanges from Rust revision `fb142df5fff36dbfce8dd1575cff8f8c60cd3bd3`
-before the #236 extraction. It compares complete protobuf response bodies,
-gRPC statuses and response metadata, pending and confirmed copy provenance,
-recorded inputs and physical outcomes. Response IDs are opaque, and persisted
-source execution IDs resolve to the submit step that minted them. Each history
-is written via SubmitEnrichedSQL and ConfirmExecution against a fresh local
-Postgres schema. Set `DBT_STATE_PRINT_COPY_BASELINE=1` and pass
-`-- --nocapture --test-threads=1` to the baseline test to print each observed
-exchange while still checking it against the fixture.
+records 58 exchanges from before the #236 extraction. The original 49 came
+from revision `fb142df5fff36dbfce8dd1575cff8f8c60cd3bd3`. The nine exchanges
+covering Snowflake's differing-input copy, confirmation and unchanged
+resubmit came from revision `3464e36807c9d4b2745d1aab3768223fb1413e84`.
+That history characterizes the local behavior under policy review in #264.
+
+The replay compares complete protobuf response bodies, gRPC statuses and
+response metadata, pending and confirmed copy provenance, recorded inputs
+and physical outcomes. Response IDs are opaque, and persisted source
+execution IDs resolve to the submit step that minted them. Each test starts
+a server with a fresh local Postgres schema. The two Snowflake search
+histories share a server and schema, with separate Organizations. All
+history writes use SubmitEnrichedSQL and ConfirmExecution.
+
+Set `DBT_STATE_PRINT_COPY_BASELINE=1` and pass `-- --nocapture --test-threads=1`
+to the baseline test to print each observed exchange while still checking it
+against the fixture.
 
 ## Explain tree census
 

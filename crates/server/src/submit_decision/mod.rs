@@ -1247,6 +1247,12 @@ async fn result_copy_fallback(
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(CopyFallback::Ordinary);
     };
+    struct CopySelection {
+        plan: SubmitCopyPlan,
+        source_table: String,
+        judged: copy_search::Judged,
+        publication_source: Option<ExecutionRow>,
+    }
     let mut search = copy_search::CopySearch::new(own);
     let mut chosen = None;
     for candidate in copy_candidates(store, org_id, req, &lookup).await? {
@@ -1306,15 +1312,26 @@ async fn result_copy_fallback(
         };
         let source_table = equivalent.source_table.clone();
         let plan = result_copy::plan_submit(req, equivalent);
-        // Databricks can try an older source when planning fails. The first
-        // qualified lookup source makes the planner's outcome final.
-        if publication_source.is_some() && !matches!(plan, SubmitCopyPlan::Copy(_)) {
+        // Databricks can try an older source when planning yields no copy.
+        // Snowflake and DuckDB use the first qualified source's plan.
+        if requires_checked_source && !matches!(plan, SubmitCopyPlan::Copy(_)) {
             continue;
         }
-        chosen = Some((plan, source_table, judged, publication_source));
+        chosen = Some(CopySelection {
+            plan,
+            source_table,
+            judged,
+            publication_source,
+        });
         break;
     }
-    let Some((plan, source_table, judged, publication_source)) = chosen else {
+    let Some(CopySelection {
+        plan,
+        source_table,
+        judged,
+        publication_source,
+    }) = chosen
+    else {
         return Ok(CopyFallback::Ordinary);
     };
     match plan {

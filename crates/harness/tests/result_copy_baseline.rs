@@ -1,6 +1,7 @@
 //! Complete local gRPC responses and execution evidence before Result copy
-//! selection was consolidated in #236. Histories start in an isolated schema
-//! and all writes go through SubmitEnrichedSQL and ConfirmExecution.
+//! selection was consolidated in #236. Each test starts an isolated schema,
+//! each history has its own Organization, and all writes go through
+//! SubmitEnrichedSQL and ConfirmExecution.
 mod support;
 
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use support::scenario::{
     built_at, duckdb_ctas_at, duckdb_model, environment_model, environment_upstream, into_clone,
     into_execute, into_skip, model, outcome, Outcome, Scenario, Submit,
 };
-use support::{rows, TestServer};
+use support::{normalize_ids, rows, TestServer};
 
 const BASELINE: &str = include_str!("fixtures/result_copy_baseline.jsonl");
 
@@ -145,27 +146,11 @@ impl<'a> History<'a> {
     }
 
     fn record(&mut self, step: &str, method: &str, captured: RpcOutcome, execution: Value) {
-        let mut response = captured.response;
-        // Preserve field presence and every other response field, as in
-        // conformance replay. Successful Confirms also check the actual echo.
-        fn normalize_ids(body: &mut Value) {
-            for key in ["request_id", "execution_decision_id"] {
-                if let Some(id) = body.get_mut(key).filter(|id| id.is_string()) {
-                    *id = json!("<opaque>");
-                }
-            }
-        }
-        normalize_ids(&mut response);
-        if let Some(variants) = response.get_mut("response").and_then(Value::as_object_mut) {
-            for value in variants.values_mut() {
-                normalize_ids(value);
-            }
-        }
         self.events.push(json!({
             "history": self.name,
             "step": step,
             "method": method,
-            "response": response,
+            "response": normalize_ids(captured.response),
             "status": captured.status,
             "response_metadata": captured.response_metadata,
             "execution": execution,
@@ -364,6 +349,47 @@ async fn snowflake_continues_on_stale_and_stops_at_a_different_input() {
     );
     assert_eq!(control.clone_source, "\"DB\".\"PROD\".\"STALE\"");
     into_execute(history.submit("changed input", current()).await);
+    history.assert_baseline();
+}
+
+/// The local #237 differing-input lifecycle tracked for policy review in #264.
+#[tokio::test]
+async fn snowflake_differing_input_copy_and_follow_up() {
+    let server = support::start_server().await;
+    let mut history = History::new(&server, "snowflake-differing-input").await;
+    let upstream = |schema| {
+        environment_model(schema)
+            .target(&environment_upstream(schema))
+            .unique_id("model.p.up")
+            .no_tables()
+            .sql(&format!("select '{schema}' as v"))
+    };
+    let downstream = |schema, epoch| {
+        environment_model(schema)
+            .sql(&format!("select v from DB.{schema}.up"))
+            .upstream(&environment_upstream(schema), epoch)
+    };
+    history
+        .build("prod upstream", upstream("prod"), built_at(500))
+        .await;
+    history
+        .build("dev upstream", upstream("dev"), built_at(600))
+        .await;
+    history
+        .build("prod downstream", downstream("prod", 500), built_at(2_000))
+        .await;
+
+    let dev = downstream("dev", 600);
+    let grant = into_clone(history.submit("dev downstream", dev.clone()).await);
+    assert_eq!(grant.clone_source, "\"DB\".\"PROD\".\"M\"");
+    history
+        .confirm("confirm dev copy", &grant.request_id, built_at(3_000))
+        .await;
+    into_skip(
+        history
+            .submit("unchanged dev downstream", dev.own_epoch(Some(3_000)))
+            .await,
+    );
     history.assert_baseline();
 }
 
