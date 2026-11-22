@@ -34,6 +34,9 @@ pub mod fault;
 /// HTTP test servers on their own thread.
 #[path = "support/http.rs"]
 pub mod http;
+/// Keycloak in Docker as the Upstream IdP (opt-in suite).
+#[path = "support/keycloak.rs"]
+pub mod keycloak;
 /// Raw-SQL legacy, frozen, corrupt and captured State (the only raw writers).
 #[path = "support/legacy.rs"]
 pub mod legacy;

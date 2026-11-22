@@ -772,7 +772,12 @@ local-only and renders no Explain tree.
   when it was renewed within that window, so replicas sharing Postgres
   serve shared logins and retries and the Upstream IdP sees each of its
   refresh tokens at most once; later it is a replay that revokes the
-  session (#224, `crates/harness/tests/shared_logins.rs`). The pinned
+  session (#224, `crates/harness/tests/shared_logins.rs`). Against a real
+  Upstream IdP, Keycloak 26.8.2 in Docker, an opt-in suite signs a person
+  in through Keycloak's login form, denies renewal once Keycloak disables
+  them or drops them from the mapped group, passes `client_credentials`
+  through, and refuses a token for another audience (#227,
+  `crates/harness/tests/keycloak.rs`, CI job `keycloak`). The pinned
   Fusion driver (#223) is still open. The broker registers the UI as its
   own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
   tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`), but the

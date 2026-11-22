@@ -39,6 +39,7 @@ const MIGRATED: &[&str] = &[
     "duckdb_outcomes.rs",
     "explain_anchor.rs",
     "hardening.rs",
+    "keycloak.rs",
     "lag_freshness.rs",
     "lag_policy.rs",
     "offline_regressions.rs",
@@ -54,6 +55,7 @@ const MIGRATED: &[&str] = &[
     "sql_normalization.rs",
     "submit_decision.rs",
     "template_comparison.rs",
+    "ui_client.rs",
     "volatile_evaluation.rs",
     "warehouse_portability.rs",
 ];
