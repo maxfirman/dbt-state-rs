@@ -174,7 +174,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`) and `CI=true`;
   `.run(scenario).await` returns the exit status, output and the driver's
   JSON result. Without `uv` it skips with a message unless
-  `DBT_STATE_REQUIRE_PYTHON_CLIENT` is set, which CI sets. Tests:
+  `DBT_STATE_REQUIRE_PYTHON_CLIENT` is set, which CI sets. The lock pins
+  public PyPI, and `UV_*` variables pass through (for example
+  `UV_NO_CONFIG=1` under a uv config naming another index). Tests:
   `tests/python_client.rs`.
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP

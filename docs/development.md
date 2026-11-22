@@ -12,6 +12,9 @@
   (`scripts/duckdb-ci.sh`) and for the pinned Python client driver that
   `cargo test` runs (`crates/harness/tests/python_client.rs`; it skips
   without `uv` unless `DBT_STATE_REQUIRE_PYTHON_CLIENT=1`, as CI sets).
+  Both `uv.lock` files pin public PyPI. If your uv config names another
+  package index, `--locked` refuses them; run with `UV_NO_CONFIG=1` (the
+  driver passes `UV_*` variables through).
 
 ## Build, lint and test
 
