@@ -1,7 +1,9 @@
 //! The Token broker's Upstream IdP: endpoints found by OIDC discovery, the
 //! `client_credentials` pass-through, the broker's own sign-in as an OIDC
-//! relying party (authorization code flow with PKCE, OIDC Core §3.1), and
-//! checking the tokens the IdP returns against its published keys.
+//! relying party (authorization code flow with PKCE, OIDC Core §3.1), the
+//! renewal of a person's sign-in (refresh, OIDC Core §12, and userinfo,
+//! §5.3), and checking the tokens the IdP returns against its published
+//! keys.
 
 use std::fmt;
 use std::time::SystemTime;
@@ -21,6 +23,7 @@ use crate::remote_keys::{KeyLocation, RemoteKeys};
 struct Endpoints {
     token_endpoint: String,
     authorization_endpoint: Option<String>,
+    userinfo_endpoint: Option<String>,
     keys: RemoteKeys,
     verifier: UpstreamTokenVerifier,
     /// ID tokens for the broker's own client id, when it signs people in.
@@ -69,6 +72,42 @@ impl fmt::Debug for CodeTokens {
             .field("refresh_token", &self.refresh_token.is_some())
             .finish()
     }
+}
+
+/// What the IdP's `refresh_token` grant returned (OIDC Core §12.2): each
+/// part is optional. `Debug` shows no token.
+#[derive(Deserialize)]
+pub(crate) struct RefreshTokens {
+    #[serde(default)]
+    pub id_token: Option<String>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    /// The rotated refresh token, when the IdP rotates; otherwise the
+    /// presented one stays current.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+}
+
+impl fmt::Debug for RefreshTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshTokens")
+            .field("id_token", &self.id_token.is_some())
+            .field("access_token", &self.access_token.is_some())
+            .field("refresh_token", &self.refresh_token.is_some())
+            .finish()
+    }
+}
+
+/// What the IdP's userinfo endpoint said about the holder of an access
+/// token.
+#[derive(Debug)]
+pub(crate) enum Userinfo {
+    Claims(UpstreamClaims),
+    /// Discovery names no userinfo endpoint.
+    NotOffered,
+    /// The answer is not a JSON object (for example a signed JWT, which the
+    /// broker does not accept).
+    Unusable,
 }
 
 /// The broker's authorization request to the IdP (OIDC Core §3.1.2.1).
@@ -120,6 +159,7 @@ impl UpstreamIdp {
                     ))
                 })?;
                 let authorization_endpoint = discovery.authorization_endpoint;
+                let userinfo_endpoint = discovery.userinfo_endpoint;
                 let keys =
                     RemoteKeys::new(KeyLocation::Jwks(discovery.jwks_uri), self.http.clone());
                 if !keys.refresh().await {
@@ -142,6 +182,7 @@ impl UpstreamIdp {
                 Ok(Endpoints {
                     token_endpoint,
                     authorization_endpoint,
+                    userinfo_endpoint,
                     keys,
                     verifier,
                     id_token_verifier,
@@ -213,14 +254,90 @@ impl UpstreamIdp {
         code_verifier: &str,
         now: SystemTime,
     ) -> Result<CodeTokens, UpstreamError> {
-        let login = self.login().expect("browser sign-in is configured");
         let endpoints = self.endpoints().await?;
-        let mut form = vec![
+        let form = vec![
             ("grant_type", "authorization_code".to_owned()),
             ("code", code.to_owned()),
             ("redirect_uri", redirect_uri.to_owned()),
             ("code_verifier", code_verifier.to_owned()),
         ];
+        let body = self.post_as_broker(endpoints, form, now).await?;
+        serde_json::from_slice::<CodeTokens>(&body)
+            .map_err(|_| UpstreamError::Unavailable("the token response is not JSON".into()))
+    }
+
+    /// Renew a person's sign-in with the IdP's `refresh_token` (OIDC Core
+    /// §12.1), authenticating with the broker's own credential. The scope
+    /// is left out, so the IdP keeps the one it granted.
+    pub(crate) async fn refresh(
+        &self,
+        refresh_token: &str,
+        now: SystemTime,
+    ) -> Result<RefreshTokens, UpstreamError> {
+        let endpoints = self.endpoints().await?;
+        let form = vec![
+            ("grant_type", "refresh_token".to_owned()),
+            ("refresh_token", refresh_token.to_owned()),
+        ];
+        let body = self.post_as_broker(endpoints, form, now).await?;
+        serde_json::from_slice::<RefreshTokens>(&body)
+            .map_err(|_| UpstreamError::Unavailable("the token response is not JSON".into()))
+    }
+
+    /// The claims the IdP's userinfo endpoint returns for the holder of
+    /// `access_token` (OIDC Core §5.3). A refusal (any 4xx) is
+    /// [`UpstreamError::Refused`].
+    pub(crate) async fn userinfo(&self, access_token: &str) -> Result<Userinfo, UpstreamError> {
+        let endpoints = self.endpoints().await?;
+        let Some(endpoint) = &endpoints.userinfo_endpoint else {
+            return Ok(Userinfo::NotOffered);
+        };
+        let mut bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|_| UpstreamError::Unavailable("unusable access token".into()))?;
+        bearer.set_sensitive(true);
+        let response = self
+            .http
+            .get(endpoint)
+            .header(reqwest::header::AUTHORIZATION, bearer)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|error| UpstreamError::Unavailable(error.without_url().to_string()))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| UpstreamError::Unavailable(error.without_url().to_string()))?;
+        if status.is_client_error() {
+            let error = serde_json::from_slice::<ErrorResponse>(&body)
+                .ok()
+                .and_then(|body| body.error);
+            return Err(UpstreamError::Refused {
+                status: status.as_u16(),
+                error,
+            });
+        }
+        if !status.is_success() {
+            return Err(UpstreamError::Unavailable(format!(
+                "userinfo: HTTP {status}"
+            )));
+        }
+        Ok(match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(serde_json::Value::Object(claims)) => Userinfo::Claims(UpstreamClaims::new(claims)),
+            _ => Userinfo::Unusable,
+        })
+    }
+
+    /// POST `form` to the IdP's token endpoint, authenticated with the
+    /// broker's own credential: `private_key_jwt`, or HTTP Basic with its
+    /// client secret.
+    async fn post_as_broker(
+        &self,
+        endpoints: &Endpoints,
+        mut form: Vec<(&str, String)>,
+        now: SystemTime,
+    ) -> Result<Vec<u8>, UpstreamError> {
+        let login = self.login().expect("browser sign-in is configured");
         let mut authorization = None;
         match login.credential() {
             UpstreamCredential::ClientSecret(secret) => {
@@ -239,11 +356,8 @@ impl UpstreamIdp {
                 ));
             }
         }
-        let body = self
-            .post_token(&endpoints.token_endpoint, authorization, &form)
-            .await?;
-        serde_json::from_slice::<CodeTokens>(&body)
-            .map_err(|_| UpstreamError::Unavailable("the token response is not JSON".into()))
+        self.post_token(&endpoints.token_endpoint, authorization, &form)
+            .await
     }
 
     /// POST `form` to the IdP's token endpoint; the body of a 2xx answer.
@@ -314,6 +428,22 @@ impl UpstreamIdp {
             verifier.verify_id_token(token, Some(nonce), now)
         })
         .await)
+    }
+
+    /// Check an ID token the IdP returned when refreshing a person's
+    /// sign-in: as at sign-in, for the broker's client id, but with no
+    /// nonce (OIDC Core §12.2).
+    pub(crate) async fn verify_refreshed_id_token(
+        &self,
+        token: &str,
+        now: SystemTime,
+    ) -> Result<Result<UpstreamClaims, UpstreamTokenError>, UpstreamError> {
+        let endpoints = self.endpoints().await?;
+        let verifier = endpoints
+            .id_token_verifier
+            .as_ref()
+            .expect("browser sign-in is configured");
+        Ok(checked(endpoints, || verifier.verify_id_token(token, None, now)).await)
     }
 }
 
