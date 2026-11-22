@@ -1,42 +1,82 @@
 //! Read-only web console for the dbt State server, built with Topcoat.
 //!
 //! Server-rendered, multipage, accessible. Reads the same Postgres the dbt
-//! State server writes to.
+//! State server writes to. In `none` mode it shows one configured
+//! Organization; in `oidc` mode people sign in through the Token broker
+//! and see only their Organizations ([`sign_in`]).
 
 mod app;
 mod db;
 mod lineage;
+mod settings;
+mod sign_in;
 mod view_helpers;
 
-use topcoat::context::app_context;
+use std::sync::Arc;
 
-/// Shared application state: the read pool.
-pub struct Ctx {
-    pub pool: sqlx::PgPool,
-    pub org_id: String,
+use topcoat::context::{Cx, app_context, request_context};
+use topcoat::cookie::RouterBuilderCookieExt;
+
+pub use db::connect;
+pub use dbt_state_broker::Clock;
+pub use settings::Settings;
+
+use settings::Mode;
+use sign_in::{Oidc, Viewer};
+
+/// Shared application state: the read pool and how requests are scoped.
+struct Ctx {
+    pool: sqlx::PgPool,
+    access: Access,
+}
+
+enum Access {
+    /// `none` mode: one Organization; URL ids cannot change it.
+    Organization(String),
+    /// `oidc` mode: the signed-in person's selected Organization.
+    Oidc(Arc<Oidc>),
+}
+
+/// The console's router over `pool`, configured by `settings`. `clock`
+/// decides token, sign-in and session-status ages in `oidc` mode (the
+/// host's clock outside tests).
+pub fn router(
+    pool: sqlx::PgPool,
+    settings: Settings,
+    clock: Clock,
+) -> anyhow::Result<topcoat::router::Router> {
+    let access = match settings.mode {
+        Mode::None { organization } => Access::Organization(organization),
+        Mode::Oidc(oidc) => Access::Oidc(Arc::new(Oidc::new(*oidc, pool.clone(), clock)?)),
+    };
+    Ok(app::router()
+        .cookies()
+        .app_context(Ctx { pool, access })
+        .build())
 }
 
 /// Convenience accessor used by pages.
-pub fn pool(cx: &topcoat::context::Cx) -> &sqlx::PgPool {
+fn pool(cx: &Cx) -> &sqlx::PgPool {
     &app_context::<Ctx>(cx).pool
 }
 
-/// The console is configured for one organization; URL IDs cannot change it.
-pub fn org_id(cx: &topcoat::context::Cx) -> &str {
-    &app_context::<Ctx>(cx).org_id
+/// The Organization every query of this request is scoped to.
+fn org_id(cx: &Cx) -> &str {
+    match &app_context::<Ctx>(cx).access {
+        Access::Organization(id) => id,
+        Access::Oidc(_) => &request_context::<Viewer>(cx).organization,
+    }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+/// `oidc` mode's sign-in, if the console runs it.
+fn oidc(cx: &Cx) -> Option<&Oidc> {
+    match &app_context::<Ctx>(cx).access {
+        Access::Organization(_) => None,
+        Access::Oidc(oidc) => Some(oidc),
+    }
+}
 
-    let pool = db::connect().await?;
-    let org_id = std::env::var("DBT_STATE_UI_ORG_ID").unwrap_or_else(|_| "local".into());
-    let router = app::router().app_context(Ctx { pool, org_id }).build();
-    topcoat::start(router).await?;
-    Ok(())
+/// The signed-in person, in `oidc` mode on a page behind sign-in.
+fn viewer(cx: &Cx) -> Option<&Viewer> {
+    topcoat::context::try_request_context::<Viewer>(cx)
 }
