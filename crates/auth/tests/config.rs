@@ -124,14 +124,18 @@ fn the_example_config_loads() {
     for (file, key) in [
         ("signing-2026-11.pem", "signing-key-1.pem"),
         ("signing-2026-05.pem", "signing-key-2.pem"),
+        ("idp-client.pem", "upstream-rp-key.pem"),
     ] {
         std::fs::copy(testdata(key), dir.path().join("keys").join(file)).unwrap();
     }
+    std::fs::write(dir.path().join("keys/refresh-token.key"), REFRESH_TOKEN_KEY).unwrap();
     let path = dir.path().join("auth.toml");
     std::fs::copy(example, &path).unwrap();
     let config = AuthConfig::load(&path).expect("the example config loads");
     assert!(config.organizations().is_active(&org("analytics")));
     assert!(config.organizations().is_disabled(&org("finance")));
+    let login = config.upstream().unwrap().login().expect("browser sign-in");
+    assert_eq!(login.credential().method(), "private_key_jwt");
 }
 
 /// Each refusal names what is wrong.
@@ -451,4 +455,199 @@ fn invalid_upstream_and_rules_are_refused() {
             ),
     ))
     .expect("a disabled Organization and a loopback http issuer");
+}
+
+/// A base64 refresh-token encryption key file (`openssl rand -base64 32`).
+const REFRESH_TOKEN_KEY: &str = "q1Xh0yEl8M3gVxQq2WwXKk3o2vZc1oV0tGQZbqgT7f4=\n";
+
+/// `[upstream]` with the Token broker's own registration at the IdP, for
+/// browser sign-in, with its secret and key files written next to the
+/// config.
+fn person_login(dir: &Path, extra: &str) -> String {
+    std::fs::write(dir.join("idp-secret"), "rp-secret-9f2\n").unwrap();
+    std::fs::write(dir.join("refresh.key"), REFRESH_TOKEN_KEY).unwrap();
+    config_text(
+        &format!(
+            "[[organizations]]\nid = \"analytics\"\n\n[upstream]\n\
+             issuer = \"https://login.example.test/tenant/v2.0\"\n\
+             api_audience = \"api://dbt-state\"\n\
+             client_id = \"dbt-state-broker\"\n\
+             refresh_token_key_file = \"refresh.key\"\n{extra}"
+        ),
+        "",
+    )
+}
+
+fn load_in(dir: &Path, text: &str) -> Result<AuthConfig, String> {
+    let path = dir.join("auth.toml");
+    std::fs::write(&path, text).unwrap();
+    AuthConfig::load(&path).map_err(|e| e.to_string())
+}
+
+/// Browser sign-in needs the broker's own client id at the Upstream IdP, a
+/// credential from a mounted file, and the refresh-token encryption key.
+/// The dbt client registration defaults to the client's built-in id, and
+/// Principals are identified by `sub` unless configured otherwise.
+#[test]
+fn person_sign_in_settings_load_with_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = load_in(
+        dir.path(),
+        &person_login(dir.path(), "client_secret_file = \"idp-secret\"\n"),
+    )
+    .expect("valid config");
+    // dbt-state==2.62.6 `dbt_state/config.py` CLIENT_ID_DEFAULT and
+    // dbt-fusion@9977b6c `crates/dbt-run-cache/src/service_config.rs`
+    // DEFAULT_OAUTH_CLIENT_ID.
+    assert_eq!(
+        config.dbt_client_id(),
+        "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"
+    );
+    assert_eq!(config.pending_logins_per_ip(), 20);
+    assert_eq!(config.client_ip_header(), None);
+    let upstream = config.upstream().unwrap();
+    assert_eq!(upstream.subject_claim(), "sub");
+    let login = upstream.login().expect("browser sign-in");
+    assert_eq!(login.client_id(), "dbt-state-broker");
+    assert_eq!(login.scope(), "openid offline_access email profile");
+    assert_eq!(login.credential().method(), "client_secret_basic");
+    // The secret never shows in Debug output.
+    assert!(!format!("{config:?}").contains("rp-secret-9f2"));
+
+    let config = load_in(
+        dir.path(),
+        &person_login(
+            dir.path(),
+            &format!(
+                "private_key_file = {}\nprivate_key_id = \"rp-1\"\nsubject_claim = \"oid\"\n\
+                 login_scope = \"openid offline_access groups\"\n\
+                 [clients.dbt]\nclient_id = \"our-dbt\"\n",
+                toml_string(testdata("upstream-rp-key.pem").to_str().unwrap())
+            ),
+        )
+        .replace(
+            "issuer = \"https://broker.example.test\"",
+            "issuer = \"https://broker.example.test\"\nmax_pending_logins_per_ip = 5\n\
+             client_ip_header = \"X-Forwarded-For\"",
+        ),
+    )
+    .expect("valid config");
+    assert_eq!(config.dbt_client_id(), "our-dbt");
+    assert_eq!(config.pending_logins_per_ip(), 5);
+    assert_eq!(config.client_ip_header(), Some("x-forwarded-for"));
+    let upstream = config.upstream().unwrap();
+    assert_eq!(upstream.subject_claim(), "oid");
+    let login = upstream.login().unwrap();
+    assert_eq!(login.scope(), "openid offline_access groups");
+    assert_eq!(login.credential().method(), "private_key_jwt");
+
+    // Machines alone need no browser sign-in settings.
+    let config = load(&config_text(
+        &format!("[[organizations]]\nid = \"analytics\"\n{UPSTREAM}"),
+        "",
+    ))
+    .unwrap();
+    assert!(config.upstream().unwrap().login().is_none());
+}
+
+/// Each refusal of a browser sign-in mistake names it, and never echoes a
+/// secret or key file's contents.
+#[test]
+fn invalid_person_sign_in_settings_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = "client_secret_file = \"idp-secret\"\n";
+    let rp_key = format!(
+        "private_key_file = {}\n",
+        toml_string(testdata("upstream-rp-key.pem").to_str().unwrap())
+    );
+    std::fs::write(dir.path().join("short.key"), "c2hvcnQ=\n").unwrap();
+    std::fs::write(dir.path().join("empty-secret"), "\n").unwrap();
+    let cases: Vec<(String, &str)> = vec![
+        // No credential, or both.
+        (person_login(dir.path(), ""), "client_secret_file"),
+        (
+            person_login(dir.path(), &format!("{secret}{rp_key}")),
+            "private_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("client_id = \"dbt-state-broker\"\n", ""),
+            "client_id",
+        ),
+        (
+            person_login(dir.path(), secret)
+                .replace("refresh_token_key_file = \"refresh.key\"\n", ""),
+            "refresh_token_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("\"refresh.key\"", "\"short.key\""),
+            "refresh_token_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("\"refresh.key\"", "\"missing.key\""),
+            "missing.key",
+        ),
+        (
+            person_login(dir.path(), "client_secret_file = \"empty-secret\"\n"),
+            "client_secret_file",
+        ),
+        (
+            person_login(dir.path(), "client_secret_file = \"no-such-secret\"\n"),
+            "no-such-secret",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &rp_key.replace("upstream-rp-key.pem", "README.md"),
+            ),
+            "README.md",
+        ),
+        (
+            person_login(dir.path(), &format!("{secret}subject_claim = \"\"\n")),
+            "subject_claim",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}login_scope = \"email profile\"\n"),
+            ),
+            "login_scope",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}[clients.dbt]\nclient_id = \"\"\n"),
+            ),
+            "clients.dbt.client_id",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}[clients.ui]\nclient_id = \"ui\"\n"),
+            ),
+            "ui",
+        ),
+        (
+            person_login(dir.path(), secret).replace(
+                "issuer = \"https://broker.example.test\"",
+                "issuer = \"https://broker.example.test\"\nmax_pending_logins_per_ip = 0",
+            ),
+            "max_pending_logins_per_ip",
+        ),
+        (
+            person_login(dir.path(), secret).replace(
+                "issuer = \"https://broker.example.test\"",
+                "issuer = \"https://broker.example.test\"\nclient_ip_header = \"not a header\"",
+            ),
+            "client_ip_header",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load_in(dir.path(), &text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+        assert!(!error.contains("rp-secret-9f2"), "{error}");
+        assert!(!error.contains(REFRESH_TOKEN_KEY.trim()), "{error}");
+    }
 }

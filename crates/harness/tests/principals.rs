@@ -2,9 +2,10 @@
 //! history names the Principal whose request made it, so a security reviewer
 //! can trace who changed State history.
 //!
-//! The Token broker records each Principal it issues a token to, keyed by
-//! the Upstream IdP issuer and subject, with its kind and a display email
-//! when known. Decision and execution rows carry the token's opaque
+//! The Token broker records each Principal it issues a token to (a machine
+//! at `client_credentials`, a person when its browser sign-in starts a
+//! session), keyed by the Upstream IdP issuer and subject, with its kind and
+//! a display email when known. Decision and execution rows carry the token's opaque
 //! Principal id (`sub`), which names that record. `none` mode records no
 //! Principal.
 
@@ -13,9 +14,12 @@ mod support;
 
 use dbt_state_auth::Role;
 use serde_json::json;
-use support::broker_client::{claims, client_credentials, json};
-use support::fake_idp::{FakeIdp, UpstreamMachine};
-use support::oidc::{TestAuth, TestAuthBuilder};
+use support::broker_client::{
+    authorization_code, claims, client_credentials, json, SignIn, LOOPBACK_REDIRECT_URI,
+};
+use support::browser::Browser;
+use support::fake_idp::{FakeIdp, UpstreamMachine, UpstreamPerson};
+use support::oidc::{TestAuth, TestAuthBuilder, ISSUER};
 use support::rows::{self, StoredPrincipal};
 use support::scenario::{
     data_test, into_execute, into_skip, into_speculative_skip, model, outcome, seed, test_results,
@@ -37,16 +41,13 @@ fn ci_machine() -> UpstreamMachine {
     UpstreamMachine::new(CI, CI_SECRET).claim("roles", json!(["dbt-state.ci"]))
 }
 
-/// CI machines with the `dbt-state.ci` app role are developers in
-/// `analytics`.
+/// CI machines with the `dbt-state.ci` app role, and people in the
+/// `data-eng` group, are developers in `analytics`.
 fn deployment(idp: &FakeIdp) -> TestAuthBuilder {
-    TestAuth::builder(ORGANIZATIONS).upstream(idp).rule(
-        "machine",
-        "roles",
-        "dbt-state.ci",
-        "analytics",
-        "developer",
-    )
+    TestAuth::builder(ORGANIZATIONS)
+        .upstream(idp)
+        .rule("machine", "roles", "dbt-state.ci", "analytics", "developer")
+        .rule("person", "groups", "data-eng", "analytics", "developer")
 }
 
 /// The `id_token` the broker at `broker` issues the CI machine.
@@ -121,6 +122,53 @@ async fn a_principal_the_broker_cannot_record_gets_no_token() {
     assert_eq!(body["error"], "temporarily_unavailable");
     assert!(!body.contains_key("id_token"), "{body:?}");
     assert!(rows::principals(&server).await.is_empty());
+}
+
+/// A person signs in through the browser, builds a model and confirms it:
+/// the decision and the execution both name the person's Principal, which
+/// the broker recorded with the email the Upstream IdP gave.
+#[tokio::test]
+async fn a_person_s_decision_and_execution_record_their_principal() {
+    let idp = FakeIdp::start().await;
+    idp.sign_in(UpstreamPerson::new("alice-sub").claim("groups", json!(["data-eng"])));
+    let auth = deployment(&idp).build();
+    let server = start_server_with_broker(&auth).await;
+
+    let sign_in = SignIn::new();
+    let landing = Browser::new()
+        .route(ISSUER, &server.broker_url())
+        .visit(&sign_in.authorize_url(ISSUER), LOOPBACK_REDIRECT_URI)
+        .await
+        .loopback();
+    let code = landing.get("code").expect("a code");
+    let response = authorization_code(&server.broker_url(), &sign_in, code).await;
+    assert_eq!(response.status(), 200);
+    let token = json(response).await["id_token"]
+        .as_str()
+        .expect("an id_token")
+        .to_owned();
+    let principal = claims(&token)["sub"].as_str().unwrap().to_owned();
+    let sc = Scenario::connect(&server)
+        .await
+        .bearer(&token)
+        .org("analytics");
+    let built = into_execute(sc.submit(model(TARGET)).await);
+    assert!(sc.confirm(&built.request_id, outcome().epoch(100)).await);
+
+    assert_eq!(
+        recorded_principals(&server, 1).await,
+        (vec![Some(principal.clone())], vec![Some(principal.clone())])
+    );
+    assert_eq!(
+        rows::principals(&server).await,
+        [StoredPrincipal {
+            id: principal,
+            issuer: idp.issuer(),
+            subject: "alice-sub".into(),
+            kind: "person".into(),
+            email: Some("alice-sub@example.test".into()),
+        }]
+    );
 }
 
 /// Records State history through every RPC that writes it: a build and its

@@ -12,14 +12,17 @@ use serde_json::json;
 pub(crate) enum OAuthError {
     /// The form is malformed or lacks a parameter.
     InvalidRequest,
-    /// Client authentication failed: no HTTP Basic credentials, or the
-    /// Upstream IdP refused them.
+    /// Client authentication failed: no HTTP Basic credentials, the
+    /// Upstream IdP refused them, or an unknown dbt client id.
     InvalidClient,
     /// The client authenticated but gets no dbt State token: the Upstream
     /// IdP refused the grant, its token cannot be trusted, or no mapping
     /// rule grants an Organization.
     UnauthorizedClient,
     UnsupportedGrantType,
+    /// The authorization code is unknown, used, expired, or bound to
+    /// another client, redirect URI or PKCE challenge.
+    InvalidGrant,
     /// dbt platform token exchange (`unsupported_grant_type`, with its own
     /// description).
     TokenExchange,
@@ -42,6 +45,7 @@ impl OAuthError {
             Self::InvalidClient => "invalid_client",
             Self::UnauthorizedClient => "unauthorized_client",
             Self::UnsupportedGrantType | Self::TokenExchange => "unsupported_grant_type",
+            Self::InvalidGrant => "invalid_grant",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
         }
     }
@@ -52,6 +56,9 @@ impl OAuthError {
             Self::InvalidClient => "client authentication failed",
             Self::UnauthorizedClient => "the client is not authorized for dbt State",
             Self::UnsupportedGrantType => "the grant type is not supported",
+            Self::InvalidGrant => {
+                "the authorization code is invalid, expired or already used; sign in again"
+            }
             Self::TokenExchange => {
                 "dbt platform token exchange is not supported; authenticate with a client id \
                  and secret, or sign in through the browser"

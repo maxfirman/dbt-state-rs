@@ -5,17 +5,23 @@
 
 mod config;
 mod context;
+mod credential;
 mod keys;
 mod mapping;
 mod organization;
 mod scope;
+mod sealing;
 mod token;
 mod upstream;
 
-pub use config::{secure_url, AuthConfig, ConfigError, TokenLifetimes, UpstreamConfig};
+pub use config::{
+    secure_url, AuthConfig, ConfigError, TokenLifetimes, UpstreamConfig, UpstreamLogin,
+    DEFAULT_DBT_CLIENT_ID,
+};
 pub use context::{
     AuthenticatedContext, OrganizationRefusal, Rejection, RejectionCode, RequestAuthenticator,
 };
+pub use credential::{ClientAssertionKey, ClientSecret, UpstreamCredential, CLIENT_ASSERTION_TYPE};
 pub use keys::{JwksError, KeyFileError, VerificationKeys};
 pub use mapping::{MappingRule, MappingRules, UpstreamClaims};
 pub use organization::{
@@ -23,6 +29,7 @@ pub use organization::{
     Role, UnknownRole,
 };
 pub use scope::{Scope, ScopeError};
+pub use sealing::{RefreshTokenKey, SealingKeyError};
 pub use token::{
     IssuedToken, PrincipalId, PrincipalKind, TokenError, TokenIssuer, TokenRequest, TokenVerifier,
     VerifiedToken, CLOCK_SKEW,

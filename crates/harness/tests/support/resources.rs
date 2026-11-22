@@ -2,8 +2,10 @@
 
 use std::net::SocketAddr;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dbt_state_server::AppState;
 use sqlx::postgres::PgPoolOptions;
@@ -45,20 +47,8 @@ impl TestDatabase {
     /// Server state over this schema, migrated. Tests that call server modules
     /// directly (without gRPC) use it; the owner must outlive the state.
     pub async fn state(&self, require_org_header: bool) -> AppState {
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .after_connect({
-                let schema = self.schema.clone();
-                move |conn, _meta| {
-                    let schema = schema.clone();
-                    Box::pin(async move {
-                        use sqlx::Executor;
-                        conn.execute(format!("SET search_path TO \"{schema}\"").as_str())
-                            .await?;
-                        Ok(())
-                    })
-                }
-            })
+        let pool = self
+            .pool_options()
             .connect(&self.dsn)
             .await
             .expect("connect server pool");
@@ -69,6 +59,62 @@ impl TestDatabase {
         AppState::from_pool(pool)
             .with_require_org_header(require_org_header)
             .with_clock(dbt_state_server::Clock::Replay)
+    }
+
+    /// Migrate this schema, as a standalone Token broker does at startup.
+    pub async fn migrate(&self) {
+        let pool = self
+            .pool_options()
+            .max_connections(1)
+            .connect(&self.dsn)
+            .await
+            .expect("connect migration pool");
+        dbt_state_broker::MIGRATOR
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool.close().await;
+    }
+
+    /// Makes a pool over this schema that connects on first use. Call it on
+    /// the runtime that will use the pool.
+    pub fn lazy_pool_factory(&self) -> impl FnOnce() -> sqlx::PgPool + Send + 'static {
+        let (options, dsn) = (self.pool_options(), self.dsn.clone());
+        move || options.connect_lazy(&dsn).expect("lazy pool")
+    }
+
+    fn pool_options(&self) -> PgPoolOptions {
+        PgPoolOptions::new().max_connections(2).after_connect({
+            let schema = self.schema.clone();
+            move |conn, _meta| {
+                let schema = schema.clone();
+                Box::pin(async move {
+                    use sqlx::Executor;
+                    conn.execute(format!("SET search_path TO \"{schema}\"").as_str())
+                        .await?;
+                    Ok(())
+                })
+            }
+        })
+    }
+}
+
+/// A Token broker clock a test moves forward. Clones share it.
+#[derive(Clone, Default)]
+pub struct TestClock(Arc<AtomicU64>);
+
+impl TestClock {
+    /// Move the clock `by` forward.
+    pub fn advance(&self, by: Duration) {
+        self.0.fetch_add(by.as_secs(), Ordering::SeqCst);
+    }
+
+    /// The Token broker clock: the host's, plus every advance so far.
+    pub fn broker_clock(&self) -> dbt_state_broker::Clock {
+        let offset = Arc::clone(&self.0);
+        dbt_state_broker::Clock::new(move || {
+            SystemTime::now() + Duration::from_secs(offset.load(Ordering::SeqCst))
+        })
     }
 }
 
@@ -119,6 +165,8 @@ pub struct TestServer {
     pub state: AppState,
     /// The in-process Token broker's listener, when it runs one.
     pub broker: Option<SocketAddr>,
+    /// The in-process Token broker's clock.
+    pub broker_clock: TestClock,
     _lifetime: ServerLifetime,
 }
 
@@ -204,11 +252,14 @@ pub async fn start_server_with_broker(auth: &super::oidc::TestAuth) -> TestServe
     .await
 }
 
-/// A standalone Token broker, as the `dbt-state-broker` binary runs.
+/// A standalone Token broker, as the `dbt-state-broker` binary runs, on its
+/// own migrated schema.
 #[must_use = "keep the broker owner alive while clients need it"]
 pub struct TestBroker {
     pub auth: super::oidc::TestAuth,
+    pub clock: TestClock,
     server: super::http::HttpServer,
+    _database: TestDatabase,
 }
 
 impl TestBroker {
@@ -220,13 +271,26 @@ impl TestBroker {
 
 /// Start a standalone Token broker whose issuer is its own URL, with the
 /// config `auth` builds.
-pub fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
+pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
+    let database = TestDatabase::new("broker").await;
+    database.migrate().await;
     let listener = super::http::HttpServer::bind();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let auth = auth.issuer(&url).build();
-    let broker = dbt_state_broker::Broker::new(auth.config()).expect("broker config");
-    let server = super::http::HttpServer::start(listener, move || broker.router());
-    TestBroker { auth, server }
+    let clock = TestClock::default();
+    let (config, broker_clock) = (auth.config().clone(), clock.broker_clock());
+    let pool = database.lazy_pool_factory();
+    let server = super::http::HttpServer::start(listener, move || {
+        dbt_state_broker::Broker::with_clock(&config, pool(), broker_clock)
+            .expect("broker config")
+            .router()
+    });
+    TestBroker {
+        auth,
+        clock,
+        server,
+        _database: database,
+    }
 }
 
 /// How a test server runs `oidc` mode.
@@ -257,6 +321,8 @@ async fn start_server_with_database_clock(
 ) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
+    let broker_clock = TestClock::default();
+    let server_clock = broker_clock.clone();
     let worker = thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -275,14 +341,14 @@ async fn start_server_with_database_clock(
                     state = state.with_oidc(&oidc.config).expect("oidc mode");
                     if oidc.broker {
                         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind broker");
-                        let router = dbt_state_broker::Broker::with_database(
+                        let instance = dbt_state_broker::Broker::with_clock(
                             &oidc.config,
                             state.store.pool().clone(),
+                            broker_clock.broker_clock(),
                         )
-                        .expect("broker config")
-                        .router();
+                        .expect("broker config");
                         broker = Some(listener.local_addr().expect("broker address"));
-                        tokio::spawn(async move { axum::serve(listener, router).await });
+                        tokio::spawn(dbt_state_broker::serve(listener, instance));
                     }
                 }
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
@@ -319,6 +385,7 @@ async fn start_server_with_database_clock(
         schema,
         state,
         broker,
+        broker_clock: server_clock,
         _lifetime: lifetime,
     }
 }

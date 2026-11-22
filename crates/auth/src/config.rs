@@ -4,6 +4,8 @@
 //! [broker]
 //! issuer = "https://auth.state.example.com"   # `iss` of every token
 //! # jwks_url = "http://broker.internal/jwks"  # optional; see below
+//! # max_pending_logins_per_ip = 20            # browser sign-ins in progress
+//! # client_ip_header = "x-forwarded-for"      # behind a proxy; last entry
 //!
 //! [api]
 //! audience = "https://state.example.com"      # the only `aud` gRPC accepts
@@ -28,6 +30,17 @@
 //! issuer = "https://login.example.com/tenant/v2.0"   # OIDC discovery base
 //! api_audience = "api://dbt-state"            # required `aud` of its access tokens
 //! client_credentials_scope = "api://dbt-state/.default"   # optional
+//! # subject_claim = "oid"                     # identifies a Principal; default "sub"
+//! # Browser sign-in: the Token broker's own registration at the IdP.
+//! client_id = "00000000-0000-0000-0000-000000000000"
+//! private_key_file = "/run/secrets/dbt-state/idp-client.pem"   # private_key_jwt
+//! # private_key_id = "..."                    # its `kid`, if the IdP needs one
+//! # client_secret_file = "/run/secrets/dbt-state/idp-client-secret"   # or a secret
+//! refresh_token_key_file = "/run/secrets/dbt-state/refresh-token.key"
+//! # login_scope = "openid offline_access email profile"
+//!
+//! [clients.dbt]                               # optional
+//! client_id = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"   # the dbt client's built-in id
 //!
 //! [[rules]]                                   # mapping rules
 //! kind = "machine"                            # "person" or "machine"
@@ -37,7 +50,9 @@
 //! role = "developer"
 //! ```
 //!
-//! A Token broker needs `[signing]` and `[upstream]`. A gRPC server without
+//! A Token broker needs `[signing]` and `[upstream]`; browser sign-in also
+//! needs `upstream.client_id`, exactly one credential file, and
+//! `upstream.refresh_token_key_file`. A gRPC server without
 //! `[signing]` checks tokens against the Token broker's published keys,
 //! fetched from `broker.jwks_url`, or found by OIDC discovery at
 //! `broker.issuer` when that is unset.
@@ -51,7 +66,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::credential::{ClientAssertionKey, ClientSecret, UpstreamCredential};
 use crate::keys::{KeyFileError, SigningKey, SigningKeys, VerificationKeys};
+use crate::sealing::RefreshTokenKey;
 use crate::{
     InvalidOrganizationId, MappingRule, MappingRules, Organization, OrganizationId, Organizations,
     PrincipalKind, RequestAuthenticator, Role, TokenIssuer, TokenVerifier,
@@ -61,6 +78,16 @@ use crate::{
 const PERSON_LIFETIME_MINUTES: (u32, std::ops::RangeInclusive<u32>) = (60, 15..=240);
 /// Machine token lifetime: default and bounds, in minutes.
 const MACHINE_LIFETIME_MINUTES: (u32, std::ops::RangeInclusive<u32>) = (15, 15..=60);
+
+/// The dbt client's built-in OAuth client id: the default id of the dbt
+/// client registration (`dbt-state==2.62.6` `dbt_state/config.py`
+/// `CLIENT_ID_DEFAULT`; `dbt-fusion@9977b6c`
+/// `crates/dbt-run-cache/src/service_config.rs` `DEFAULT_OAUTH_CLIENT_ID`).
+pub const DEFAULT_DBT_CLIENT_ID: &str = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6";
+/// The default cap on browser sign-ins in progress from one client IP.
+const DEFAULT_PENDING_LOGINS_PER_IP: u32 = 20;
+/// The scope the Token broker requests at the Upstream IdP by default.
+const DEFAULT_LOGIN_SCOPE: &str = "openid offline_access email profile";
 
 /// A loaded, validated auth config.
 #[derive(Debug, Clone)]
@@ -73,14 +100,52 @@ pub struct AuthConfig {
     organizations: Organizations,
     upstream: Option<UpstreamConfig>,
     rules: MappingRules,
+    dbt_client_id: String,
+    pending_logins_per_ip: u32,
+    client_ip_header: Option<String>,
 }
 
 /// The Token broker's Upstream IdP (`[upstream]`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct UpstreamConfig {
     issuer: String,
     api_audience: String,
     client_credentials_scope: Option<String>,
+    subject_claim: String,
+    login: Option<UpstreamLogin>,
+}
+
+/// The Token broker's own registration at the Upstream IdP, as an OIDC
+/// relying party for browser sign-in.
+#[derive(Debug, Clone)]
+pub struct UpstreamLogin {
+    client_id: String,
+    credential: UpstreamCredential,
+    scope: String,
+    refresh_token_key: RefreshTokenKey,
+}
+
+impl UpstreamLogin {
+    /// The Token broker's client id at the IdP.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// How the Token broker authenticates at the IdP's token endpoint.
+    pub fn credential(&self) -> &UpstreamCredential {
+        &self.credential
+    }
+
+    /// The `scope` requested on the IdP's authorization endpoint: always
+    /// `openid`, normally `offline_access` for a refresh token.
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// The key stored upstream refresh tokens are encrypted with.
+    pub fn refresh_token_key(&self) -> &RefreshTokenKey {
+        &self.refresh_token_key
+    }
 }
 
 impl UpstreamConfig {
@@ -101,6 +166,19 @@ impl UpstreamConfig {
     /// `client_credentials` grant, if any.
     pub fn client_credentials_scope(&self) -> Option<&str> {
         self.client_credentials_scope.as_deref()
+    }
+
+    /// The claim whose value, with the IdP's issuer, identifies a Principal
+    /// (people and machines alike): `sub` unless configured (for example
+    /// `oid` on Entra ID). Email is never an identity.
+    pub fn subject_claim(&self) -> &str {
+        &self.subject_claim
+    }
+
+    /// The Token broker's own registration for browser sign-in, when
+    /// configured.
+    pub fn login(&self) -> Option<&UpstreamLogin> {
+        self.login.as_ref()
     }
 }
 
@@ -133,6 +211,13 @@ pub enum ConfigError {
         path: PathBuf,
         error: KeyFileError,
     },
+    /// A secret or key file named by `key`. Never carries its contents.
+    #[error("invalid auth config: {key} ({path}): {error}")]
+    File {
+        key: &'static str,
+        path: PathBuf,
+        error: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -148,6 +233,8 @@ struct RawConfig {
     upstream: Option<RawUpstream>,
     #[serde(default)]
     rules: Vec<RawRule>,
+    #[serde(default)]
+    clients: RawClients,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +242,8 @@ struct RawConfig {
 struct RawBroker {
     issuer: String,
     jwks_url: Option<String>,
+    max_pending_logins_per_ip: Option<u32>,
+    client_ip_header: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +252,26 @@ struct RawUpstream {
     issuer: String,
     api_audience: String,
     client_credentials_scope: Option<String>,
+    subject_claim: Option<String>,
+    client_id: Option<String>,
+    client_secret_file: Option<PathBuf>,
+    private_key_file: Option<PathBuf>,
+    private_key_id: Option<String>,
+    login_scope: Option<String>,
+    refresh_token_key_file: Option<PathBuf>,
+}
+
+/// The broker's client registrations (`[clients.dbt]`).
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawClients {
+    dbt: Option<RawDbtClient>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDbtClient {
+    client_id: String,
 }
 
 #[derive(Deserialize)]
@@ -310,12 +419,48 @@ impl AuthConfig {
             .collect::<Result<Vec<_>, InvalidOrganizationId>>()?;
         let organizations = Organizations::new(organizations)?;
 
-        let upstream = raw.upstream.map(upstream).transpose()?;
+        let upstream = raw.upstream.map(|raw| upstream(raw, base)).transpose()?;
         let rules = raw
             .rules
             .into_iter()
             .map(|rule| self::rule(rule, &organizations))
             .collect::<Result<Vec<_>, _>>()?;
+
+        let dbt_client_id = match raw.clients.dbt {
+            Some(client) if client.client_id.trim().is_empty() => {
+                return Err(ConfigError::Invalid(
+                    "clients.dbt.client_id must not be empty".into(),
+                ))
+            }
+            Some(client) => client.client_id,
+            None => DEFAULT_DBT_CLIENT_ID.to_owned(),
+        };
+        let pending_logins_per_ip = raw
+            .broker
+            .max_pending_logins_per_ip
+            .unwrap_or(DEFAULT_PENDING_LOGINS_PER_IP);
+        if !(1..=10_000).contains(&pending_logins_per_ip) {
+            return Err(ConfigError::Invalid(
+                "broker.max_pending_logins_per_ip must be 1 to 10000".into(),
+            ));
+        }
+        let client_ip_header = raw
+            .broker
+            .client_ip_header
+            .map(|name| {
+                let valid = !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c));
+                if valid {
+                    Ok(name.to_ascii_lowercase())
+                } else {
+                    Err(ConfigError::Invalid(format!(
+                        "broker.client_ip_header {name:?} is not an HTTP header name"
+                    )))
+                }
+            })
+            .transpose()?;
 
         Ok(Self {
             issuer,
@@ -326,7 +471,29 @@ impl AuthConfig {
             organizations,
             upstream,
             rules: MappingRules::new(rules),
+            dbt_client_id,
+            pending_logins_per_ip,
+            client_ip_header,
         })
+    }
+
+    /// The dbt client registration's client id: the dbt client's built-in
+    /// id ([`DEFAULT_DBT_CLIENT_ID`]) unless `[clients.dbt]` names another.
+    pub fn dbt_client_id(&self) -> &str {
+        &self.dbt_client_id
+    }
+
+    /// At most this many browser sign-ins may be in progress from one
+    /// client IP.
+    pub fn pending_logins_per_ip(&self) -> u32 {
+        self.pending_logins_per_ip
+    }
+
+    /// The request header (lowercase) whose last comma-separated entry is
+    /// the client IP, when the Token broker runs behind a proxy that sets
+    /// it; otherwise the peer address is.
+    pub fn client_ip_header(&self) -> Option<&str> {
+        self.client_ip_header.as_deref()
     }
 
     /// The Token broker's public URL: the `iss` of every token.
@@ -460,17 +627,147 @@ fn secure_http_url(key: &str, url: String) -> Result<String, ConfigError> {
     }
 }
 
-fn upstream(raw: RawUpstream) -> Result<UpstreamConfig, ConfigError> {
+fn upstream(raw: RawUpstream, base: &Path) -> Result<UpstreamConfig, ConfigError> {
     let issuer = secure_http_url("upstream.issuer", raw.issuer)?;
     if raw.api_audience.trim().is_empty() {
         return Err(ConfigError::Invalid(
             "upstream.api_audience must not be empty".into(),
         ));
     }
+    let subject_claim = raw.subject_claim.unwrap_or_else(|| "sub".to_owned());
+    if subject_claim.is_empty() {
+        return Err(ConfigError::Invalid(
+            "upstream.subject_claim must not be empty".into(),
+        ));
+    }
+    let login = match raw.client_id {
+        Some(client_id) => Some(upstream_login(
+            client_id,
+            raw.client_secret_file,
+            raw.private_key_file,
+            raw.private_key_id,
+            raw.login_scope,
+            raw.refresh_token_key_file,
+            base,
+        )?),
+        None => {
+            let stray = [
+                (
+                    "upstream.client_secret_file",
+                    raw.client_secret_file.is_some(),
+                ),
+                ("upstream.private_key_file", raw.private_key_file.is_some()),
+                ("upstream.private_key_id", raw.private_key_id.is_some()),
+                ("upstream.login_scope", raw.login_scope.is_some()),
+                (
+                    "upstream.refresh_token_key_file",
+                    raw.refresh_token_key_file.is_some(),
+                ),
+            ];
+            if let Some((key, _)) = stray.into_iter().find(|(_, set)| *set) {
+                return Err(ConfigError::Invalid(format!(
+                    "{key} is for browser sign-in, which needs upstream.client_id"
+                )));
+            }
+            None
+        }
+    };
     Ok(UpstreamConfig {
         issuer,
         api_audience: raw.api_audience,
         client_credentials_scope: raw.client_credentials_scope.filter(|s| !s.is_empty()),
+        subject_claim,
+        login,
+    })
+}
+
+fn upstream_login(
+    client_id: String,
+    client_secret_file: Option<PathBuf>,
+    private_key_file: Option<PathBuf>,
+    private_key_id: Option<String>,
+    scope: Option<String>,
+    refresh_token_key_file: Option<PathBuf>,
+    base: &Path,
+) -> Result<UpstreamLogin, ConfigError> {
+    if client_id.trim().is_empty() {
+        return Err(ConfigError::Invalid(
+            "upstream.client_id must not be empty".into(),
+        ));
+    }
+    let credential = match (private_key_file, client_secret_file) {
+        (Some(_), Some(_)) => {
+            return Err(ConfigError::Invalid(
+                "set only one of upstream.private_key_file (private_key_jwt) and \
+                 upstream.client_secret_file"
+                    .into(),
+            ))
+        }
+        (None, None) => {
+            return Err(ConfigError::Invalid(
+                "upstream.client_id needs a credential: upstream.private_key_file \
+                 (private_key_jwt, preferred) or upstream.client_secret_file"
+                    .into(),
+            ))
+        }
+        (Some(file), None) => {
+            let path = base.join(file);
+            let key =
+                SigningKey::load(String::new(), &path).map_err(|error| ConfigError::File {
+                    key: "upstream.private_key_file",
+                    path,
+                    error: error.to_string(),
+                })?;
+            UpstreamCredential::PrivateKeyJwt(ClientAssertionKey::new(
+                key,
+                private_key_id.filter(|kid| !kid.is_empty()),
+            ))
+        }
+        (None, Some(file)) => {
+            if private_key_id.is_some() {
+                return Err(ConfigError::Invalid(
+                    "upstream.private_key_id names the key of upstream.private_key_file".into(),
+                ));
+            }
+            let path = base.join(file);
+            let file_error = |error: String| ConfigError::File {
+                key: "upstream.client_secret_file",
+                path: path.clone(),
+                error,
+            };
+            let secret = std::fs::read_to_string(&path)
+                .map_err(|error| file_error(format!("cannot read: {}", error.kind())))?;
+            let secret = secret.trim();
+            if secret.is_empty() {
+                return Err(file_error("empty".into()));
+            }
+            UpstreamCredential::ClientSecret(ClientSecret::new(secret.to_owned()))
+        }
+    };
+    let scope = scope.unwrap_or_else(|| DEFAULT_LOGIN_SCOPE.to_owned());
+    if !scope.split(' ').any(|s| s == "openid") {
+        return Err(ConfigError::Invalid(
+            "upstream.login_scope must include openid".into(),
+        ));
+    }
+    let Some(key_file) = refresh_token_key_file else {
+        return Err(ConfigError::Invalid(
+            "browser sign-in (upstream.client_id) needs upstream.refresh_token_key_file, the \
+             key stored upstream refresh tokens are encrypted with"
+                .into(),
+        ));
+    };
+    let path = base.join(key_file);
+    let refresh_token_key = RefreshTokenKey::load(&path).map_err(|error| ConfigError::File {
+        key: "upstream.refresh_token_key_file",
+        path,
+        error: error.to_string(),
+    })?;
+    Ok(UpstreamLogin {
+        client_id,
+        credential,
+        scope,
+        refresh_token_key,
     })
 }
 

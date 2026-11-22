@@ -4,8 +4,15 @@
 
 [broker]
 # The Token broker's public URL: the `iss` of every token it issues. Its OIDC
-# discovery document is at <issuer>/.well-known/openid-configuration.
+# discovery document is at <issuer>/.well-known/openid-configuration, and
+# its authorization endpoint (the dbt client's RUN_CACHE_AUTH_URL) is
+# <issuer>/ itself.
 issuer = "https://auth.state.example.com"
+# Optional: browser sign-ins in progress per client IP (default 20).
+# max_pending_logins_per_ip = 20
+# Optional, only behind a proxy that sets it on every request: the header
+# whose last comma-separated entry is the client IP.
+# client_ip_header = "x-forwarded-for"
 # Optional, for a gRPC server without [signing]: where to fetch the Token
 # broker's keys. Unset, they are found by OIDC discovery at `issuer`. Keys
 # are fetched only over https (plain http only on a loopback address).
@@ -58,11 +65,46 @@ api_audience = "api://dbt-state"
 # (Entra ID needs "<api>/.default"). The scope the dbt client asks for is
 # ignored.
 client_credentials_scope = "api://dbt-state/.default"
+# Optional: the claim that, with the issuer, identifies a Principal (person
+# or machine). Default "sub"; on Entra ID use "oid". Email is display only.
+subject_claim = "oid"
 
-# Mapping rules. Each applies only to its Principal kind: "machine" for
-# client_credentials. A rule matches when `claim` is `value`, or is an array
-# of strings holding it. The highest Role wins per Organization; a Principal
-# no rule matches is refused.
+# Browser sign-in for people. The Token broker signs in at the IdP as an
+# OIDC relying party under its own client id; register
+# <broker.issuer>/callback as that client's redirect URI. Without client_id,
+# only machines (client_credentials) are served.
+client_id = "22222222-3333-4444-5555-666666666666"
+# Its credential at the IdP's token endpoint, from a mounted file (never the
+# database): an RSA private key for private_key_jwt (preferred), or
+# client_secret_file for a client secret sent as HTTP Basic. Set exactly one.
+private_key_file = "keys/idp-client.pem"
+# Optional: the `kid` the IdP knows the key by.
+# private_key_id = "broker-2026-11"
+# client_secret_file = "keys/idp-client-secret"
+# The key stored upstream refresh tokens are encrypted with (AES-256-GCM):
+# the base64 of 32 random bytes, `openssl rand -base64 32`.
+refresh_token_key_file = "keys/refresh-token.key"
+# Optional: the scope requested at sign-in. It must include openid, and
+# offline_access where the IdP needs it for a refresh token (Entra ID, Okta).
+# login_scope = "openid offline_access email profile"
+
+# Optional: the dbt client registration. Its client id defaults to the dbt
+# client's built-in one; its redirect URI is always
+# http://127.0.0.1:29525/handler, and PKCE S256 is required.
+# [clients.dbt]
+# client_id = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"
+
+# Mapping rules. Each applies only to its Principal kind: "person" for
+# browser sign-in, "machine" for client_credentials. A rule matches when
+# `claim` is `value`, or is an array of strings holding it. The highest Role
+# wins per Organization; a Principal no rule matches is refused.
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "00000000-aaaa-bbbb-cccc-000000000000"
+organization = "analytics"
+role = "developer"
+
 [[rules]]
 kind = "machine"
 claim = "roles"

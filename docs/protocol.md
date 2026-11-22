@@ -82,10 +82,78 @@ Hosted's own codes and messages for these failures are not characterized.
 ### Token broker (`crates/broker`)
 
 The Token broker serves HTTP/1.1 at its issuer URL: OIDC discovery at
-`/.well-known/openid-configuration`, its public keys at `/jwks`, and the
-token endpoint at `/token` (the dbt client's `RUN_CACHE_TOKEN_URL`). In this
-release `/token` serves one grant:
+`/.well-known/openid-configuration`, its public keys at `/jwks`, the
+authorization endpoint at `/` (the dbt client's `RUN_CACHE_AUTH_URL`, used
+verbatim, as hosted's is its issuer root), the Upstream IdP's return at
+`/callback`, and the token endpoint at `/token` (the dbt client's
+`RUN_CACHE_TOKEN_URL`). Discovery advertises `authorization_endpoint`,
+`response_types_supported: ["code"]`, `grant_types_supported:
+["authorization_code", "client_credentials"]`,
+`code_challenge_methods_supported: ["S256"]` and
+`token_endpoint_auth_methods_supported: ["none", "client_secret_basic"]`.
 
+**Browser sign-in.** Both pinned clients open the browser at
+`<auth URL>?response_type=code&client_id&redirect_uri=http://127.0.0.1:29525/handler&scope=runcache:scope:orgs&state&code_challenge&code_challenge_method=S256`
+and check that the loopback redirect echoes `state`
+(`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/browser_flow.rs`;
+`dbt-state==2.62.6` `auth/sso.py` `_login` with authlib). The broker:
+
+- accepts only the dbt client registration's client id (`[clients.dbt]
+  client_id`, default the clients' built-in
+  `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`) and exactly that redirect URI;
+  otherwise it answers an HTML error page (400) and never redirects;
+- requires PKCE S256, and caps pending sign-ins per client IP
+  (`[broker] max_pending_logins_per_ip`, default 20; behind a proxy, the last
+  entry of `[broker] client_ip_header`); a pending sign-in lasts 10 minutes;
+- redirects to the Upstream IdP's discovered `authorization_endpoint` as an
+  OIDC relying party: `[upstream] client_id`, `redirect_uri=<issuer>/callback`,
+  `[upstream] login_scope` (default `openid offline_access email profile`),
+  its own `state`, `nonce` and PKCE S256 challenge;
+- at `/callback`, takes the pending sign-in by `state` once, exchanges the
+  code with `private_key_jwt` (`[upstream] private_key_file`) or HTTP Basic
+  (`[upstream] client_secret_file`), and checks the ID token: signed by a key
+  the IdP publishes, the IdP's issuer, `aud` holding the broker's client id,
+  `azp` (when present, or with several audiences) the broker's client id,
+  current, and the `nonce` it sent;
+- identifies the Principal by the IdP issuer and `[upstream] subject_claim`
+  (default `sub`; machines too); `email` and `name` are display only;
+- applies the `kind = "person"` rules only, and requires an upstream refresh
+  token; then creates a person session (12-hour cap) storing the upstream
+  refresh token AES-256-GCM-encrypted (`[upstream] refresh_token_key_file`);
+- redirects to the loopback handler with a single-use `code`, valid 60 s and
+  bound to the client id, redirect URI and PKCE challenge, and the client's
+  `state`.
+
+After the redirect URI is checked, every refusal goes back to the loopback
+handler as `error`, `error_description` (fixed) and `state`, and is logged at
+`warn` as `sign-in refused` with `step`, `reason` and, when known,
+Principal, subject, client id and `missing_claims`:
+
+| `error` | Cause (log `reason`) |
+|---|---|
+| `invalid_request` | no PKCE S256 (`pkce_s256_required`) |
+| `unsupported_response_type` | `response_type` is not `code` |
+| `unauthorized_client` | no `[upstream] client_id` (`sign_in_not_configured`) |
+| `access_denied` | the IdP returned an error (`upstream_error`) or no code; refused the code (`upstream_refused_grant`); no or an untrusted ID token (`upstream_missing_id_token`, `upstream_token_*`, including `upstream_token_wrong_nonce`); no subject claim (`upstream_token_missing_subject`); no person rule matches (`no_matching_rule`, with `missing_claims`, for example `groups` under Entra group overage) |
+| `temporarily_unavailable` | too many pending sign-ins from the client IP (`too_many_pending_logins`); the IdP or its discovery is unavailable, including a plaintext `authorization_endpoint` (`upstream_unavailable`); the database (`database_unavailable`) |
+| `server_error` | the IdP rejected the broker's credential (`upstream_rejected_client`); it issued no refresh token (`upstream_missing_refresh_token`) |
+
+An unknown, used or expired `state` at `/callback` gets an error page.
+
+**Token endpoint.** `/token` serves two grants:
+
+- `authorization_code`, as both pinned clients send it: the form
+  `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`
+  with no client authentication (the Python client's authlib body also
+  carries `include_client_id=True`, ignored). The code is used up by its
+  first presentation, whatever the outcome; presenting it again revokes the
+  session it started. The `200` response is `{"id_token", "refresh_token",
+  "scope", "token_type": "Bearer", "expires_in"}` with `Cache-Control:
+  no-store`. The `id_token` is a person token: `sid` the person session,
+  `azp` the dbt client id, `email` and `name` when the IdP gave them, and
+  `[tokens] person_lifetime_minutes` (default 60). The refresh token is
+  opaque; only its SHA-256 is stored, as the first member of the session's
+  refresh-token family (the `refresh_token` grant is #221).
 - `client_credentials`, as both pinned clients send it: HTTP Basic
   `client_id:secret` and the form `grant_type=client_credentials&scope=runcache:scope:orgs`
   (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/oauth.rs`
@@ -95,32 +163,36 @@ release `/token` serves one grant:
   `[upstream] client_credentials_scope`, ignoring the requested scope. It
   accepts only an RS256 JWT access token signed by a key the IdP publishes,
   with the IdP's issuer, an `aud` holding `[upstream] api_audience`, and
-  current; then applies the `kind = "machine"` rules. The `200` response is
+  current; then names the Principal by the issuer and `[upstream]
+  subject_claim` and applies the `kind = "machine"` rules. The `200` response is
   `{"id_token", "scope", "token_type": "Bearer", "expires_in"}` with
   `Cache-Control: no-store` and no refresh token. The `id_token` is a machine
   token (no `sid`), `azp` the client id, `sub` the opaque Principal id of the
-  IdP issuer and `sub`.
+  IdP issuer and subject claim.
 
 Refusals are OAuth errors (`{"error", "error_description"}`, fixed
 descriptions), logged at `warn` with the reason:
 
 | Status | `error` | Cause (log `reason`) |
 |---|---|---|
-| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`) |
-| 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or has no `sub`; no machine rule matches (`no_matching_rule`, with `missing_claims`) |
-| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
-| 400 | `invalid_request` | no `grant_type`, a repeated parameter |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`) |
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` without the dbt client id (`missing_client_id`, `unknown_client`) |
+| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client id or redirect URI than the authorize request (`client_mismatch`, `redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
+| 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
+| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant (`refresh_token` until #221) |
+| 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier` |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`); the machine's Principal cannot be recorded (`principal_not_recorded`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
-subject, client id, scope and lifetime. Secrets and token values are never
-logged or stored.
+subject, client id, scope, lifetime and (for a person) session; each
+completed sign-in as `sign-in completed`. Secrets and token values are never
+logged, and stored only as hashes or, for the upstream refresh token,
+encrypted.
 
-A broker with the server's database (the in-process broker) records each
-Principal before issuing its token: a `principals` row keyed by the IdP
-issuer and subject, with the opaque id the token carries as `sub`, the kind
-and any email. If that write fails, the request is refused with 503
-`temporarily_unavailable` (`principal_not_recorded`).
+The broker records each Principal it issues tokens to in `principals`: keyed
+by the IdP issuer and subject, with the opaque id the token carries as `sub`,
+the kind and any email. A machine is recorded before its token is issued (a
+failed write is 503 `temporarily_unavailable`, `principal_not_recorded`); a
+person with its session at `/callback` (`database_unavailable`).
 
 ## Services
 
