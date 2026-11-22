@@ -59,6 +59,8 @@ pub struct StoredExecution {
     pub last_modified_epoch: Option<i64>,
     pub table_type: Option<String>,
     pub execution_runtime_ms: Option<i64>,
+    /// The Principal whose request wrote the row (`oidc` mode).
+    pub principal_id: Option<String>,
 }
 
 impl StoredExecution {
@@ -74,7 +76,7 @@ impl StoredExecution {
 const EXECUTION_COLUMNS: &str = "id, org_id, request_id, execution_decision_id, status, \
      target_table, execution_type, dialect, table_namespace, project_id, node_unique_id, \
      node_body_hash, node_sql_hash, node_template_hash, node_namespace_logic_hash, \
-     clone_source_table, last_modified_epoch, table_type, execution_runtime_ms";
+     clone_source_table, last_modified_epoch, table_type, execution_runtime_ms, principal_id";
 
 /// Every `executions` row across orgs, oldest first.
 pub async fn executions(db: &impl Db) -> Vec<StoredExecution> {
@@ -167,6 +169,68 @@ pub async fn invocations(db: &impl Db) -> Vec<StoredInvocation> {
     .fetch_all(db.pool())
     .await
     .expect("read invocations")
+}
+
+/// One `node_decisions` row: a recorded decision, and who made it.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StoredDecision {
+    pub org_id: String,
+    pub execution_decision_id: Option<String>,
+    pub decision: String,
+    /// The Principal whose request made the decision (`oidc` mode).
+    pub principal_id: Option<String>,
+}
+
+/// Every `node_decisions` row across orgs, oldest first, once at least
+/// `count` are recorded (decision capture is asynchronous).
+pub async fn decisions(db: &impl Db, count: usize) -> Vec<StoredDecision> {
+    for _ in 0..100 {
+        let rows: Vec<StoredDecision> = sqlx::query_as(
+            "SELECT org_id, execution_decision_id, decision, principal_id \
+             FROM node_decisions ORDER BY id",
+        )
+        .fetch_all(db.pool())
+        .await
+        .expect("read node_decisions");
+        if rows.len() >= count {
+            return rows;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("fewer than {count} decisions were recorded");
+}
+
+/// One `principals` row: a Principal the Token broker issued a token to.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StoredPrincipal {
+    /// The opaque Principal id: the token's `sub`.
+    pub id: String,
+    pub issuer: String,
+    pub subject: String,
+    pub kind: String,
+    pub email: Option<String>,
+}
+
+/// Every `principals` row, by issuer and subject.
+pub async fn principals(db: &impl Db) -> Vec<StoredPrincipal> {
+    sqlx::query_as(
+        "SELECT id, issuer, subject, kind, email FROM principals ORDER BY issuer, subject",
+    )
+    .fetch_all(db.pool())
+    .await
+    .expect("read principals")
+}
+
+/// The names of the tables in the server's schema, sorted.
+pub async fn tables(db: &impl Db) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables \
+         WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' \
+         ORDER BY table_name",
+    )
+    .fetch_all(db.pool())
+    .await
+    .expect("list tables")
 }
 
 /// Establish that an exact decision's audit passed a selective capture fault.

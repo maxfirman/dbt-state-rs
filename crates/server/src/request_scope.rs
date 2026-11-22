@@ -1,15 +1,17 @@
 //! The request scope of one gRPC call: the Organization it reads and writes
-//! State history in, and the dbt invocation and client session it belongs
-//! to.
+//! State history in, the Principal who made it, and the dbt invocation and
+//! client session it belongs to.
 //!
 //! Every handler that scopes by Organization resolves one [`RequestScope`]
 //! before it touches the store, and uses only it: store queries are scoped by
-//! its Organization, and decision capture records the same Organization,
-//! invocation and session. No handler or capture reads these metadata headers
-//! itself. [`organization`] is the only place the Organization is resolved:
-//! in `oidc` mode it is the authenticated context's (`grpc_auth`), never the
-//! raw header.
+//! its Organization, and the decisions and executions it records name its
+//! Principal, invocation and session. No handler or capture reads these
+//! metadata headers or the authenticated context itself. [`organization`]
+//! is the only place the Organization is resolved: in `oidc` mode it is the
+//! authenticated context's (`grpc_auth`), never the raw header. The
+//! Principal is the authenticated context's too; `none` mode has none.
 
+use dbt_state_auth::PrincipalId;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Status};
 
@@ -26,6 +28,7 @@ const SESSION_HEADER: &str = "x-session-id";
 #[derive(Debug, Clone)]
 pub(crate) struct RequestScope {
     organization: String,
+    principal: Option<PrincipalId>,
     invocation_id: Option<String>,
     session_id: Option<String>,
 }
@@ -36,6 +39,10 @@ impl RequestScope {
         let metadata = request.metadata();
         Ok(Self {
             organization: organization(state, request)?,
+            principal: request
+                .extensions()
+                .get::<AuthenticatedContext>()
+                .map(|context| context.principal.clone()),
             invocation_id: header(metadata, INVOCATION_HEADER),
             session_id: header(metadata, SESSION_HEADER),
         })
@@ -44,6 +51,11 @@ impl RequestScope {
     /// The Organization every store query of this request is scoped by.
     pub(crate) fn organization(&self) -> &str {
         &self.organization
+    }
+
+    /// The authenticated Principal (`oidc` mode); `None` in `none` mode.
+    pub(crate) fn principal(&self) -> Option<&PrincipalId> {
+        self.principal.as_ref()
     }
 
     /// The client's `x-dbt-invocation-id`, if sent.

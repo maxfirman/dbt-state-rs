@@ -35,7 +35,10 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
   - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
   - Each call reads them once, into its request scope
     (`crates/server/src/request_scope.rs`). The handler and the decision
-    capture both take the Organization from that scope.
+    capture both take the Organization from that scope, and in `oidc` mode
+    the Principal: every decision (`node_decisions`) and every execution
+    row a Submit, RecordExecutions or RegisterClone writes (`executions`)
+    records the token's `sub` as `principal_id`. `none` mode records none.
 - `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
   under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
   that build age is measured against. Never enable that clock in a deployment.
@@ -177,13 +180,19 @@ descriptions), logged at `warn` with the reason:
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
 | 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant (`refresh_token` until #221) |
 | 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier` |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`); the machine's Principal cannot be recorded (`principal_not_recorded`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
 subject, client id, scope, lifetime and (for a person) session; each
 completed sign-in as `sign-in completed`. Secrets and token values are never
 logged, and stored only as hashes or, for the upstream refresh token,
 encrypted.
+
+The broker records each Principal it issues tokens to in `principals`: keyed
+by the IdP issuer and subject, with the opaque id the token carries as `sub`,
+the kind and any email. A machine is recorded before its token is issued (a
+failed write is 503 `temporarily_unavailable`, `principal_not_recorded`); a
+person with its session at `/callback` (`database_unavailable`).
 
 ## Services
 

@@ -42,6 +42,7 @@ async fn schema_pool() -> (PgPool, String) {
 fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
     CaptureInput {
         org_id: "local".into(),
+        principal_id: None,
         external_invocation_id: Some(inv.into()),
         session_id: Some("sess-1".into()),
         project_external_id: Some("123".into()),

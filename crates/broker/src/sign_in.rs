@@ -44,7 +44,7 @@ use dbt_state_auth::{PrincipalId, PrincipalKind};
 use uuid::Uuid;
 
 use crate::secret;
-use crate::store::{NewCode, NewSession, PendingLogin};
+use crate::store::{NewCode, NewSession, PendingLogin, Principal};
 use crate::upstream::{AuthorizeRequest, UpstreamError};
 use crate::Broker;
 
@@ -605,6 +605,13 @@ pub(crate) async fn callback(State(broker): State<Broker>, uri: Uri) -> Response
         .0
         .store
         .start_session(
+            &Principal {
+                id: &principal,
+                issuer: upstream.issuer(),
+                subject,
+                kind: PrincipalKind::Person,
+                email: claims.string("email"),
+            },
             &NewSession {
                 id: session,
                 principal_id: principal.as_str().to_owned(),

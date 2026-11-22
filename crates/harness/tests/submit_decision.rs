@@ -31,7 +31,7 @@ async fn submit_sql(store: &Store, req: impl Into<qc::SubmitEnrichedSqlRequest>)
 }
 
 async fn submit_values(store: &Store, req: impl Into<qc::SubmitValuesRequest>) -> SubmitOutcome {
-    submit_decision::submit_values(store, ORG, &req.into(), now_ms())
+    submit_decision::submit_values(store, ORG, None, &req.into(), now_ms())
         .await
         .expect("submit")
 }

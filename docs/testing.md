@@ -179,7 +179,10 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   client's loopback handler (`Landing::Loopback(query)`) or a page
   (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`.
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
-- `rows.rs` reads `executions` and `node_states` back for assertions;
+- `rows.rs` reads `executions` and `node_states` back for assertions,
+  `decisions(&server, n)` the `node_decisions` rows once `n` are captured,
+  `principals(&server)` the Principal records and `tables(&server)` the
+  schema's tables;
   `every_row_as_text(&server)` dumps the schema, to prove a value was never
   stored.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
@@ -189,6 +192,11 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   recorded before migration 0027 or 0028, and
   `legacy::forget_data_test_history_keys` makes State history look recorded
   before migration 0029 (#200).
+  `legacy::record_history_before_principals(&database, org)` migrates a
+  `TestDatabase` only to the migration before `principals` and records a
+  decision and an execution there, for upgrade tests of migration 0032
+  (#226);
+  `fault::fail_principal_records` makes every `principals` write fail.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 

@@ -24,6 +24,9 @@
 //! It holds no credentials of the Principals it serves: a machine's client
 //! secret is forwarded to the Upstream IdP and never stored or logged, and
 //! a person's upstream refresh token is stored only encrypted.
+//!
+//! It records each Principal it issues a token to (`principals`), keyed by
+//! Upstream IdP issuer and subject, before issuing the token.
 
 mod clock;
 mod code_grant;

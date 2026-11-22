@@ -42,6 +42,7 @@ use crate::store::{
     CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, SeedCopyCandidateQuery, Store,
 };
 use crate::warehouse::Warehouse;
+use dbt_state_auth::PrincipalId;
 use std::collections::HashMap;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
@@ -285,17 +286,19 @@ pub async fn submit_sql(
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
     let sources = crate::volatile_evaluation::Sources::system(now_ms.saturating_mul(1000));
-    Ok(submit_sql_explained(store, org_id, req, &sources)
+    Ok(submit_sql_explained(store, org_id, None, req, &sources)
         .await?
         .outcome)
 }
 
 /// [`submit_sql`], with the decision's [`ExplainEvidence`] and the values
 /// its Volatile evaluation rendered from `sources`. The build age is
-/// measured on the same clock (`sources.now_micros`).
+/// measured on the same clock (`sources.now_micros`). A pending row it
+/// writes names `principal`.
 pub async fn submit_sql_explained(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     sources: &crate::volatile_evaluation::Sources,
 ) -> sqlx::Result<ExplainedOutcome> {
@@ -307,7 +310,7 @@ pub async fn submit_sql_explained(
     )
     .await;
     let now_ms = sources.now_micros.div_euclid(1000);
-    let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
+    let mut decided = decide_sql(store, org_id, principal, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
     // Volatile evaluation, once decided: a build, a reuse or a Result copy,
@@ -360,7 +363,7 @@ pub async fn speculative_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    Ok(speculative_sql_explained(store, org_id, req, now_ms)
+    Ok(speculative_sql_explained(store, org_id, None, req, now_ms)
         .await?
         .map(|decided| decided.outcome))
 }
@@ -369,6 +372,7 @@ pub async fn speculative_sql(
 pub async fn speculative_sql_explained(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<ExplainedOutcome>> {
@@ -385,7 +389,7 @@ pub async fn speculative_sql_explained(
     if !needs_no_table_evidence {
         return Ok(None);
     }
-    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly).await?;
+    let outcome = decide_sql(store, org_id, principal, req, now_ms, Mode::SkipOnly).await?;
     if outcome.is_some() {
         record_node_state(
             store,
@@ -413,11 +417,13 @@ enum Mode {
 async fn decide_sql(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
     mode: Mode,
 ) -> sqlx::Result<Option<ExplainedOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    evidence.principal = principal.cloned();
     evidence.display_submitted_at_ms =
         Warehouse::from_dialect(&req.dialect).explain_submit_clock(now_ms);
     let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
@@ -894,10 +900,12 @@ struct Freshness<'a> {
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Lag tolerance and
 /// always use the ANY stale-upstream policy. A seed without a reuse
 /// candidate may be copied from its load under another name where the
-/// Warehouse rules admit it (Snowflake, #91; [`seed_copy_fallback`]).
+/// Warehouse rules admit it (Snowflake, #91; [`seed_copy_fallback`]). A
+/// pending row it writes names `principal`.
 pub async fn submit_values(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitValuesRequest,
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
@@ -909,7 +917,8 @@ pub async fn submit_values(
     )
     .await;
 
-    let evidence = ExecutionEvidence::values_submit(org_id, req);
+    let mut evidence = ExecutionEvidence::values_submit(org_id, req);
+    evidence.principal = principal.cloned();
     let current = store
         .current_target_state(
             org_id,

@@ -13,6 +13,7 @@ use crate::analyzed_workload::Purpose;
 use crate::query_cache as qc;
 use crate::store::{producer_identity, InputTable, Producer, Store};
 use crate::warehouse::Warehouse;
+use dbt_state_auth::PrincipalId;
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -48,6 +49,9 @@ pub(crate) use crate::analyzed_workload::inputs::sql_inputs;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionEvidence {
     pub(crate) org_id: String,
+    /// The Principal whose request writes the row (`executions.principal_id`);
+    /// `None` in `none` mode. Not identity: reuse and copies never read it.
+    pub(crate) principal: Option<PrincipalId>,
     pub(crate) project_id: Option<String>,
     /// Logical named scope for clients that omit project_id. Deferral reads
     /// only confirmed executions; this never participates in reuse identity.
@@ -208,6 +212,7 @@ impl ExecutionEvidence {
     ) -> Self {
         Self {
             org_id: org_id.to_owned(),
+            principal: None,
             target_table,
             raw_target_table: None,
             dialect,
@@ -354,10 +359,12 @@ pub(crate) enum RecordError {
 }
 
 /// Publish a RecordExecutions batch: every record's confirmed row and its
-/// selector snapshot, in one transaction. Returns the rows stored.
+/// selector snapshot, in one transaction, each row naming `principal`.
+/// Returns the rows stored.
 pub(crate) async fn record_batch(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     records: &[qc::ExecutionRecord],
 ) -> Result<u32, RecordError> {
     let mut rows: Vec<ExecutionWrite> = Vec::with_capacity(records.len());
@@ -386,7 +393,7 @@ pub(crate) async fn record_batch(
             return Err(RecordError::InvalidTarget);
         }
 
-        let evidence = match input {
+        let mut evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
                 ExecutionEvidence::sql_record(org_id, sql)
             }
@@ -394,6 +401,7 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
+        evidence.principal = principal.cloned();
         // Validate the entire batch before producer reads or publication.
         // Omitted targets represent result-only executions, not physical rows.
         if evidence.target_table.is_empty() == outcome.last_modified_epoch.is_some() {

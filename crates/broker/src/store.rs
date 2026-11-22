@@ -1,10 +1,12 @@
 //! The Token broker's Postgres state: pending logins, person sessions,
 //! authorization codes and refresh-token family members
-//! (`crates/server/migrations/0031_broker_person_login.sql`).
+//! (`crates/server/migrations/0031_broker_person_login.sql`), and the
+//! Principals it issues tokens to (`0032_principals.sql`).
 //!
 //! Every bearer value is looked up by its SHA-256 hash; none is stored.
 
 use chrono::{DateTime, Utc};
+use dbt_state_auth::{PrincipalId, PrincipalKind};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -25,6 +27,41 @@ pub(crate) struct PendingLogin {
     pub client_ip: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// A Principal as the Upstream IdP authenticated it: its `principals`
+/// record, keyed by issuer and subject. The gRPC server records `id` (the
+/// token's `sub`) on each decision and execution the Principal makes.
+pub(crate) struct Principal<'a> {
+    pub id: &'a PrincipalId,
+    pub issuer: &'a str,
+    pub subject: &'a str,
+    pub kind: PrincipalKind,
+    /// For display only; a later sign-in without one keeps the known email.
+    pub email: Option<&'a str>,
+}
+
+/// Create or refresh `principal`'s record.
+async fn record_principal<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    principal: &Principal<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO principals (issuer, subject, id, kind, email) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (issuer, subject) DO UPDATE \
+             SET kind = EXCLUDED.kind, \
+                 email = COALESCE(EXCLUDED.email, principals.email), \
+                 last_seen_at = now()",
+    )
+    .bind(principal.issuer)
+    .bind(principal.subject)
+    .bind(principal.id.as_str())
+    .bind(principal.kind.as_str())
+    .bind(principal.email)
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 /// A person session being created at the end of a sign-in.
@@ -93,6 +130,14 @@ pub(crate) struct Store {
 impl Store {
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Record `principal` (a machine, before its token is issued).
+    pub(crate) async fn record_principal(
+        &self,
+        principal: &Principal<'_>,
+    ) -> Result<(), sqlx::Error> {
+        record_principal(&self.pool, principal).await
     }
 
     /// Record `login`, unless its client IP already has `cap` pending
@@ -175,14 +220,17 @@ impl Store {
         .transpose()
     }
 
-    /// Create `session` and its authorization `code`. Codes past
-    /// [`USED_CODE_RETENTION`] are removed.
+    /// Create `session` and its authorization `code`, and record the
+    /// session's person `principal`. Codes past [`USED_CODE_RETENTION`] are
+    /// removed.
     pub(crate) async fn start_session(
         &self,
+        principal: &Principal<'_>,
         session: &NewSession,
         code: &NewCode,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        record_principal(&mut *tx, principal).await?;
         sqlx::query("DELETE FROM broker_authorization_codes WHERE expires_at < $1")
             .bind(session.created_at - USED_CODE_RETENTION)
             .execute(&mut *tx)
