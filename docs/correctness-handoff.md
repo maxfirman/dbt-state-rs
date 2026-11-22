@@ -773,8 +773,11 @@ local-only and renders no Explain tree.
   serve shared logins and retries and the Upstream IdP sees each of its
   refresh tokens at most once; later it is a replay that revokes the
   session (#224, `crates/harness/tests/shared_logins.rs`). The pinned
-  Fusion driver (#223) is still open. The UI reads one configured
-  organization (`DBT_STATE_UI_ORG_ID`).
+  Fusion driver (#223) is still open. The broker registers the UI as its
+  own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
+  tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`), but the
+  UI does not sign in yet (#229): it reads one configured organization
+  (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`

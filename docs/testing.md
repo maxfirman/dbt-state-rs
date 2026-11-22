@@ -238,6 +238,19 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`, and
   renewal in `tests/person_renewal.rs` and, across replicas,
   `tests/shared_logins.rs`.
+- `ui_client.rs` drives the broker as the UI does (`TestAuthBuilder::ui_client()`
+  registers it as `UI_CLIENT_ID` with callback `UI_REDIRECT_URI` and
+  `ui-client-public.pem`): `UiSignIn::new()` is one standard OIDC authorize
+  request (`openid email profile`, `state`, `nonce`, PKCE S256;
+  `.client_id`, `.redirect_uri`, `.scope`, `.without_nonce`,
+  `.without_pkce` vary it); `assertion(aud)` is a good `private_key_jwt`
+  assertion signed with `ui-client-key.pem` through the auth crate's
+  `ClientAssertionKey`, and `Assertion::new(aud)` one to spoil (`.claim`,
+  `.without`, `.issued(ago, lifetime)`, `.signed_by_another_key()`,
+  `.alg`); `exchange`, `refresh` and `token_request` post the token
+  requests. Tests: `tests/ui_client.rs`.
+- `rpcs.rs`: `call_every_rpc(&scenario)` calls each RPC of the protocol with
+  a default body (`tests/oidc.rs`, `tests/ui_client.rs`).
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions,
   `decisions(&server, n)` the `node_decisions` rows once `n` are captured,

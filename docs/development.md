@@ -142,6 +142,12 @@ with redirect URI `<broker.issuer>/callback`. It applies the
 token (`sid`) and a refresh token, which the `refresh_token` grant renews
 after re-checking the person at the Upstream IdP (#221).
 
+The UI signs people in as its own client of the broker (`[clients.ui]`:
+`client_id`, its one `redirect_uri`, and the `public_key_file` of the key
+pair it authenticates with, `private_key_jwt`; #228). Its tokens carry `aud`
+= its client id, so no gRPC RPC accepts them; see
+[protocol.md](protocol.md#token-broker-cratesbroker).
+
 Every RPC with a person token also checks that the token's broker session
 is active: not revoked and not past its 12-hour cap. The gRPC server reads
 the session from its own Postgres, so a standalone broker must share the
