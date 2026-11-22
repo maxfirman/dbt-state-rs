@@ -253,7 +253,7 @@ pub(crate) struct ChangedRerun<'a> {
 pub(crate) struct JudgedRerun {
     pub(crate) rerun: crate::reuse_candidate::RerunEvidence,
     /// The producer revision a confirmed rebuild publishes.
-    pub(crate) producer_revision: Option<i64>,
+    pub(crate) producer_revision: Option<crate::store::ProducerRevision>,
 }
 
 pub(super) fn changed_rerun<'a>(
@@ -309,7 +309,7 @@ impl ChangedRerun<'_> {
             {
                 JudgedRerun {
                     rerun: self.rerun,
-                    producer_revision: Some(self.refused.id),
+                    producer_revision: Some(crate::store::ProducerRevision::of(self.refused)),
                 }
             }
             RerunEvidence::TargetChanged if accounts_for_recorded => JudgedRerun {

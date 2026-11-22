@@ -63,7 +63,7 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
     /// Witness of the input producer transition on an ordinary FULL build (#213).
-    pub(crate) producer_revision: Option<i64>,
+    pub(crate) producer_revision: Option<crate::store::ProducerRevision>,
     pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,

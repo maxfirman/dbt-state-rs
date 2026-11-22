@@ -69,7 +69,7 @@ pub(crate) struct Selection {
     pub rerun_evidence: RerunEvidence,
     /// The latest ordinary build's producer revision for the same rendered
     /// SQL identity, including builds refused for ambiguous Target evidence.
-    pub producer_revision: Option<i64>,
+    pub producer_revision: Option<crate::store::ProducerRevision>,
 }
 
 impl Selection {

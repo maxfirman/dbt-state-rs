@@ -112,6 +112,26 @@ impl From<&qc::TableModifiedInfo> for InputTable {
     }
 }
 
+/// A producer revision (#213, ADR 0007): the prior execution whose rebuild
+/// changed what its downstreams consume although its rendered SQL did not.
+/// A producer recorded with a revision is a distinct Upstream producer from
+/// the same logic without it, or with another revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct ProducerRevision(i64);
+
+impl ProducerRevision {
+    /// The revision established by rebuilding `prior`.
+    pub(crate) fn of(prior: &ExecutionRow) -> Self {
+        Self(prior.id)
+    }
+
+    /// The producer identity `logic` carries under this revision.
+    fn revise(self, logic: String) -> String {
+        format!("revised:{}:{logic}", self.0)
+    }
+}
+
 /// The identity a producer is recorded by (ADR 0007): the rendered logic
 /// hash with a seed's values, else a copy's schema-abstracted logic, with
 /// any established producer revision. Without either hash the caller may
@@ -120,7 +140,7 @@ pub(crate) fn producer_identity(
     node_sql_hash: Option<&str>,
     node_namespace_logic_hash: Option<&str>,
     values_hash: Option<&str>,
-    producer_revision: Option<i64>,
+    producer_revision: Option<ProducerRevision>,
 ) -> Option<String> {
     let logic = match (node_sql_hash, node_namespace_logic_hash) {
         (Some(sql), _) => Some(format!("sql:{sql}:{}", values_hash.unwrap_or(""))),
@@ -128,7 +148,7 @@ pub(crate) fn producer_identity(
         (None, None) => None,
     }?;
     Some(match producer_revision {
-        Some(revision) => format!("revised:{revision}:{logic}"),
+        Some(revision) => revision.revise(logic),
         None => logic,
     })
 }
@@ -159,7 +179,7 @@ pub struct ExecutionRow {
     pub node_configs_hash: Option<String>,
     pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
-    pub(crate) producer_revision: Option<i64>,
+    pub(crate) producer_revision: Option<ProducerRevision>,
     pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
@@ -235,7 +255,10 @@ impl ExecutionRow {
             .map(|(built, other)| built.cmp(&other))
     }
 
-    pub(crate) fn retained_producer_revision(&self, rendered_hash: Option<&str>) -> Option<i64> {
+    pub(crate) fn retained_producer_revision(
+        &self,
+        rendered_hash: Option<&str>,
+    ) -> Option<ProducerRevision> {
         if self.node_sql_hash.as_deref() == rendered_hash && crate::copy_lifecycle::ordinary(self) {
             self.producer_revision
         } else {
