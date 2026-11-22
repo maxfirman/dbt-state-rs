@@ -15,6 +15,10 @@
   Both `uv.lock` files pin public PyPI. If your uv config names another
   package index, `--locked` refuses them; run with `UV_NO_CONFIG=1` (the
   driver passes `UV_*` variables through).
+- **Docker**, only for the opt-in Keycloak suite
+  (`scripts/keycloak.sh start`, then `DBT_STATE_KEYCLOAK=1`; see
+  [testing.md](testing.md#keycloak-upstream-suite)). Without
+  `DBT_STATE_KEYCLOAK=1` its tests skip.
 
 ## Build, lint and test
 
