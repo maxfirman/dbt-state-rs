@@ -39,10 +39,57 @@ def compare_reference(record):
     return {label: steps[label]['physical']['rows'] == rows for label in labels}
 
 
+def check_execution(record, role, node, step):
+    """Verify the observed outcome against its wire confirmation and physical write."""
+    submit = ordinary_submit(step)
+    ((variant, value),) = submit['response']['response'].items()
+    confirms = [rpc for rpc in step['rpcs'] if rpc['method'] == 'ConfirmExecution']
+    operation = step['delta']['operation']
+    case = record['case']
+    label = role + '_' + node
+    if variant == 'skip_execution':
+        if confirms or role == 'prod' or node == 'upstream':
+            raise Refused('unexpected SKIP or confirmation: ' + label)
+        return None
+    if (variant not in ('ready_to_clone', 'ready_to_execute') or len(confirms) != 1
+            or confirms[0]['status']['code'] or not confirms[0]['response']['success']
+            or confirms[0]['request']['request_id'] != value['request_id']):
+        raise Refused('missing correlated confirmation: ' + label)
+    fallback = confirms[0]['request']['failed_to_clone']
+    copied = variant == 'ready_to_clone' and not fallback
+    if variant == 'ready_to_clone':
+        prod = record['steps']['prod_' + node]['relation']
+        if value['clone_source'].replace('`', '') != prod:
+            raise Refused('copy grant named an unexpected source: ' + label)
+    if (copied and operation != 'CLONE') or (not copied and operation != 'CREATE OR REPLACE TABLE AS SELECT'):
+        raise Refused('Delta operation disagrees with confirmed execution: ' + label)
+    if role == 'prod' or node == 'upstream':
+        want_copy = role == 'dev' and case == 'B'
+        expected = 'ready_to_clone' if want_copy else 'ready_to_execute'
+        marker = case + ('_dev' if role == 'dev' and case == 'D' else '_prod')
+        if variant != expected or fallback or step['physical']['rows'] != [[marker]]:
+            raise Refused('upstream history or production build did not establish setup: ' + label)
+        if role == 'dev':
+            prod_submit = ordinary_submit(record['steps']['prod_upstream'])
+            if submit['request']['sql'] != prod_submit['request']['sql']:
+                raise Refused('upstreams must execute identical SQL: ' + label)
+    if variant == 'ready_to_clone':
+        return 'confirmed_copy' if copied else 'client_fallback'
+    return None
+
+
 def check_case(record):
     count = sum(sum(step['rpc_counts'].values()) for step in record['steps'].values())
     if count != record['certified_rpcs']:
         raise Refused('certified capture contains unattributed calls')
+    labels = ['prod_upstream', 'prod_downstream']
+    if record['case'] != 'A':
+        labels.append('dev_upstream')
+    for label in labels + ['dev_downstream', 'dev_downstream_repeat']:
+        role, node = label.removesuffix('_repeat').split('_')
+        step = record['steps'][label]
+        if check_execution(record, role, node, step) != step.get('copy_outcome'):
+            raise Refused('copy outcome disagrees with confirmation: ' + label)
     mismatches = [label for label, equal in compare_reference(record).items() if not equal]
     if mismatches:
         observed = {label: record['steps'][label]['physical']['rows'] for label in mismatches}
@@ -95,8 +142,12 @@ class Origin(Campaign):
     def setup(self):
         scope = self.scope
         # Check the existing schemas and the fresh names before dbt can replace a target.
+        owner = self.sql('current_principal', 'SELECT current_user()')['rows'][0][0]
         for role, schema in scope.roles.items():
-            self.api('get', '/api/2.1/unity-catalog/schemas/cdo_demo_db.' + schema)
+            full_name = 'cdo_demo_db.' + schema
+            info = self.api('get', '/api/2.1/unity-catalog/schemas/' + full_name)
+            if info.get('full_name') != full_name or not owner or info.get('owner') != owner:
+                raise Refused('the current principal must own the selected demo schema: ' + full_name)
             names = ','.join("'" + scope.relation(role, node).split('.')[-1] + "'"
                              for node in ('raw', 'upstream', 'downstream'))
             query = ("SELECT table_name FROM cdo_demo_db.information_schema.tables "
@@ -154,26 +205,9 @@ class Origin(Campaign):
                 or req['allow_clones'] != copies or req['clone_chain_depth_limit'] != int(copies)
                 or state['pre_clone'] != 'never'):
             raise Refused('unexpected submit target or policy: ' + label)
-        variant, value = next(iter(submit['response']['response'].items()))
-        confirms = [c for c in decisions if c['method'] == 'ConfirmExecution']
-        if variant != 'skip_execution':
-            if (len(confirms) != 1 or not confirms[0]['response']['success']
-                    or confirms[0]['request']['request_id'] != value['request_id']):
-                raise Refused('missing correlated confirmation: ' + label)
-        if variant == 'ready_to_clone':
-            if value['clone_source'].replace('`', '') != self.scope.relation('prod', node):
-                raise Refused('copy grant named an unexpected source: ' + label)
-            fallback = confirms[0]['request']['failed_to_clone']
-            step['copy_outcome'] = 'client_fallback' if fallback else 'confirmed_copy'
-            if not fallback and latest['operation'] != 'CLONE':
-                raise Refused('confirmed copy lacks a matching Delta operation: ' + label)
-        if role == 'prod' or node == 'upstream':
-            want_copy = role == 'dev' and self.a.case == 'B'
-            expected = 'ready_to_clone' if want_copy else 'ready_to_execute'
-            marker = self.a.case + ('_dev' if role == 'dev' and self.a.case == 'D' else '_prod')
-            if (variant != expected or confirms[0]['request']['failed_to_clone']
-                    or rows['rows'] != [[marker]]):
-                raise Refused('upstream history or production build did not establish setup: ' + label)
+        outcome = check_execution(self.record, role, node, step)
+        if outcome:
+            step['copy_outcome'] = outcome
 
     def reference(self):
         command = ['show', '--select', 'downstream', '--output', 'json', '--limit', '-1', '--quiet']

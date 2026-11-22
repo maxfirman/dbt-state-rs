@@ -9,6 +9,8 @@ On 2026-11-21, dbt 2.0.11 asked hosted State whether to build a FULL model in de
 | [C](evidence/databricks-upstream-origin/C.json) | Dev relation, independent BUILD with identical SQL and rows | BUILD | `C_prod` | `C_prod` | SKIP, `C_prod` |
 | [D](evidence/databricks-upstream-origin/D.json) | Dev relation, independent BUILD with identical SQL and a changed raw row | BUILD | `D_dev` | `D_dev` | SKIP, `D_dev` |
 
+These native observations are hosted results. The captured submits include explicit `file_format="delta"` alongside `lookback` and `on_schema_change`. The current Rust automatic copy policy admits only the latter two extras. It would decline the A and B grants before considering upstream origin. [Rust submit-copy contract](../databricks-submit-copy.md)
+
 ## What varied
 
 Each case used a fresh project and UUID-prefixed managed Delta tables in two existing `cdo_demo_db` schemas. Both schema inventories showed the names were free. One prod upstream and one prod downstream were built and confirmed before the dev downstream submit. The output object name and model unique ID matched across targets within each case. The downstream model always selected from `ref('upstream')`.
@@ -35,7 +37,7 @@ jq -r '.case as $case | .steps | to_entries[] | select(.key | startswith("dev_")
   docs/reports/evidence/databricks-upstream-origin/*.json
 ```
 
-To repeat the live experiment, use the [Databricks setup](../development.md#databricks-live-setup), hosted State credentials, and two existing demo schemas. The driver creates fresh names and retains the tables and private raw captures. Run A first to establish automatic copy on the setup. [Experiment driver](../../experiments/databricks_upstream_origin.py)
+To repeat the live experiment, use the [Databricks setup](../development.md#databricks-live-setup), hosted State credentials, and two existing demo schemas owned by the current principal. The driver creates fresh names and retains the tables and private raw captures. Run A first to establish automatic copy on the setup. [Experiment driver](../../experiments/databricks_upstream_origin.py)
 
 ```bash
 cargo build -p dbt-state-harness --bin record-proxy
