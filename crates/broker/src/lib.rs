@@ -29,6 +29,10 @@
 //!
 //! It records each Principal it issues a token to (`principals`), keyed by
 //! Upstream IdP issuer and subject, before issuing the token.
+//!
+//! The gRPC server checks each person token's session ([`SessionCheck`],
+//! cached for at most [`SESSION_STATUS_MAX_AGE`]), and the admin command
+//! revokes every session of a Principal ([`revoke_sessions`]).
 
 mod clock;
 mod code_grant;
@@ -37,6 +41,7 @@ mod oauth;
 mod refresh_grant;
 mod remote_keys;
 mod secret;
+mod sessions;
 mod sign_in;
 mod store;
 mod token_endpoint;
@@ -56,6 +61,9 @@ use sqlx::PgPool;
 pub use clock::Clock;
 pub use discovery::{Discovery, DiscoveryError};
 pub use remote_keys::{KeyLocation, RemoteKeys, MAX_AGE, MIN_INTERVAL};
+pub use sessions::{
+    revoke_sessions, Revocation, SessionCheck, SessionCheckError, SESSION_STATUS_MAX_AGE,
+};
 
 use crate::store::Store;
 use crate::upstream::UpstreamIdp;

@@ -14,13 +14,22 @@
 //! ones ([`RemoteKeys`]): refetched when older than
 //! `dbt_state_broker::MAX_AGE`, and when a token's signature fails to
 //! verify (a rotation), at most once per `dbt_state_broker::MIN_INTERVAL`.
+//!
+//! A person token (one with a `sid`) also needs an active broker session:
+//! not revoked and not past its 12-hour cap ([`SessionCheck`], read from
+//! the Postgres the Token broker shares, each status cached on this
+//! replica for at most `dbt_state_broker::SESSION_STATUS_MAX_AGE`, 30 s).
+//! An inactive session is `UNAUTHENTICATED`. When the status cannot be
+//! read the call fails closed with `UNAVAILABLE`, which the client may
+//! retry. Machine tokens carry no `sid` and are not checked.
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
 use dbt_state_auth::{AuthConfig, Rejection, RejectionCode, RequestAuthenticator, TokenError};
-use dbt_state_broker::{KeyLocation, RemoteKeys};
+use dbt_state_broker::{Clock, KeyLocation, RemoteKeys, SessionCheck, SessionCheckError};
+use sqlx::PgPool;
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::Status;
@@ -37,14 +46,34 @@ pub(crate) struct Oidc {
     authenticator: RequestAuthenticator,
     /// The Token broker's keys, when they are fetched rather than loaded.
     remote: Option<RemoteKeys>,
+    /// Person sessions, in `pool`'s schema.
+    sessions: SessionCheck,
+}
+
+/// Why `oidc` mode refused a call.
+enum Refusal {
+    Rejected(Rejection),
+    /// A valid person token whose session status could not be read.
+    SessionUnavailable {
+        context: Box<AuthenticatedContext>,
+        error: sqlx::Error,
+    },
 }
 
 impl Oidc {
-    pub(crate) fn new(config: &AuthConfig) -> Result<Self, reqwest::Error> {
+    /// Checks calls against `config`, and person sessions in `pool` on
+    /// `clock`.
+    pub(crate) fn new(
+        config: &AuthConfig,
+        pool: PgPool,
+        clock: Clock,
+    ) -> Result<Self, reqwest::Error> {
+        let sessions = SessionCheck::new(pool, clock);
         Ok(match config.verification_keys() {
             Some(keys) => Self {
                 authenticator: config.request_authenticator(keys),
                 remote: None,
+                sessions,
             },
             None => {
                 let location = match config.broker_jwks_url() {
@@ -55,12 +84,43 @@ impl Oidc {
                 Self {
                     authenticator: config.request_authenticator(remote.keys()),
                     remote: Some(remote),
+                    sessions,
                 }
             }
         })
     }
 
+    /// The token and Organization, then a person token's session.
     async fn authenticate(
+        &self,
+        authorization: Option<&[u8]>,
+        organization: Option<&[u8]>,
+    ) -> Result<AuthenticatedContext, Refusal> {
+        let context = self
+            .authenticate_token(authorization, organization)
+            .await
+            .map_err(Refusal::Rejected)?;
+        let Some(session) = &context.session else {
+            return Ok(context);
+        };
+        match self.sessions.check(session).await {
+            Ok(()) => Ok(context),
+            Err(SessionCheckError::Inactive(refusal)) => {
+                Err(Refusal::Rejected(Rejection::Session {
+                    refusal,
+                    session: session.clone(),
+                    principal: context.principal,
+                    client_id: context.client_id,
+                }))
+            }
+            Err(SessionCheckError::Unavailable(error)) => Err(Refusal::SessionUnavailable {
+                context: Box::new(context),
+                error,
+            }),
+        }
+    }
+
+    async fn authenticate_token(
         &self,
         authorization: Option<&[u8]>,
         organization: Option<&[u8]>,
@@ -152,7 +212,20 @@ where
                     request.extensions_mut().insert(context);
                     inner.call(request).await
                 }
-                Err(rejection) => {
+                Err(Refusal::SessionUnavailable { context, error }) => {
+                    tracing::warn!(
+                        rpc = request.uri().path(),
+                        reason = "session_status_unavailable",
+                        principal = context.principal.as_str(),
+                        client_id = context.client_id,
+                        session = context.session,
+                        organization = context.organization.as_str(),
+                        %error,
+                        "gRPC request refused"
+                    );
+                    Ok(Status::unavailable("session status unavailable").into_http())
+                }
+                Err(Refusal::Rejected(rejection)) => {
                     let organization = request
                         .headers()
                         .get(ORGANIZATION)
@@ -162,6 +235,7 @@ where
                         reason = rejection.reason(),
                         principal = rejection.principal().map(|p| p.as_str()),
                         client_id = rejection.client_id(),
+                        session = rejection.session(),
                         organization,
                         "gRPC request refused"
                     );
