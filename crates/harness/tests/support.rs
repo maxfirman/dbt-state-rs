@@ -119,6 +119,35 @@ pub fn clone_response_variant(resp: &qc::CloneResponse) -> &'static str {
     }
 }
 
+/// Mask opaque response IDs while preserving field presence and other data.
+pub fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
+    fn remove_ids(m: &mut serde_json::Map<String, serde_json::Value>) {
+        for key in ["request_id", "execution_decision_id"] {
+            if let Some(value) = m.get_mut(key) {
+                if value.is_string() {
+                    *value = serde_json::Value::String("<opaque>".into());
+                }
+            }
+        }
+    }
+    if let serde_json::Value::Object(root) = &mut value {
+        remove_ids(root);
+        // A RegisterClone response carries its copy at the top level
+        // (`ready_to_clone`) as well as under the deprecated `response` oneof.
+        if let Some(serde_json::Value::Object(copy)) = root.get_mut("ready_to_clone") {
+            remove_ids(copy);
+        }
+        if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
+            for payload in variants.values_mut() {
+                if let serde_json::Value::Object(fields) = payload {
+                    remove_ids(fields);
+                }
+            }
+        }
+    }
+    value
+}
+
 /// Build a tonic::Request wrapping `body` with the `x-organization-id` metadata
 /// header set to `org`. Mirrors how the real dbt client scopes calls per org.
 pub fn request_with_org<T>(body: T, org: &str) -> tonic::Request<T> {

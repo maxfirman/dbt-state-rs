@@ -20,6 +20,7 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [harness.md](harness.md) | Recording proxy and how real traffic is captured. |
 | [correctness-handoff.md](correctness-handoff.md) | Open hosted questions, known divergences, deployment gaps, reuse invariants. |
 | [hosted-behavior.md](hosted-behavior.md) | Hosted behavior matrix: what the hosted service does and whether this server reproduces it. |
+| [Hosted Result copy source selection](reports/result-copy-source-selection-2026-11-22.md) | Native upstream-origin and crafted candidate-order comparisons for Snowflake and Databricks. |
 | [sql-normalization.md](sql-normalization.md) | How SQL text enters the Snowflake logic identity. |
 | [explain-catalog.md](explain-catalog.md) | `dbt state explain` trees, lines and badges, and how a shape is selected. |
 | [ui.md](ui.md) | The read-only web console: pages, running it, data it reads. |

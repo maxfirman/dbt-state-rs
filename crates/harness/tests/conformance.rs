@@ -12,7 +12,7 @@ use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
 use qc::sql_client::SqlClient;
 use std::collections::{HashMap, HashSet};
-use support::{databricks_decision_time, hosted_submit_edid};
+use support::{databricks_decision_time, hosted_submit_edid, normalize_ids};
 
 /// Successful calls retain new capture metadata; old fixtures omit it.
 trait CapturedResponse<T> {
@@ -331,34 +331,6 @@ fn databricks_replay_causality_keeps_distinct_physical_scopes() {
     changed_identity["compare_unrendered_code"] = true.into();
     changed_identity["sql"] = "select 160 as changed".into();
     assert_eq!(identity(&base), identity(&changed_identity));
-}
-
-fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
-    fn remove_ids(m: &mut serde_json::Map<String, serde_json::Value>) {
-        for key in ["request_id", "execution_decision_id"] {
-            if let Some(value) = m.get_mut(key) {
-                if value.is_string() {
-                    *value = serde_json::Value::String("<opaque>".into());
-                }
-            }
-        }
-    }
-    if let serde_json::Value::Object(root) = &mut value {
-        remove_ids(root);
-        // A RegisterClone response carries its copy at the top level
-        // (`ready_to_clone`) as well as under the deprecated `response` oneof.
-        if let Some(serde_json::Value::Object(copy)) = root.get_mut("ready_to_clone") {
-            remove_ids(copy);
-        }
-        if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
-            for payload in variants.values_mut() {
-                if let serde_json::Value::Object(fields) = payload {
-                    remove_ids(fields);
-                }
-            }
-        }
-    }
-    value
 }
 
 /// A value format of a rendered Volatile function.

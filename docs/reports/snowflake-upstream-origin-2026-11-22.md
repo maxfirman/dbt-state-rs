@@ -5,8 +5,8 @@ the origin of a dev upstream change hosted State's Result copy decision for
 an ordinary FULL submit, and which rows does the dev Target then serve? Each
 fact is marked **Observed** (read from the capture or the warehouse) or
 **Inferred** (the likeliest rule, not proven). This note changes no server
-code. The comparison with Databricks (#238) and any policy change belong to
-#242 and #243.
+code. The [cross-warehouse comparison](result-copy-source-selection-2026-11-22.md)
+provides the evidence handoff for the #243 refactor.
 
 ## Outcome
 
@@ -26,13 +26,12 @@ code. The comparison with Databricks (#238) and any policy change belong to
   downstream in B, C and D in both runs. In D that serves the prod marker:
   replaying run 2 natively against this server (dbt 2.0.11, Snowflake)
   served `v='prod'` where the Reference execution serves `v='dev'`. This is
-  the dev-input case #236 user story 2 describes. #239's crafted histories
-  observed the same outcome in another setup: this server copied a source
-  whose SQL matches once schemas are abstracted but which read another
-  relation of the same name (a third schema, `CSC_UP_ALT`), where hosted
-  built. Keyed as open gaps, not accepted divergences, for policy review in
-  #242 and #243. The rehearsal's reads, phases and RPCs are in the
-  [evidence extract](evidence/snowflake-upstream-origin/D.json).
+  the dev-input case #236 user story 2 describes. In #239's crafted histories,
+  this server granted a copy of a source that read another relation of the
+  same name (in `CSC_UP_ALT`), where hosted built. Those histories captured
+  RPC decisions. The rehearsal's reads, phases and RPCs support the physical
+  finding. [Evidence extract](evidence/snowflake-upstream-origin/D.json),
+  [policy review #264](https://github.com/maxfirman/dbt-state-rs/issues/264).
 
 ## Provenance
 
@@ -210,8 +209,9 @@ so no copy fell back to a build on the client.
   code, not from a capture: `submit_decision/copy_search.rs` takes an
   equivalent recorded under another Target when the schema-abstracted logic
   identity holds, and nothing ties the candidate's recorded upstream read to
-  the physical upstream the submit reads. #239's middle source shows the same
-  outcome; whether it has the same cause is not established.
+  the physical upstream the submit reads. #239's grant from the middle source
+  also has different input bindings. The experiments leave their shared cause
+  open.
 
 ## Replay
 

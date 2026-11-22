@@ -428,8 +428,10 @@ server keeps the conservative behavior described.
   built and confirmed in the capture, B's run-2 shape) and
   `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
   built in an earlier session). What separates those from #237 case B is
-  open; the report lists the observed differences
-  ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
+  open. Databricks copied the downstream over a confirmed upstream copy in
+  its native case B. The reports document the setup differences that limit
+  the comparison. [Cross-warehouse comparison](reports/result-copy-source-selection-2026-11-22.md),
+  [Snowflake report](reports/snowflake-upstream-origin-2026-11-22.md).
 - **Seed copy, uncaptured cases (#91).** A seed whose target forbids copies
   with `clone_chain_depth_limit: 0` alone (client 2.0.11 sends it only with
   `allow_clones: false`, which is captured: 1 / 10, the ordinary load
@@ -700,15 +702,15 @@ upstream, this server also reports prod's upstream as an equivalent where
 hosted reports none (field-scoped gaps I34, I42, T39, T51, and the Explains
 T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
 (I23, T29, T36), the rendering gap #239 also reports.
-**Correctness finding:** in D the copy
-serves rows computed from prod's input. A native run of the table scenario
-against this server served `v='prod'` where the measured dev upstream and the
-Reference-step read both held `v='dev'`. #239's middle source shows the same outcome
-(a source that read another relation of the same name, there in a third
-schema); a shared cause is inferred from `copy_search.rs`, not observed.
-Evidence: `docs/reports/evidence/snowflake-upstream-origin/`. Open for #242 and
-#243, not an accepted divergence
-([report](reports/snowflake-upstream-origin-2026-11-22.md)).
+**Correctness finding.** In D a native run of the table scenario against
+this server copied the prod downstream and served `v='prod'` after
+confirmation and after the next unchanged SKIP. The dev upstream and the
+verified State-disabled Reference both held `v='dev'`. #239's crafted
+different-input grants provide comparable protocol evidence with no
+warehouse execution. The wrong-row finding remains open for policy review.
+[Native D evidence](reports/evidence/snowflake-upstream-origin/D.json),
+[refactor handoff](reports/result-copy-source-selection-2026-11-22.md),
+[policy review #264](https://github.com/maxfirman/dbt-state-rs/issues/264).
 
 **Open — copy source choice among competing sources (#239, crafted,
 2026-11-21).** `copy_source_choice.jsonl` crafts thirteen Snowflake histories
@@ -724,15 +726,16 @@ completed later (entries 20, 26), and builds when all three compete and
 `mid` completed after `old` (entries 46, 54). `submit_decision/copy_search.rs`
 copies an equivalent whose recorded upstream reads differ from the submit's
 unjudged when it is the first candidate offered, and stops at one after a
-freshness rejection. Entries 10 and 78 serve a result computed from another
-physical input than the destination reads. Why hosted refuses `mid` (logic
-identity, or a requirement that the source read the destination's own
-upstream relations) is not observable in these histories. These decision
-gaps are open for #242 and #243, not accepted divergences. Separately,
-hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
-that this server renders on Databricks only; those Explain gaps (entries 3,
-7, 33, 39, 61, 67, 75) are tracked in #252
-([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
+freshness rejection. Entries 10 and 78 grant copies from a source whose
+recorded physical input differs from the destination's. These crafted
+histories end at the decision and Explain RPCs. They leave open whether
+hosted's refusal follows from Logical copy identity or a separate input
+check. The decision gaps remain open and the local outcomes are pinned for
+#243. Hosted's copy trees list a same-input upstream `<FRESH>` with an
+anchor line that this server renders on Databricks only. The Snowflake
+Explain gaps (entries 3, 7, 33, 39, 61, 67, 75) are tracked in #252.
+[Cross-warehouse comparison](reports/result-copy-source-selection-2026-11-22.md),
+[Snowflake report](reports/snowflake-copy-source-choice-2026-11-21.md).
 
 ### Accepted divergences
 

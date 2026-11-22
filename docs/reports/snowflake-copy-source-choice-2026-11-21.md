@@ -5,8 +5,8 @@ hosted State offers to copy when several Snowflake builds of one model could
 be the source of an ordinary FULL submit into an absent Target relation. Each
 fact is marked **Observed** (read from the capture or its replay) or
 **Inferred** (the likeliest rule, not proven). This note changes no server
-code. The comparison with Databricks (#240) and any policy change belong to
-#242 and #243.
+code. The [cross-warehouse comparison](result-copy-source-selection-2026-11-22.md)
+provides the evidence handoff for the #243 refactor.
 
 ## Provenance
 
@@ -191,8 +191,9 @@ keyed in `golden/replay_gaps.json` as an open divergence:
 - `mid_alone`, `mid_current_alone` (entries 10, 78): it copies `mid` where
   hosted builds. `submit_decision/copy_search.rs` copies an equivalent whose
   recorded upstream reads differ from the submit's unjudged when it is the
-  first candidate offered. That copy serves a result computed from
-  `csc_up_alt.<src>` to a destination that reads `csc_up.<src>`.
+  first candidate offered. The grant names the result whose recorded input is
+  `csc_up_alt.<src>` for a destination that reads `csc_up.<src>`. These crafted
+  RPCs execute no copy and record no warehouse rows.
 - `old_mid`, `old_mid_rev` (entries 20, 26): it copies `mid`, the newest
   completion, where hosted copies `old`. Decision, codes and description
   agree, so these gaps are field-scoped to `clone_source`, `clone_sqls`,
