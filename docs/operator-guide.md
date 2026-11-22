@@ -20,7 +20,9 @@ against a fake Upstream IdP in the harness. An opt-in suite runs them against
 Keycloak 26.8.2 ([testing.md](testing.md#keycloak-upstream-suite)). CI runs
 the pinned Python client's own auth code (`dbt-state==2.62.6`) over TLS, and
 an opt-in job runs pinned Fusion's (`dbt-fusion@9977b6c`,
-[testing.md](testing.md#pinned-fusion-driver)). The Entra ID and Okta
+[testing.md](testing.md#pinned-fusion-driver)). An opt-in live run has the
+released dbt 2.0.11 binary build on Snowflake as a machine and as a person
+([testing.md](testing.md#live-fusion-acceptance-on-snowflake)). The Entra ID and Okta
 recipes follow the vendors' documentation; no test in this repository runs
 against either.
 
@@ -508,8 +510,10 @@ From Okta's documentation; not run by any test here. Config:
   the pinned Fusion driver, #223). The broker's token URL must therefore
   present a certificate from a publicly trusted CA, at the broker or at a
   TLS-terminating proxy. Fusion's gRPC channel uses the host's roots, so a
-  private CA works there (`SSL_CERT_FILE`). Whether an official dbt release
-  is built the same way is unknown.
+  private CA works there (`SSL_CERT_FILE`). The released dbt 2.0.11 binary
+  differs: its token requests also trust `SSL_CERT_FILE`, so a private CA
+  added there works for both its connections (observed in the live
+  Snowflake acceptance, #232).
 - The pinned Python client trusts a private CA for gRPC through
   `RUN_CACHE_CA_BUNDLE`, and for token requests (Python `requests`) through
   `REQUESTS_CA_BUNDLE`.
@@ -609,7 +613,10 @@ against this deployment.
 
 **Headless people.** The Python client opens no browser in CI (a `CI` or
 similar variable) or without a terminal; current `dbt-labs/dbt` fails fast
-without one. Pipelines use machine credentials.
+without one. dbt 2.0.11 warns "dbt State authentication requires an
+interactive terminal, but none is available in this environment; executing
+normally" and builds without dbt State (#232). Pipelines use machine
+credentials.
 
 **Failures.** A 4xx from the token endpoint fails the dbt run. A gRPC
 `UNAUTHENTICATED` or `PERMISSION_DENIED` makes the client disable dbt State
@@ -808,7 +815,9 @@ Remaining deployment gaps are tracked in
   deleted;
 - no rate limiting beyond the pending sign-in cap;
 - the broker, a key-fetching gRPC server and the console trust only public
-  roots for outbound https, and pinned Fusion's token requests do too;
+  roots for outbound https, and so do token requests of Fusion built from
+  `dbt-fusion@9977b6c` (the released dbt 2.0.11 binary also trusts
+  `SSL_CERT_FILE`);
 - dbt platform token exchange is refused;
 - hosted dbt State's own status codes and messages for auth failures are
   not characterized.

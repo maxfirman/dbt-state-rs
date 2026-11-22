@@ -91,5 +91,7 @@ in an otherwise cleared environment.
   builds the same reqwest trusting the native roots as well. This is the
   driver's one change to Fusion's behavior: a build feature, not a source
   change. It means a deployment's Token broker must present a certificate
-  from a publicly trusted CA for pinned Fusion, while its gRPC listener
-  may use a private CA that the host trusts.
+  from a publicly trusted CA for a client built from this source, while its
+  gRPC listener may use a private CA that the host trusts. The released
+  dbt 2.0.11 binary also trusts `SSL_CERT_FILE` for its token requests
+  (#232, [docs/testing.md](../../../docs/testing.md#live-fusion-acceptance-on-snowflake)).

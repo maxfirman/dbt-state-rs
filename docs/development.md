@@ -107,7 +107,8 @@ DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
 ```
 
 The harness's tests run all of this against a fake Upstream IdP
-([testing.md](testing.md)); the Keycloak suite and the pinned Fusion driver
+([testing.md](testing.md)); the Keycloak suite, the pinned Fusion driver and
+the [live Fusion acceptance on Snowflake](testing.md#live-fusion-acceptance-on-snowflake)
 are opt-in.
 
 ## Running the UI

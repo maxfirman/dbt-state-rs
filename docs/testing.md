@@ -388,6 +388,78 @@ outside the Actions cache) and runs the suite on the weekly schedule, on
 manual dispatch, and on pull requests that change the driver, the suite or
 the auth code.
 
+## Live Fusion acceptance on Snowflake
+
+`crates/harness/tests/fusion_snowflake.rs` runs the pinned official dbt
+binary (dbt **2.0.11**, SHA-256
+`f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31`, the
+client the live captures pin; the test refuses any other) through a real
+`dbt build` on Snowflake, against the harness's TLS test server in `oidc`
+mode with its Token broker and the fake Upstream IdP (#232):
+
+1. a CI machine builds a one-seed, one-table project with
+   `client_credentials` (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
+   `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`). Both decisions are BUILD in
+   the run's Organization under the machine's Principal (issuer = the fake
+   IdP, subject `sp-ci-pipeline`, kind `machine`), and no token is written
+   to disk;
+2. a person builds the same project through dbt's browser flow. dbt opens
+   the sign-in URL with `xdg-open` from `PATH`; the test's `xdg-open` is a
+   shell script that follows the redirects with `curl` through the Token
+   broker and the fake IdP to dbt's loopback handler, and refuses any URL
+   outside the broker. Both decisions are SKIP (reusing the machine's
+   builds in the same Organization) under the person's Principal (kind
+   `person`), and the token lands in the person's `~/.dbt/state_auth.json`.
+
+It is opt-in and never runs in CI: it needs Snowflake credentials, spends
+Snowflake compute (three dbt invocations; a run takes about 30 s), and
+builds only in
+`CDO_DEMO_DB`. Run it with the script, which needs Postgres at
+`$DATABASE_URL`, `python3` with PyYAML, `curl` and util-linux `script`:
+
+```bash
+DBT_STATE_FUSION_DBT=~/.local/bin/dbt ./scripts/fusion-snowflake.sh
+```
+
+Without `DBT_STATE_FUSION_SNOWFLAKE_PROFILE` (which the script sets) the
+test skips, so `cargo test` never reaches Snowflake. Safety rules:
+
+- **Only `CDO_DEMO_DB`.** The script copies one profile output
+  (`DBT_STATE_SNOWFLAKE_PROFILE`.`DBT_STATE_SNOWFLAKE_TARGET`, default
+  `snowflake`.`cdo_demo`, from `DBT_STATE_SNOWFLAKE_PROFILES`, default
+  `~/.dbt/profiles.yml`) to a private temporary file and refuses it unless
+  it is a Snowflake output whose database is `CDO_DEMO_DB`; the test checks
+  again. Variables the output reads with `env_var` are passed to dbt; the
+  test refuses an output that reads a dbt State, dbt platform or trust
+  setting (`RUN_CACHE_*`, `DBT_ENGINE_*`, `DBT_CLOUD_*`,
+  `DBT_ENV_SECRET_STATE_*`, `HOME`, `SSL_CERT_FILE`, and the like). The
+  run builds into its own schema, `DBT_STATE_FUSION_<random>`, with one
+  thread, and drops that schema at the end (also when the test fails) with
+  a macro that refuses any other database or schema. A run killed before
+  it ends leaves that schema behind; the test prints its name first.
+- **Never hosted dbt State.** dbt runs in an emptied environment with a
+  temporary `HOME` holding only the copied profile, so it never sees
+  `~/.dbt/dbt_cloud.yml` (a dbt platform credential would select token
+  exchange) and never writes the real `~/.dbt/state_auth.json`. Every
+  dbt State URL (`RUN_CACHE_API_URL`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL` and their `DBT_ENGINE_STATE_*` forms) names the
+  local deployment, and anonymous usage statistics are off. The binary
+  still checks for a newer dbt release at startup, which is not dbt State.
+
+What the run established about dbt 2.0.11 (2026-11-22):
+
+- Its token requests trust `SSL_CERT_FILE`: the Token broker presented the
+  harness's test certificate, and the CA bundle the test passes (the host's
+  roots plus the test CA) was enough. Pinned Fusion's source
+  (`dbt-fusion@9977b6c`, the [pinned Fusion driver](#pinned-fusion-driver))
+  trusts only public roots there, so the released binary differs; a
+  private CA works for it without a TLS-terminating proxy.
+- Its browser flow needs an interactive terminal. Without one it warns
+  `dbt State authentication requires an interactive terminal, but none is
+  available in this environment; executing normally` and builds without
+  dbt State, so the test runs the person's build in a pseudo-terminal
+  (util-linux `script`).
+
 ## Offline regressions
 
 - `offline_regressions.rs` and `correctness.rs`: public gRPC decisions and

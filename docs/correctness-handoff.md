@@ -764,7 +764,10 @@ local-only and renders no Explain tree.
   [operator guide](operator-guide.md). Evidence: the fake Upstream IdP in
   every `cargo test`, Keycloak 26.8.2 in the opt-in `keycloak` job (#227),
   the pinned Python client's own auth code over TLS in CI (#219, #222), and
-  pinned Fusion's in the opt-in `fusion` job (#223). The default
+  pinned Fusion's in the opt-in `fusion` job (#223), and the released dbt
+  2.0.11 binary building on Snowflake (`CDO_DEMO_DB`) as a machine and as a
+  person, each build's decisions under its own Principal, in an opt-in live
+  run (#232, `crates/harness/tests/fusion_snowflake.rs`). The default
   `DBT_STATE_AUTH=none` mode authenticates nothing: header-based
   Organization selection is isolation, and the server refuses a
   non-loopback address unless `DBT_STATE_ALLOW_INSECURE=true`. What remains
@@ -777,7 +780,9 @@ local-only and renders no Explain tree.
     which the broker would refuse and end the session over.
   - **Public roots only.** Pinned Fusion's token requests trust only the
     public Mozilla roots (`dbt-fusion@9977b6c`, #223), so the broker's token
-    URL needs a publicly trusted certificate. The broker, a gRPC server
+    URL needs a publicly trusted certificate for a client built from that
+    source. The released dbt 2.0.11 binary also trusts `SSL_CERT_FILE` there
+    (#232). The broker, a gRPC server
     fetching the broker's keys, and the console also trust only public
     roots for their outbound requests, so the Upstream IdP and any internal
     broker URL need one too (or plain http on loopback).

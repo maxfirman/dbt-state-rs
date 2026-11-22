@@ -252,6 +252,15 @@ schemas when each uses its own port and work directory:
 The older shell drivers below `cd` into the shared checkout and `git restore`
 it, so they are not safe to run alongside another campaign.
 
+## Live Fusion acceptance on Snowflake
+
+`scripts/fusion-snowflake.sh` runs the pinned dbt 2.0.11 binary through a
+real `dbt build` on Snowflake against a local deployment in `oidc` mode (a
+machine and a person, each build's decisions under its own Principal), not
+against hosted dbt State and without the recording proxy. It writes only its
+own schema in `CDO_DEMO_DB` and drops it at the end. See
+[testing.md](testing.md#live-fusion-acceptance-on-snowflake).
+
 ## Live clone runs
 
 Forcing the dbt client to take a result copy against this server live depends
