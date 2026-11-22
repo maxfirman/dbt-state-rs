@@ -66,6 +66,10 @@ Source fixtures (`golden/fixtures/`):
 - `lag_copy_candidates.jsonl`: CLONE over an existing Target relation, anchored
   CLONE listing, absent-target rebuilds.
 - `lag_dropped_targets.jsonl`: stale CLONE into a dropped Target relation.
+- `copy_source_choice.jsonl` (#239, crafted): CLONE into an absent Target
+  relation from a source that read the same upstream relation at the same
+  epoch, which hosted lists `<FRESH>` (below), and first-build trees with
+  `there is no other table that the model could be cloned from`.
 - `lag_tolerance_matrix.jsonl`, `lag_upstream_query_listing.jsonl`: Lag
   tolerance lines and the per-upstream query listing.
 - `explain_snapshot_history.jsonl` (client 2.0.11): snapshot first build,
@@ -420,28 +424,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 1324 trees in the
+Line counts from the [census](#explain-tree-census) over the 1338 trees in the
 tracked fixtures (2026-11-21). A line without a marker or badge is "none"
-(6985 lines without a marker, 8542 without a badge). Only an explicit `0` is
+(7065 lines without a marker, 8661 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 3356 lines |
-| ExplainMarker | FAIL (2) | ✅ 897 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 3400 lines |
+| ExplainMarker | FAIL (2) | ✅ 914 lines |
 | ExplainMarker | INFO (3) | ✅ 168 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1324 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1338 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 991 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 190 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 27 `databricks_*.jsonl` captures) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 785 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 796 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 40 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 15 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 540 lines |
+| ExplainBadge | FRESH (1) | ✅ 551 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 256 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 47 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1324 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1338 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 1324 tracked trees: 877 client 2.0.11, 438 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
+1. Origins across the 1338 tracked trees: 877 client 2.0.11, 452 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -461,13 +465,13 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-21 (1324 trees in 162 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-21 (1338 trees in 164 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
 | FULL | SKIP | 275 | 155 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 345 | 208 client 2.0.11, 135 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
-| FULL | CLONE | 11 | 7 crafted, 3 client 2.0.11, 1 client 2.0.6 |
+| FULL | EXECUTE | 348 | 208 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | CLONE | 22 | 18 crafted, 3 client 2.0.11, 1 client 2.0.6 |
 | APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 33 | 29 client 2.0.11, 4 crafted |
 | MERGE | SKIP | 24 | 24 client 2.0.11 |
@@ -1676,7 +1680,14 @@ verdict:
 
 Without a matched build the listing has no `<FRESH>`/`<OUTDATED>` badge and no
 `no updates since … last executed` line (`explain_clone_history.jsonl`,
-`explain.rs::clone_upstream_dependencies`). When the copy keeps the Target
+`explain.rs::clone_upstream_dependencies`). When the copy source read the
+submit's upstream relation at the epoch the submit reports, hosted lists that
+upstream `<FRESH>` with `no updates since "«destination FQN»" last executed`
+(the absent destination, not the source), on Snowflake
+(`copy_source_choice.jsonl`, eleven trees, #239) and on Databricks
+(`databricks_submit_copy.jsonl` entry 13). This server renders that listing on
+Databricks only; the Snowflake trees are keyed gaps in
+`golden/replay_gaps.json` (open, #252). When the copy keeps the Target
 relation's own build as its anchor, the listing is the anchored SKIP one
 (`lag_copy_candidates` `de`). A copy of a stale equivalent ends with
 `upstream data is outdated` [FAIL] and, with a non-zero tolerance, the Lag

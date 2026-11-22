@@ -377,5 +377,226 @@
     "entry": 28,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 3,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 2 (#239, history old_alone, control-only run): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 7,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 6 (#239, history old_alone): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 10,
+    "local_variant": "ready_to_clone",
+    "reason": "OPEN DIVERGENCE (#239, history mid_alone): an absent FULL destination whose only equivalent is the different-input source `mid` (CSC_MID, reads CSC_UP_ALT.<src> where the destination reads CSC_UP.<src>: the same SQL once schemas are abstracted), its relation read at B-60s. Hosted builds (6/6, 'model was executed because its table did not exist', and its tree says 'there is no other table that the model could be cloned from'); the local server copies `mid`, because copy_search.rs copies an equivalent whose recorded upstream reads differ from the submit's unjudged, but only as the first candidate offered. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "local_payload_fields": {
+      "clone_source": "\"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_MID_ALONE\"",
+      "clone_sqls": [
+        "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"CSC_DEST\".\"CSC2346130F59D0_MID_ALONE\"\n            CLONE \"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_MID_ALONE\"\n            COPY GRANTS"
+      ],
+      "clone_required_last_modified_epoch": 1795304790668,
+      "execution_runtime_ms": 51122
+    }
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 11,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 10 (#239): hosted explains its first build; the local server explains its copy of `mid`. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 20,
+    "local_variant": "ready_to_clone",
+    "ignore_fields": [
+      "clone_sqls",
+      "clone_source",
+      "clone_required_last_modified_epoch",
+      "execution_runtime_ms"
+    ],
+    "reason": "OPEN DIVERGENCE, field-scoped (#239, history old_mid): the fresh source `old` (CSC_OLD, read the destination's upstream relation at the destination's epoch) and the different-input source `mid` (CSC_MID, reads CSC_UP_ALT.<src> where the destination reads CSC_UP.<src>: the same SQL once schemas are abstracted), `mid` completing later. Hosted copies `old`; the local server copies `mid`, the newest completion, because copy_search.rs copies an equivalent whose recorded upstream reads differ from the submit's unjudged, but only as the first candidate offered. Decision, codes and description agree. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "local_payload_fields": {
+      "clone_source": "\"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_OLD_MID\"",
+      "clone_sqls": [
+        "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"CSC_DEST\".\"CSC2346130F59D0_OLD_MID\"\n            CLONE \"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_OLD_MID\"\n            COPY GRANTS"
+      ],
+      "clone_required_last_modified_epoch": 1795304813951,
+      "execution_runtime_ms": 51322
+    }
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 21,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 20 (#239): hosted's tree names `old` as the copy source; the local tree names `mid`. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 26,
+    "local_variant": "ready_to_clone",
+    "ignore_fields": [
+      "clone_sqls",
+      "clone_source",
+      "clone_required_last_modified_epoch",
+      "execution_runtime_ms"
+    ],
+    "reason": "OPEN DIVERGENCE, field-scoped (#239, history old_mid_rev): as entry 20, the two sources confirmed in reverse completion order. Hosted copies `old`; the local server copies `mid`. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "local_payload_fields": {
+      "clone_source": "\"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_OLD_MID_REV\"",
+      "clone_sqls": [
+        "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"CSC_DEST\".\"CSC2346130F59D0_OLD_MID_REV\"\n            CLONE \"CDO_DEMO_DB\".\"CSC_MID\".\"CSC2346130F59D0_OLD_MID_REV\"\n            COPY GRANTS"
+      ],
+      "clone_required_last_modified_epoch": 1795304827092,
+      "execution_runtime_ms": 51422
+    }
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 27,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 26 (#239): hosted's tree names `old` as the copy source; the local tree names `mid`. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 33,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 32 (#239, history old_new): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 39,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 38 (#239, history old_new_rev): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 46,
+    "local_variant": "ready_to_execute",
+    "reason": "OPEN DIVERGENCE (#239, history old_mid_new): the fresh source `old` (CSC_OLD, read the destination's upstream relation at the destination's epoch), the different-input source `mid` (CSC_MID, reads CSC_UP_ALT.<src> where the destination reads CSC_UP.<src>: the same SQL once schemas are abstracted) and the stale source `new` (CSC_NEW, read CSC_UP.<src> before its change; Lag tolerance 0), completing in that order and confirmed in that order. Hosted copies `old`; the local server passes over the stale `new`, then stops at `mid` and builds (6/6), because after a freshness rejection copy_search.rs accepts only another equivalent with the submit's upstream reads. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 47,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 46 (#239): hosted's tree names `old` as the copy source; the local server explains its first build. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 54,
+    "local_variant": "ready_to_execute",
+    "reason": "OPEN DIVERGENCE (#239, history old_mid_new_rev): as entry 46, the three sources confirmed in reverse completion order. Hosted copies `old`; the local server builds (6/6). Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 55,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 54 (#239): hosted's tree names `old` as the copy source; the local server explains its first build. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 61,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 60 (#239, history old_mid_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 67,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 66 (#239, history old_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 75,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE, line- and badge-scoped, explain of entry 74 (#239, history old_mid_new_late): both copy `old`, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). This server renders the hosted listing on Databricks (databricks_submit_copy.jsonl entry 13). Tracked in #252. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "ignore_explain_lines": [
+      "no updates since «FQN» last executed"
+    ],
+    "ignore_explain_badges": [
+      {
+        "text": "«FQN»",
+        "badge": 1
+      }
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 78,
+    "local_variant": "ready_to_clone",
+    "reason": "OPEN DIVERGENCE (#239, history mid_current_alone): as entry 10, with `mid` reading CSC_UP_ALT.<src> at the epoch the destination reports for CSC_UP.<src>. Hosted still builds (6/6, the same tree); the local server copies `mid`, because copy_search.rs copies an equivalent whose recorded upstream reads differ from the submit's unjudged, but only as the first candidate offered. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md.",
+    "local_payload_fields": {
+      "clone_source": "\"CDO_DEMO_DB\".\"CSC_MID\".\"CSC00352880A044_MID_CURRENT_ALONE\"",
+      "clone_sqls": [
+        "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"CSC_DEST\".\"CSC00352880A044_MID_CURRENT_ALONE\"\n            CLONE \"CDO_DEMO_DB\".\"CSC_MID\".\"CSC00352880A044_MID_CURRENT_ALONE\"\n            COPY GRANTS"
+      ],
+      "clone_required_last_modified_epoch": 1795307733144,
+      "execution_runtime_ms": 51222
+    }
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 79,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 78 (#239): hosted explains its first build; the local server explains its copy of `mid`. Characterization only; source-choice policy is for #242 and #243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   }
 ]
