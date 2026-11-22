@@ -8,7 +8,8 @@
 //!   `client_secret_basic` in Python) and the form
 //!   `grant_type=client_credentials&scope=runcache:scope:orgs`;
 //! - with a dbt platform credential, token exchange
-//!   (`urn:ietf:params:oauth:grant-type:token-exchange`), refused here.
+//!   (`urn:ietf:params:oauth:grant-type:token-exchange`), refused here;
+//! - otherwise, after browser sign-in, `authorization_code` (`code_grant`).
 //!
 //! Both read `id_token` (whose `scope` claim names the Organizations),
 //! `token_type` (Python requires it), and `expires_in`; `refresh_token` only
@@ -19,9 +20,6 @@
 //! the grant, the Principal when known, the client id and the reason. Token
 //! values and secrets are never logged.
 
-use std::collections::BTreeMap;
-use std::time::SystemTime;
-
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue};
@@ -31,15 +29,15 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use dbt_state_auth::{PrincipalId, PrincipalKind, TokenRequest};
 use serde_json::json;
+use std::collections::BTreeMap;
 
+use crate::code_grant::{self, AUTHORIZATION_CODE};
 use crate::oauth::{no_store, OAuthError};
 use crate::upstream::UpstreamError;
 use crate::Broker;
 
 const CLIENT_CREDENTIALS: &str = "client_credentials";
 const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
-/// The claim naming a machine Principal at the Upstream IdP.
-const SUBJECT_CLAIM: &str = "sub";
 
 /// What a refusal log line says.
 #[derive(Default)]
@@ -85,6 +83,7 @@ pub(crate) async fn token(
     let client_id = form.get("client_id").map(String::as_str);
     match form.get("grant_type").map(String::as_str) {
         Some(CLIENT_CREDENTIALS) => client_credentials(&broker, &headers).await,
+        Some(AUTHORIZATION_CODE) => code_grant::exchange(&broker, &form).await,
         Some(TOKEN_EXCHANGE) => Refusal {
             grant: Some(TOKEN_EXCHANGE),
             reason: "token_exchange_unsupported",
@@ -223,11 +222,13 @@ async fn client_credentials(broker: &Broker, headers: &HeaderMap) -> Response {
         }
         Err(error) => return upstream_failure(error),
     };
-    let Some(subject) = claims.string(SUBJECT_CLAIM).filter(|s| !s.is_empty()) else {
+    let subject_claim = broker.0.upstream.subject_claim();
+    let Some(subject) = claims.string(subject_claim).filter(|s| !s.is_empty()) else {
         return Refusal {
             grant,
             reason: "upstream_token_missing_subject",
             client_id,
+            missing_claims: Some(subject_claim),
             ..Refusal::default()
         }
         .respond(OAuthError::UnauthorizedClient);
@@ -260,7 +261,7 @@ async fn client_credentials(broker: &Broker, headers: &HeaderMap) -> Response {
 
     let client_id = client.as_str();
     let request = TokenRequest::machine(principal.clone(), client_id, scope.clone());
-    let issued = broker.0.tokens.issue(&request, SystemTime::now());
+    let issued = broker.0.tokens.issue(&request, broker.0.clock.now());
     let scope = scope.to_string();
     tracing::info!(
         grant = CLIENT_CREDENTIALS,

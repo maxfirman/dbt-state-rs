@@ -19,6 +19,9 @@ use tonic::transport::Channel;
 /// A dbt client's Token broker requests.
 #[path = "support/broker_client.rs"]
 pub mod broker_client;
+/// A browser following a dbt client's sign-in redirects.
+#[path = "support/browser.rs"]
+pub mod browser;
 /// Request shapes from the live clone captures in the demo database.
 #[path = "support/demo.rs"]
 pub mod demo;
@@ -54,7 +57,8 @@ pub mod scenario;
 #[allow(unused_imports)]
 pub use resources::{
     start_broker, start_server, start_server_native, start_server_oidc, start_server_on_database,
-    start_server_require_org, start_server_with_broker, TestBroker, TestDatabase, TestServer,
+    start_server_require_org, start_server_with_broker, TestBroker, TestClock, TestDatabase,
+    TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";

@@ -418,15 +418,23 @@ async fn the_broker_serves_discovery_and_jwks() {
         .await
         .unwrap();
     assert_eq!(discovery["issuer"], ISSUER);
+    // The dbt client's auth URL is the authorization endpoint itself; like
+    // hosted dbt State's, it is the issuer's root.
+    assert_eq!(discovery["authorization_endpoint"], format!("{ISSUER}/"));
     assert_eq!(discovery["token_endpoint"], format!("{ISSUER}/token"));
     assert_eq!(discovery["jwks_uri"], format!("{ISSUER}/jwks"));
+    assert_eq!(discovery["response_types_supported"], json!(["code"]));
     assert_eq!(
         discovery["grant_types_supported"],
-        json!(["client_credentials"])
+        json!(["authorization_code", "client_credentials"])
+    );
+    assert_eq!(
+        discovery["code_challenge_methods_supported"],
+        json!(["S256"])
     );
     assert_eq!(
         discovery["token_endpoint_auth_methods_supported"],
-        json!(["client_secret_basic"])
+        json!(["none", "client_secret_basic"])
     );
     assert_eq!(
         discovery["id_token_signing_alg_values_supported"],
@@ -464,7 +472,7 @@ async fn a_standalone_brokers_keys_are_fetched_and_cached_by_the_grpc_server() {
     capture_logs();
     let idp = FakeIdp::start().await;
     idp.machine(ci_machine());
-    let broker = start_broker(deployment(&idp));
+    let broker = start_broker(deployment(&idp)).await;
     let grpc_auth = TestAuth::builder(ORGANIZATIONS)
         .issuer(&broker.url())
         .without_signing()
@@ -509,4 +517,46 @@ async fn a_standalone_brokers_keys_are_fetched_and_cached_by_the_grpc_server() {
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Code::Unauthenticated);
+}
+
+/// A machine Principal is the IdP issuer plus the configured subject claim,
+/// as a person is.
+#[tokio::test]
+async fn the_machine_principal_follows_the_configured_subject_claim() {
+    capture_logs();
+    let idp = FakeIdp::start().await;
+    for client_id in ["ci-blue", "ci-green"] {
+        idp.machine(ci_as(client_id).claim("oid", json!("sp-object-1")));
+    }
+    idp.machine(ci_as("ci-no-oid"));
+    let principal = |server: &support::TestServer, client_id: &'static str| {
+        let url = server.broker_url();
+        async move {
+            let body = json(client_credentials(&url, client_id, CI_SECRET).await).await;
+            claims(body["id_token"].as_str().expect("an id_token"))["sub"].clone()
+        }
+    };
+    let by_sub = start_server_with_broker(&deployment(&idp).build()).await;
+    assert_ne!(
+        principal(&by_sub, "ci-blue").await,
+        principal(&by_sub, "ci-green").await
+    );
+    let by_oid = start_server_with_broker(&deployment(&idp).subject_claim("oid").build()).await;
+    assert_eq!(
+        principal(&by_oid, "ci-blue").await,
+        principal(&by_oid, "ci-green").await
+    );
+    assert_refused(
+        &by_oid,
+        "ci-no-oid",
+        CI_SECRET,
+        400,
+        "unauthorized_client",
+        "upstream_token_missing_subject",
+    )
+    .await;
+    assert!(captured_logs()
+        .lines()
+        .any(|line| line.contains("client_id=\"ci-no-oid\"")
+            && line.contains("missing_claims=\"oid\"")));
 }

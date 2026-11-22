@@ -9,6 +9,8 @@ pub struct Discovery {
     pub issuer: String,
     #[serde(default)]
     pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
     pub jwks_uri: String,
 }
 
@@ -44,7 +46,7 @@ pub fn url(issuer: &str) -> String {
 
 impl Discovery {
     /// Fetch and check `issuer`'s metadata: its `issuer` must be `issuer`,
-    /// and its token endpoint and `jwks_uri` must pass
+    /// and its token and authorization endpoints and `jwks_uri` must pass
     /// [`dbt_state_auth::secure_url`].
     pub async fn fetch(http: &reqwest::Client, issuer: &str) -> Result<Self, DiscoveryError> {
         let url = url(issuer);
@@ -70,6 +72,10 @@ impl Discovery {
         }
         let endpoints = [
             ("token_endpoint", discovery.token_endpoint.as_deref()),
+            (
+                "authorization_endpoint",
+                discovery.authorization_endpoint.as_deref(),
+            ),
             ("jwks_uri", Some(discovery.jwks_uri.as_str())),
         ];
         for (member, endpoint) in endpoints {
