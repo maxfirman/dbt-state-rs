@@ -375,6 +375,8 @@ pub struct IdpState {
     refresh_failure: Option<(StatusCode, &'static str)>,
     /// The bearer token of every userinfo request.
     userinfo_requests: Vec<Option<String>>,
+    /// What every userinfo request answers instead, while set.
+    userinfo_failure: Option<StatusCode>,
     /// The IdP's clock, when it follows a test clock.
     clock: Option<TestClock>,
 }
@@ -512,6 +514,20 @@ impl FakeIdp {
     /// Refreshes work again.
     pub fn restore_refresh(&self) -> &Self {
         self.state.lock().unwrap().refresh_failure = None;
+        self
+    }
+
+    /// Every userinfo request answers `status` until
+    /// [`Self::restore_userinfo`].
+    pub fn fail_userinfo(&self, status: u16) -> &Self {
+        self.state.lock().unwrap().userinfo_failure =
+            Some(StatusCode::from_u16(status).expect("an HTTP status"));
+        self
+    }
+
+    /// Userinfo works again.
+    pub fn restore_userinfo(&self) -> &Self {
+        self.state.lock().unwrap().userinfo_failure = None;
         self
     }
 
@@ -924,6 +940,9 @@ async fn userinfo(State((state, _)): State<AppState>, headers: HeaderMap) -> Res
         .map(str::to_owned);
     let mut state = state.lock().unwrap();
     state.userinfo_requests.push(bearer.clone());
+    if let Some(status) = state.userinfo_failure {
+        return oauth_error(status, "unavailable");
+    }
     let Some(subject) = bearer.and_then(|token| state.access_tokens.get(&token).cloned()) else {
         return oauth_error(StatusCode::UNAUTHORIZED, "invalid_token");
     };

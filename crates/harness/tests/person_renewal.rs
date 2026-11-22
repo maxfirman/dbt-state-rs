@@ -463,6 +463,7 @@ async fn renewal_waits_out_an_unavailable_idp_without_ending_the_session() {
     for (status, error, reason) in [
         (503, "temporarily_unavailable", "upstream_unavailable"),
         (500, "server_error", "upstream_unavailable"),
+        (429, "slow_down", "upstream_unavailable"),
         (401, "invalid_client", "upstream_rejected_client"),
     ] {
         idp.fail_refresh(status, error);
@@ -473,6 +474,31 @@ async fn renewal_waits_out_an_unavailable_idp_without_ending_the_session() {
     idp.restore_refresh();
     let renewed = renew(&server, field(&login, "refresh_token")).await;
     assert_eq!(renewed.status(), 200, "{:?}", json(renewed).await);
+
+    // Userinfo rate-limited or failing after the IdP renewed: the IdP's
+    // rotated refresh token is kept for the next attempt.
+    let login = signed_in(&server, &idp, alice().without_refresh_id_token()).await;
+    for status in [429, 503] {
+        idp.fail_userinfo(status);
+        let response = renew(&server, field(&login, "refresh_token")).await;
+        assert_refused(
+            response,
+            503,
+            "temporarily_unavailable",
+            "upstream_unavailable",
+        )
+        .await;
+    }
+    idp.restore_userinfo();
+    let before = idp.issued_refresh_tokens().len();
+    let renewed = renew(&server, field(&login, "refresh_token")).await;
+    assert_eq!(renewed.status(), 200, "{:?}", json(renewed).await);
+    let issued = idp.issued_refresh_tokens();
+    assert_eq!(
+        upstream_refreshes(&idp).last(),
+        Some(&issued[before - 1]),
+        "renewed with the refresh token the IdP rotated to last"
+    );
 }
 
 /// A refreshed ID token signed under a key id the broker has not loaded,

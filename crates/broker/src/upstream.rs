@@ -285,8 +285,8 @@ impl UpstreamIdp {
     }
 
     /// The claims the IdP's userinfo endpoint returns for the holder of
-    /// `access_token` (OIDC Core §5.3). A refusal (any 4xx) is
-    /// [`UpstreamError::Refused`].
+    /// `access_token` (OIDC Core §5.3). A refusal (a 4xx other than
+    /// [`transient`]) is [`UpstreamError::Refused`].
     pub(crate) async fn userinfo(&self, access_token: &str) -> Result<Userinfo, UpstreamError> {
         let endpoints = self.endpoints().await?;
         let Some(endpoint) = &endpoints.userinfo_endpoint else {
@@ -308,7 +308,7 @@ impl UpstreamIdp {
             .bytes()
             .await
             .map_err(|error| UpstreamError::Unavailable(error.without_url().to_string()))?;
-        if status.is_client_error() {
+        if status.is_client_error() && !transient(status) {
             let error = serde_json::from_slice::<ErrorResponse>(&body)
                 .ok()
                 .and_then(|body| body.error);
@@ -386,7 +386,9 @@ impl UpstreamIdp {
         let error = serde_json::from_slice::<ErrorResponse>(&body)
             .ok()
             .and_then(|body| body.error);
-        if status.as_u16() == 401 || error.as_deref() == Some("invalid_client") {
+        if transient(status) {
+            Err(UpstreamError::Unavailable(format!("HTTP {status}")))
+        } else if status.as_u16() == 401 || error.as_deref() == Some("invalid_client") {
             Err(UpstreamError::RejectedClient { error })
         } else if status.is_client_error() {
             Err(UpstreamError::Refused {
@@ -453,6 +455,15 @@ impl UpstreamIdp {
             result => Ok(result),
         }
     }
+}
+
+/// Whether an IdP's 4xx answer only means "not now": a request timeout or
+/// rate limiting (RFC 9110 §15.5.9, RFC 6585 §4).
+fn transient(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::TOO_MANY_REQUESTS
+    )
 }
 
 /// `verify()`, after refetching the IdP's keys when stale; a token whose
