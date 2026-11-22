@@ -1,12 +1,76 @@
 //! Starting the standalone `dbt-state-broker` binary: it needs an auth
-//! config with `[signing]` and `[upstream]`, and then serves OIDC discovery
-//! on `DBT_STATE_BROKER_LISTEN`.
+//! config with `[signing]` and `[upstream]` and the server's Postgres
+//! (`DATABASE_URL`), which it migrates; then it serves OIDC discovery on
+//! `DBT_STATE_BROKER_LISTEN`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 
+use sqlx::postgres::PgPoolOptions;
+
 const BINARY: &str = env!("CARGO_BIN_EXE_dbt-state-broker");
+
+fn dsn() -> String {
+    std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".into())
+}
+
+/// A fresh schema the broker may migrate, removed afterwards.
+struct Schema {
+    name: String,
+}
+
+impl Schema {
+    async fn new() -> Self {
+        let name = format!("broker_startup_{}", uuid::Uuid::new_v4().simple());
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn())
+            .await
+            .expect("connect");
+        sqlx::query(&format!("CREATE SCHEMA \"{name}\""))
+            .execute(&pool)
+            .await
+            .unwrap();
+        Self { name }
+    }
+
+    /// `DATABASE_URL` scoped to this schema.
+    fn dsn(&self) -> String {
+        let base = dsn();
+        let separator = if base.contains('?') { '&' } else { '?' };
+        format!("{base}{separator}options[search_path]={}", self.name)
+    }
+
+    /// The tables the broker created.
+    async fn tables(&self) -> Vec<String> {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn())
+            .await
+            .expect("connect");
+        sqlx::query_scalar(
+            "SELECT table_name::text FROM information_schema.tables WHERE table_schema = $1",
+        )
+        .bind(&self.name)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    }
+
+    async fn drop_schema(self) {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn())
+            .await
+            .expect("connect");
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", self.name))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
 
 fn testdata(file: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -75,6 +139,11 @@ fn configs_that_cannot_run_a_broker_refuse_to_start() {
     );
     let (_c, valid) = config(true, true);
     assert_refused(
+        "no database",
+        broker(&[("DBT_STATE_AUTH_CONFIG", valid.to_str().unwrap())]),
+        "DATABASE_URL",
+    );
+    assert_refused(
         "a listen address that is no address",
         broker(&[
             ("DBT_STATE_AUTH_CONFIG", valid.to_str().unwrap()),
@@ -94,7 +163,8 @@ impl Drop for Running {
 }
 
 #[tokio::test]
-async fn a_valid_config_serves_discovery() {
+async fn a_valid_config_migrates_the_database_and_serves_discovery() {
+    let schema = Schema::new().await;
     let (_dir, path) = config(true, true);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -106,6 +176,7 @@ async fn a_valid_config_serves_discovery() {
         broker(&[
             ("DBT_STATE_AUTH_CONFIG", path.to_str().unwrap()),
             ("DBT_STATE_BROKER_LISTEN", &addr),
+            ("DATABASE_URL", &schema.dsn()),
         ])
         .spawn()
         .expect("spawn broker"),
@@ -122,4 +193,18 @@ async fn a_valid_config_serves_discovery() {
     let discovery = discovery.expect("the broker serves discovery");
     assert_eq!(discovery["issuer"], "https://broker.dbt-state.test");
     assert_eq!(discovery["jwks_uri"], "https://broker.dbt-state.test/jwks");
+    assert_eq!(
+        discovery["authorization_endpoint"],
+        "https://broker.dbt-state.test/"
+    );
+    let tables = schema.tables().await;
+    for table in [
+        "broker_pending_logins",
+        "broker_person_sessions",
+        "broker_authorization_codes",
+        "broker_refresh_tokens",
+    ] {
+        assert!(tables.iter().any(|t| t == table), "{table} in {tables:?}");
+    }
+    schema.drop_schema().await;
 }

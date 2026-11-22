@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(addr) = config.broker_listen {
                 // The broker shares this config, and so the key set the
                 // gRPC server checks tokens against.
-                let broker = dbt_state_broker::Broker::new(auth)?;
+                let broker = dbt_state_broker::Broker::new(auth, state.store.pool().clone())?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 tracing::info!(%addr, issuer = auth.broker_issuer(), "Token broker listening");
                 tokio::spawn(async move {

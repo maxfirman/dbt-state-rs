@@ -108,7 +108,7 @@ impl Config {
                     .into();
                 let config = AuthConfig::load(&path)?;
                 if broker_listen.is_some() {
-                    dbt_state_broker::Broker::new(&config)
+                    dbt_state_broker::Broker::check(&config)
                         .context("DBT_STATE_BROKER_LISTEN is set")?;
                 }
                 AuthMode::Oidc {

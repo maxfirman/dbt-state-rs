@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `DBT_STATE_BROKER_LISTEN` | HTTP listen address (default `127.0.0.1:8080`) |
 //! | `DBT_STATE_AUTH_CONFIG` | path of the TOML auth config; needs `[signing]` and `[upstream]` |
+//! | `DATABASE_URL` | the gRPC server's Postgres, where the broker keeps its state; migrated at startup |
 //!
 //! A gRPC server pointed at this broker (its auth config without
 //! `[signing]`, `broker.issuer` this broker's public URL) fetches and caches
@@ -33,7 +34,18 @@ async fn main() -> anyhow::Result<()> {
         .context("the Token broker needs DBT_STATE_AUTH_CONFIG, the auth config path")?
         .into();
     let config = AuthConfig::load(&path)?;
-    let broker = Broker::new(&config)?;
+    Broker::check(&config)?;
+    let database_url = var("DATABASE_URL")
+        .context("the Token broker needs DATABASE_URL, the dbt State server's Postgres")?;
+
+    tracing::info!("connecting to postgres");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .context("cannot connect to DATABASE_URL")?;
+    dbt_state_broker::MIGRATOR.run(&pool).await?;
+    let broker = Broker::new(&config, pool)?;
 
     let listener = tokio::net::TcpListener::bind(listen)
         .await

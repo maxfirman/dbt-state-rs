@@ -521,6 +521,7 @@ name = "dbt-state-auth"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "form_urlencoded",
  "proptest",
  "ring",
  "rustls-pki-types",
@@ -538,16 +539,20 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "chrono",
  "dbt-state-auth",
  "form_urlencoded",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

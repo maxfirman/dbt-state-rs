@@ -42,7 +42,10 @@ impl HttpServer {
                 let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
                 // Stopping drops the runtime, and with it every connection.
                 tokio::select! {
-                    result = axum::serve(listener, router()) => result.expect("serve HTTP"),
+                    result = axum::serve(
+                        listener,
+                        router().into_make_service_with_connect_info::<SocketAddr>(),
+                    ) => result.expect("serve HTTP"),
                     _ = shutdown => {}
                 }
             });
