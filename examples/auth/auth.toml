@@ -3,8 +3,12 @@
 # apply on restart. Unknown keys are refused.
 
 [broker]
-# The Token broker's public URL: the `iss` of every token it issues.
+# The Token broker's public URL: the `iss` of every token it issues. Its OIDC
+# discovery document is at <issuer>/.well-known/openid-configuration.
 issuer = "https://auth.state.example.com"
+# Optional, for a gRPC server without [signing]: where to fetch the Token
+# broker's keys. Unset, they are found by OIDC discovery at `issuer`.
+# jwks_url = "http://dbt-state-broker.internal:8080/jwks"
 
 [api]
 # The dbt State API audience: the only `aud` the gRPC server accepts.
@@ -17,6 +21,8 @@ person_lifetime_minutes = 60
 machine_lifetime_minutes = 15
 
 [signing]
+# The Token broker needs these; a gRPC server may leave [signing] out and
+# check tokens against the Token broker's published keys instead.
 # RS256 keys from mounted PEM files (PKCS#8 or PKCS#1, 2048 to 4096 bits).
 # Every listed key verifies tokens; new tokens are signed with the active one.
 # Relative paths resolve from this file's directory.
@@ -38,3 +44,33 @@ id = "analytics"
 id = "finance"
 # A disabled Organization is refused on every request.
 disabled = true
+
+# The Token broker's Upstream IdP, found by OIDC discovery at
+# <issuer>/.well-known/openid-configuration. Plain http only on loopback.
+[upstream]
+issuer = "https://login.example.com/00000000-0000-0000-0000-000000000000/v2.0"
+# The `aud` an upstream access token must hold. Tokens for any other
+# application (for example Microsoft Graph), and opaque tokens, are refused.
+api_audience = "api://dbt-state"
+# Optional: the `scope` requested on the IdP's client_credentials grant
+# (Entra ID needs "<api>/.default"). The scope the dbt client asks for is
+# ignored.
+client_credentials_scope = "api://dbt-state/.default"
+
+# Mapping rules. Each applies only to its Principal kind: "machine" for
+# client_credentials. A rule matches when `claim` is `value`, or is an array
+# of strings holding it. The highest Role wins per Organization; a Principal
+# no rule matches is refused.
+[[rules]]
+kind = "machine"
+claim = "roles"
+value = "dbt-state.ci"
+organization = "analytics"
+role = "developer"
+
+[[rules]]
+kind = "machine"
+claim = "azp"
+value = "11111111-2222-3333-4444-555555555555"
+organization = "analytics"
+role = "admin"

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dbt_state_auth::{AuthConfig, OrganizationId};
+use dbt_state_auth::{AuthConfig, OrganizationId, PrincipalKind, Role, UpstreamClaims};
 use proptest::prelude::*;
 
 fn testdata(file: &str) -> PathBuf {
@@ -255,4 +255,160 @@ proptest! {
             Err(error) => prop_assert!(error.contains("lifetime"), "{}", error),
         }
     }
+}
+
+/// The Upstream IdP and the machine mapping rules the Token broker applies.
+const UPSTREAM: &str = r#"
+[upstream]
+issuer = "https://login.example.test/tenant/v2.0"
+api_audience = "api://dbt-state"
+client_credentials_scope = "api://dbt-state/.default"
+
+[[rules]]
+kind = "machine"
+claim = "roles"
+value = "dbt-state.ci"
+organization = "analytics"
+role = "developer"
+
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "data-platform"
+organization = "analytics"
+role = "admin"
+"#;
+
+#[test]
+fn the_upstream_idp_and_mapping_rules_load() {
+    let config = load(&config_text(
+        &format!("[[organizations]]\nid = \"analytics\"\n{UPSTREAM}"),
+        "",
+    ))
+    .expect("valid config");
+    let upstream = config.upstream().expect("an Upstream IdP");
+    assert_eq!(upstream.issuer(), "https://login.example.test/tenant/v2.0");
+    assert_eq!(upstream.api_audience(), "api://dbt-state");
+    assert_eq!(
+        upstream.client_credentials_scope(),
+        Some("api://dbt-state/.default")
+    );
+
+    let mut claims = serde_json::Map::new();
+    claims.insert("roles".into(), serde_json::json!(["dbt-state.ci"]));
+    claims.insert("groups".into(), serde_json::json!(["data-platform"]));
+    let claims = UpstreamClaims::new(claims);
+    let organizations = config.organizations();
+    let machine = config
+        .mapping_rules()
+        .scope(PrincipalKind::Machine, &claims, organizations);
+    assert_eq!(
+        machine.active_role(&org("analytics")),
+        Some(Role::Developer)
+    );
+    let person = config
+        .mapping_rules()
+        .scope(PrincipalKind::Person, &claims, organizations);
+    assert_eq!(person.active_role(&org("analytics")), Some(Role::Admin));
+}
+
+/// A gRPC server that verifies tokens with the Token broker's published keys
+/// needs no `[signing]` table, and issues nothing.
+#[test]
+fn signing_keys_are_optional() {
+    let text = config_text("[[organizations]]\nid = \"analytics\"\n", "");
+    let start = text.find("[signing]").unwrap();
+    let end = text.find("[[organizations]]").unwrap();
+    let mut text = text.clone();
+    text.replace_range(start..end, "");
+    let config = load(&text).expect("a config without signing keys");
+    assert!(config.verification_keys().is_none());
+    assert!(config.token_issuer().is_none());
+    assert!(config.upstream().is_none());
+}
+
+/// Each refusal of an `[upstream]` or `[[rules]]` mistake names it.
+#[test]
+fn invalid_upstream_and_rules_are_refused() {
+    let with = |upstream: &str| {
+        config_text(
+            &format!(
+                "[[organizations]]\nid = \"analytics\"\n[[organizations]]\nid = \"finance\"\ndisabled = true\n{upstream}"
+            ),
+            "",
+        )
+    };
+    let cases: Vec<(String, &str)> = vec![
+        (with(&UPSTREAM.replace("kind = \"machine\"\n", "")), "kind"),
+        (
+            with(&UPSTREAM.replace("kind = \"machine\"", "kind = \"service\"")),
+            "service",
+        ),
+        (
+            with(&UPSTREAM.replace("role = \"developer\"", "role = \"owner\"")),
+            "owner",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"nowhere\"\nrole = \"developer\"",
+            )),
+            "nowhere",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"*\"\nrole = \"developer\"",
+            )),
+            "Organization id",
+        ),
+        (
+            with(&UPSTREAM.replace("claim = \"roles\"", "claim = \"\"")),
+            "claim",
+        ),
+        (
+            with(&UPSTREAM.replace("value = \"dbt-state.ci\"", "value = \"\"")),
+            "value",
+        ),
+        (
+            with(&UPSTREAM.replace("value = \"dbt-state.ci\"", "valu = \"x\"")),
+            "valu",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "https://login.example.test/tenant/v2.0",
+                "http://login.example.test",
+            )),
+            "upstream.issuer",
+        ),
+        (
+            with(&UPSTREAM.replace("api_audience = \"api://dbt-state\"", "api_audience = \"\"")),
+            "api_audience",
+        ),
+        (
+            with(&UPSTREAM.replace("api_audience = \"api://dbt-state\"\n", "")),
+            "api_audience",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load(&text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+    }
+    // A disabled Organization may be mapped (its Principals are told it is
+    // disabled), and a loopback Upstream IdP may use plain http.
+    load(&with(
+        &UPSTREAM
+            .replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"finance\"\nrole = \"developer\"",
+            )
+            .replace(
+                "https://login.example.test/tenant/v2.0",
+                "http://127.0.0.1:8081",
+            ),
+    ))
+    .expect("a disabled Organization and a loopback http issuer");
 }

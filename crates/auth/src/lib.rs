@@ -6,15 +6,18 @@
 mod config;
 mod context;
 mod keys;
+mod mapping;
 mod organization;
 mod scope;
 mod token;
+mod upstream;
 
-pub use config::{AuthConfig, ConfigError, TokenLifetimes};
+pub use config::{AuthConfig, ConfigError, TokenLifetimes, UpstreamConfig};
 pub use context::{
     AuthenticatedContext, OrganizationRefusal, Rejection, RejectionCode, RequestAuthenticator,
 };
-pub use keys::KeyFileError;
+pub use keys::{JwksError, KeyFileError, VerificationKeys};
+pub use mapping::{MappingRule, MappingRules, UpstreamClaims};
 pub use organization::{
     DuplicateOrganization, InvalidOrganizationId, Organization, OrganizationId, Organizations,
     Role, UnknownRole,
@@ -24,3 +27,4 @@ pub use token::{
     IssuedToken, PrincipalId, PrincipalKind, TokenError, TokenIssuer, TokenRequest, TokenVerifier,
     VerifiedToken, CLOCK_SKEW,
 };
+pub use upstream::{UpstreamTokenError, UpstreamTokenVerifier};

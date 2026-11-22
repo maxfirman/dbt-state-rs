@@ -7,7 +7,6 @@
 //! IdP provides them. The JOSE header names the signing key id (`kid`).
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -15,7 +14,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::config::TokenLifetimes;
-use crate::keys::{PublicKeys, SigningKey};
+use crate::keys::{SigningKey, VerificationKeys};
 use crate::Scope;
 
 /// How far past `exp` a token is still accepted, for clock differences.
@@ -30,6 +29,17 @@ pub struct PrincipalId(String);
 impl PrincipalId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    /// The Principal the Upstream IdP `issuer` knows as `subject`: an opaque
+    /// id (unpadded base64url SHA-256 of the length-prefixed pair) that is
+    /// stable for that pair and never reveals it.
+    pub fn upstream(issuer: &str, subject: &str) -> Self {
+        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        context.update(&(issuer.len() as u64).to_be_bytes());
+        context.update(issuer.as_bytes());
+        context.update(subject.as_bytes());
+        Self(URL_SAFE_NO_PAD.encode(context.finish()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -290,11 +300,11 @@ pub struct VerifiedToken {
 pub struct TokenVerifier {
     issuer: String,
     audience: String,
-    keys: Arc<PublicKeys>,
+    keys: VerificationKeys,
 }
 
 impl TokenVerifier {
-    pub(crate) fn new(issuer: String, audience: String, keys: Arc<PublicKeys>) -> Self {
+    pub(crate) fn new(issuer: String, audience: String, keys: VerificationKeys) -> Self {
         Self {
             issuer,
             audience,
@@ -304,26 +314,10 @@ impl TokenVerifier {
 
     /// Check `token` at `now`.
     pub fn verify(&self, token: &str, now: SystemTime) -> Result<VerifiedToken, TokenError> {
-        let mut parts = token.split('.');
-        let (Some(encoded_header), Some(payload), Some(signature), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(TokenError::Malformed);
-        };
-        let header: ReceivedHeader = decode_json(encoded_header)?;
-        if header.alg != ALGORITHM {
-            return Err(TokenError::Malformed);
-        }
-        let signature = URL_SAFE_NO_PAD
-            .decode(signature)
-            .map_err(|_| TokenError::Malformed)?;
-        let signing_input = &token[..encoded_header.len() + 1 + payload.len()];
-        if !self
-            .keys
-            .verify(&header.kid, signing_input.as_bytes(), &signature)
-        {
-            return Err(TokenError::BadSignature);
-        }
+        let payload = verify_signature(token, &self.keys).map_err(|error| match error {
+            SignatureError::Malformed => TokenError::Malformed,
+            SignatureError::BadSignature => TokenError::BadSignature,
+        })?;
 
         let claims: ReceivedClaims = decode_json(payload)?;
         if claims.iss.as_str() != Some(self.issuer.as_str()) {
@@ -354,17 +348,53 @@ impl TokenVerifier {
     }
 }
 
+/// Why [`verify_signature`] refused a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignatureError {
+    /// Not a compact JWS, or not RS256 with a `kid`.
+    Malformed,
+    /// Not signed by a key of the set.
+    BadSignature,
+}
+
+/// The encoded payload of the compact RS256 JWS `token`, if one of `keys`
+/// signed it.
+pub(crate) fn verify_signature<'t>(
+    token: &'t str,
+    keys: &VerificationKeys,
+) -> Result<&'t str, SignatureError> {
+    let mut parts = token.split('.');
+    let (Some(encoded_header), Some(payload), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(SignatureError::Malformed);
+    };
+    let header: ReceivedHeader =
+        decode_json(encoded_header).map_err(|_| SignatureError::Malformed)?;
+    if header.alg != ALGORITHM {
+        return Err(SignatureError::Malformed);
+    }
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| SignatureError::Malformed)?;
+    let signing_input = &token[..encoded_header.len() + 1 + payload.len()];
+    if !keys.verify(&header.kid, signing_input.as_bytes(), &signature) {
+        return Err(SignatureError::BadSignature);
+    }
+    Ok(payload)
+}
+
 fn encode_json(value: &impl Serialize) -> String {
     URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).expect("token JSON"))
 }
 
-fn decode_json<T: for<'de> Deserialize<'de>>(part: &str) -> Result<T, TokenError> {
+pub(crate) fn decode_json<T: for<'de> Deserialize<'de>>(part: &str) -> Result<T, TokenError> {
     let bytes = URL_SAFE_NO_PAD
         .decode(part)
         .map_err(|_| TokenError::Malformed)?;
     serde_json::from_slice(&bytes).map_err(|_| TokenError::Malformed)
 }
 
-fn unix_seconds(at: SystemTime) -> u64 {
+pub(crate) fn unix_seconds(at: SystemTime) -> u64 {
     at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
