@@ -189,8 +189,8 @@ _RELATION = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){2}
 class Reference:
     """One State-disabled `dbt build --full-refresh --select ...`: a Reference execution.
 
-    No proxy, no State RPC, no metering, and `--no-manage-state` so project or
-    user settings cannot enable State either. It rebuilds the selected per-run
+    The command passes `--no-manage-state`; the recording proxy checks for
+    unexpected State calls. It rebuilds the selected per-run
     nodes from their inputs, so a capture can compare the rows State served
     with the rows an independent run produces (#237). It overwrites those
     relations, so put it after every State step that depends on them.
@@ -206,6 +206,10 @@ class Reference:
         self.select = tuple(select)
         self.target = target
 
+    def dbt_args(self):
+        return ["build", "--no-manage-state", "--target", self.target,
+                "--select", *self.select, "--full-refresh"]
+
     def bind(self, m, run):
         nodes = {v for k, v in m.items() if k != "run"}
         sel = tuple(_sub(s, m, "Reference select") for s in self.select)
@@ -220,8 +224,8 @@ class Reference:
 
 @dataclass(init=False)
 class Read:
-    """Read every row of one per-run demo relation with `dbt show --inline`, without dbt State
-    (no proxy, and `--no-manage-state`).
+    """Read every row of one per-run demo relation with State disabled by
+    `dbt show --no-manage-state --inline`. The proxy detects unexpected State calls.
 
     The rows land in `reads.json`, so a capture can compare the value the
     Warehouse wrote with the value the service rendered (#191).
@@ -234,6 +238,10 @@ class Read:
         self.relation = relation
         self.target = target
         self.query = query
+
+    def dbt_args(self):
+        return ["show", "--no-manage-state", "--target", self.target,
+                "--inline", self.query, "--limit", "-1", "--output", "json"]
 
     def bind(self, m, run):
         rel = _sub(self.relation, m, "Read relation")
@@ -659,6 +667,11 @@ def trim(rows):
 # --- live run ----------------------------------------------------------------------------
 
 
+def dbt_argv(args, profiles_dir):
+    return ["dbt", *args, "--profiles-dir", profiles_dir, "--profile", PROFILE,
+            "--skip-semantic-manifest-validation"]
+
+
 class Run:
     def __init__(self, bound, port, work, shared, keep_project, profiles_dir):
         self.bound, self.port, self.work = bound, port, work
@@ -761,8 +774,7 @@ class Run:
     # steps
     def dbt(self, k, label, args, env=None):
         log = os.path.join(self.logs, f"{k:02d}_{label}.log")
-        cmd = ["dbt", *args, "--profiles-dir", self.profiles_dir, "--profile", PROFILE,
-               "--skip-semantic-manifest-validation"]
+        cmd = dbt_argv(args, self.profiles_dir)
         print(f"  $ {' '.join(cmd)}")
         self.last_cmd = cmd
         with open(log, "w") as fh:
@@ -812,16 +824,11 @@ class Run:
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
         elif isinstance(step, Reference):
-            rc, log = self.state_free_dbt(k, "reference", "Reference",
-                                          ["build", "--no-manage-state", "--target", step.target,
-                                           "--select", *step.select, "--full-refresh"])
+            rc, log = self.state_free_dbt(k, "reference", "Reference", step.dbt_args())
             if rc:
                 raise CaptureError(f"State-disabled reference build exited {rc}; see {log}")
         elif isinstance(step, Read):
-            rc, log = self.state_free_dbt(k, "show", "Read",
-                                          ["show", "--no-manage-state", "--target", step.target,
-                                           "--inline", step.query, "--limit", "-1", "--output",
-                                           "json"])
+            rc, log = self.state_free_dbt(k, "show", "Read", step.dbt_args())
             if rc:
                 raise CaptureError(f"dbt show exited {rc}; see {log}")
             with open(log) as fh:

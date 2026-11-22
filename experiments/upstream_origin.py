@@ -32,9 +32,12 @@ Self-test: python3 experiments/upstream_origin_test.py
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from decision_rows import DECISION, KIND, variant  # noqa: E402
+from capture_integrity import verify_capture  # noqa: E402
+from explain_capture import Read, Reference, dbt_argv  # noqa: E402
 
 CASES = ("a", "b", "c", "d")
 LABEL = {"a": "A same physical upstream", "b": "B dev upstream copied from prod",
@@ -300,29 +303,43 @@ def _case_rpcs(rows, nodes):
     return [{k: v for k, v in r.items() if k not in drop} for r in keep]
 
 
-def _verified_reference(run, follow, case, served):
-    """The State-free Reference follow-up (`--run-id`) of `run` for one case.
+def _reference_invocation(original, follow):
+    """Match the State-free command and read records to the original run and follow-up plan."""
+    run_id = original["run"]
+    expected = original["scenario"] + "_reference"
+    if (follow["steps"]["run"], follow["steps"]["scenario"]) != (run_id, expected):
+        raise ValueError(f"expected the {expected} follow-up of run {run_id}")
+    if follow["steps"]["names"] != original["names"]:
+        raise ValueError(f"follow-up {run_id} names different relations from the original run")
 
-    Refuses a follow-up of another run, one whose capture recorded any RPC,
-    or one with a Read or Reference invocation that did not pass
-    `--no-manage-state` or failed.
-    """
-    run_id = run["steps"].get("run")
-    if follow["steps"].get("run") != run_id:
-        raise ValueError(f"the Reference follow-up is of run {follow['steps'].get('run')}, "
-                         f"not {run_id}")
     calls = follow["state_free"]
-    rpcs = sum(x["state_rpcs"] for x in calls)
-    if follow["rows"] or rpcs:
-        raise ValueError(f"the Reference follow-up of {run_id} reached dbt State "
-                         f"({len(follow['rows'])} captured RPC(s))")
-    for x in calls:
-        if "--no-manage-state" not in x["argv"] or x["exit"] != 0:
-            raise ValueError(f"follow-up step {x['step']} of {run_id} did not run State-free: "
-                             f"{x['argv']} exit {x['exit']}")
-    ref = [x for x in calls if x["kind"] == "Reference"]
-    if len(ref) != 1:
-        raise ValueError(f"the follow-up of {run_id} has {len(ref)} Reference invocations")
+    planned = [(i, s) for i, s in enumerate(follow["steps"]["steps"]) if s["kind"] != "Write"]
+    if follow["rows"] or len(calls) != len(planned):
+        raise ValueError(f"follow-up {run_id} has State RPCs or incomplete invocation records")
+
+    reference = None
+    reads = []
+    for (i, step), call in zip(planned, calls):
+        kind, target = step["kind"], step["target"]
+        if kind == "Read":
+            relation = step["relation"]
+            args = Read(relation, target=target, query=f"select * from {relation}").dbt_args()
+            reads.append((i, relation))
+        elif kind == "Reference" and reference is None:
+            reference = call
+            args = Reference(*step["select"], target=target).dbt_args()
+        else:
+            raise ValueError(f"unexpected {kind} at step {i} of {run_id}")
+        if ((call["step"], call["kind"], call["exit"], call["state_rpcs"]) != (i, kind, 0, 0)
+                or call["argv"] != dbt_argv(args, "<profiles-dir>")):
+            raise ValueError(f"follow-up step {i} of {run_id} lacks the successful planned {kind}")
+    if reference is None or reads != [(rd["step"], rd["relation"]) for rd in follow["reads"]]:
+        raise ValueError(f"follow-up {run_id} lacks its Reference or planned readbacks")
+    return reference
+
+
+def _verified_reference(follow, invocation, case, served):
+    """Compare the observed rows with this case's checked Reference follow-up."""
     names = follow["steps"]["names"]
     by_read = {(rd["step"], rd["relation"]): rd["rows"] for rd in follow["reads"]}
     inputs = [{"phase": "input", "step": i, "relation": st["relation"],
@@ -338,10 +355,10 @@ def _verified_reference(run, follow, case, served):
                                 ("after_next", served["after_next"]),
                                 ("reference", reference)) if got is None]
     return {
-        "run": run_id, "scenario": follow["steps"].get("scenario"),
+        "run": follow["steps"]["run"], "scenario": follow["steps"]["scenario"],
         "client": {k: follow["client"][k] for k in ("dbt_version", "dbt_sha256")},
-        "invocation": {k: ref[0][k] for k in ("argv", "exit", "state_rpcs")},
-        "state_rpcs": rpcs, "capture_rpcs": len(follow["rows"]),
+        "invocation": {k: invocation[k] for k in ("argv", "exit", "state_rpcs")},
+        "state_rpcs": sum(c["state_rpcs"] for c in follow["state_free"]), "capture_rpcs": len(follow["rows"]),
         "inputs": inputs, "reads": [x for x in reads_dn if x["phase"] == "reference"],
         "upstream_reads": [x for x in reads_up if x["phase"] == "reference"],
         "missing": missing,
@@ -362,6 +379,8 @@ def extract(runs):
     """
     docs = {}
     for run in runs:
+        follow = run.get("verified_reference")
+        invocation = _reference_invocation(run["steps"], follow) if follow else None
         rec = record(run["rows"], run["steps"], run["reads"])
         for c, r in rec.items():
             doc = docs.setdefault(c.upper(), {"case": c.upper(), "description": LABEL[c],
@@ -384,18 +403,23 @@ def extract(runs):
                 "rpcs": _case_rpcs(run["rows"], {r["names"]["upstream"],
                                                  r["names"]["downstream"]}),
             })
-            if run.get("verified_reference"):
-                doc["runs"][-1]["verified_reference"] = _verified_reference(
-                    run, run["verified_reference"], c, r["rows"])
+            if follow:
+                verified = _verified_reference(follow, invocation, c, r["rows"])
+                doc["runs"][-1].update(verified_reference=verified, wrong_marker=verified["wrong_marker"],
+                                       missing=verified["missing"])
     return docs
 
 
-def _load(work):
+def _load(work, *, certified=False):
     def load(name):
         with open(os.path.join(work, name)) as fh:
             return fh.read()
 
     rows = [json.loads(line) for line in load("window.jsonl").splitlines() if line.strip()]
+    if certified:
+        captures = list((Path(work) / "golden").glob("golden_*.jsonl"))
+        if len(captures) != 1 or verify_capture(captures[0]) != rows:
+            raise ValueError("Reference window must match its single certified proxy capture")
     return rows, json.loads(load("steps.json")), json.loads(load("reads.json"))
 
 
@@ -409,7 +433,7 @@ def main(argv):
             run = {"label": label, "service": service, "fixture": fixture,
                    "rows": rows, "steps": steps, "reads": reads}
             if ref_dir:
-                f_rows, f_steps, f_reads = _load(ref_dir[0])
+                f_rows, f_steps, f_reads = _load(ref_dir[0], certified=True)
                 with open(os.path.join(ref_dir[0], "state_free.json")) as fh:
                     state_free = json.load(fh)
                 with open(os.path.join(ref_dir[0], "client.json")) as fh:

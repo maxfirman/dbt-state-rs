@@ -6,12 +6,16 @@ downstream copied on submit, rows equal to the Reference) and D (dev upstream
 built, downstream copied from prod while the Reference serves the dev
 marker). Run: python3 experiments/upstream_origin_test.py
 """
+import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import upstream_origin as uo  # noqa: E402
+from capture_integrity import CaptureIntegrityError  # noqa: E402
 
 RUN = "120000abcdef"
 NAMES = {f"o{c}_{k}": f"o{c}_{k}_{RUN}" for c in "abcd" for k in ("in", "up", "dn")}
@@ -100,7 +104,7 @@ def read_step(schema, logical, target="dev_clone"):
 
 
 # The planned steps (steps.json): a read's phase comes from the step it was planned at.
-STEPS = {"run": RUN, "names": NAMES, "steps": [
+STEPS = {"run": RUN, "scenario": "upstream_origin_table", "names": NAMES, "steps": [
     build("prod_demo", "ob_up", "od_up"),                         # 0
     build("prod_demo", "ob_dn", "od_dn"),                         # 1
     read_step("PROD_STATE_DEMO", "ob_dn", "prod_demo"),           # 2
@@ -250,9 +254,17 @@ FOLLOW_STEPS = {"run": RUN, "names": NAMES, "scenario": "upstream_origin_table_r
                 ]}
 FOLLOW_READS = [read(0, "PROD_STATE_DEMO", "od_in", "prod"), read(1, "DEV_CLONE_DEMO", "od_in", "dev"),
                 read(3, "DEV_CLONE_DEMO", "ob_dn", "prod"), read(4, "DEV_CLONE_DEMO", "od_dn", "dev")]
-FOLLOW_FREE = [{"step": i, "kind": "Reference" if i == 2 else "Read", "exit": 0, "state_rpcs": 0,
-                "argv": ["dbt", "build" if i == 2 else "show", "--no-manage-state", "--profiles-dir",
-                         "<profiles-dir>"]} for i in range(5)]
+FOLLOW_FREE = []
+for i, step in enumerate(FOLLOW_STEPS["steps"]):
+    if step["kind"] == "Reference":
+        args = ["build", "--no-manage-state", "--target", "dev_clone", "--select",
+                *step["select"], "--full-refresh"]
+    else:
+        args = ["show", "--no-manage-state", "--target", step["target"], "--inline",
+                "select * from " + step["relation"], "--limit", "-1", "--output", "json"]
+    FOLLOW_FREE.append({"step": i, "kind": step["kind"], "exit": 0, "state_rpcs": 0,
+                        "argv": ["dbt", *args, "--profiles-dir", "<profiles-dir>", "--profile",
+                                 "snowflake", "--skip-semantic-manifest-validation"]})
 CLIENT = {"dbt_version": "2.0.11", "dbt_path": "/home/someone/bin/dbt", "dbt_sha256": "ab" * 32,
           "wire_dbt_run_cache_versions": []}
 follow = {"rows": [], "steps": FOLLOW_STEPS, "reads": FOLLOW_READS, "state_free": FOLLOW_FREE,
@@ -272,23 +284,52 @@ check("the case's inputs and verified Reference reads are listed with step, phas
        [("reference", 4, "dev")]))
 check("the served rows are judged against the verified Reference",
       (vr["wrong_marker"], vr["missing"]), (True, []))
-other_run = dict(follow, steps=dict(FOLLOW_STEPS, run="999999abcdef"))
-try:
-    uo.extract([dict(base, verified_reference=other_run)])
-    check("a follow-up of another run is refused", "accepted", "refused")
-except ValueError:
-    check("a follow-up of another run is refused", "refused", "refused")
-leaky = dict(follow, rows=[{"method": "ValidateClientVersion"}])
-try:
-    uo.extract([dict(base, verified_reference=leaky)])
-    check("a follow-up that reached dbt State is refused", "accepted", "refused")
-except ValueError:
-    check("a follow-up that reached dbt State is refused", "refused", "refused")
-no_flag = dict(follow, state_free=[dict(x, argv=["dbt", "build"]) for x in FOLLOW_FREE])
-try:
-    uo.extract([dict(base, verified_reference=no_flag)])
-    check("a follow-up Reference without --no-manage-state is refused", "accepted", "refused")
-except ValueError:
-    check("a follow-up Reference without --no-manage-state is refused", "refused", "refused")
+def refuse_followup(name, **changes):
+    try:
+        uo.extract([dict(base, verified_reference=dict(follow, **changes))])
+    except ValueError:
+        check(name, "refused", "refused")
+    else:
+        check(name, "accepted", "refused")
+
+
+refuse_followup("a different run is refused", steps=dict(FOLLOW_STEPS, run="999999abcdef"))
+refuse_followup("a different upstream materialization is refused",
+                steps=dict(FOLLOW_STEPS, scenario="upstream_origin_reference"))
+refuse_followup("an unrelated downstream relation is refused",
+                steps=dict(FOLLOW_STEPS, names=dict(NAMES, od_dn="od_dn_999999abcdef")))
+refuse_followup("a State RPC is refused", rows=[{"method": "ValidateClientVersion"}])
+refuse_followup("a missing State-free flag is refused",
+                state_free=[dict(call, argv=call["argv"][:2] + call["argv"][3:]) for call in FOLLOW_FREE])
+refuse_followup("missing read commands are refused", state_free=[FOLLOW_FREE[2]])
+refuse_followup("a failed read command is refused", state_free=[dict(FOLLOW_FREE[0], exit=1), *FOLLOW_FREE[1:]])
+refuse_followup("a different Reference target is refused",
+                state_free=[*FOLLOW_FREE[:2], dict(FOLLOW_FREE[2], argv=[
+                    "prod_demo" if a == "dev_clone" else a for a in FOLLOW_FREE[2]["argv"]]), *FOLLOW_FREE[3:]])
+refuse_followup("a missing input readback is refused", reads=FOLLOW_READS[1:])
+
+# An original Reference that agreed with the wrong rows must not suppress a later verified finding.
+previously_matched = [dict(rd, rows=[{"ID": 1, "V": "prod"}]) if rd["step"] == 16 else rd for rd in READS]
+updated = uo.extract([dict(base, reads=previously_matched, verified_reference=follow)])["D"]["runs"][0]
+check("the verified comparison determines the case verdict",
+      (updated["wrong_marker"], updated["verified_reference"]["wrong_marker"]), (True, True))
+
+with tempfile.TemporaryDirectory() as tmp:
+    work = Path(tmp)
+    for filename, content in (("window.jsonl", ""), ("steps.json", "{}"), ("reads.json", "[]")):
+        (work / filename).write_text(content)
+    golden = work / "golden"
+    golden.mkdir()
+    capture = golden / "golden_followup.jsonl"
+    capture.write_text("")
+    try:
+        uo._load(work, certified=True)
+    except CaptureIntegrityError:
+        check("an empty window without a proxy certificate is refused", "refused", "refused")
+    else:
+        check("an empty window without a proxy certificate is refused", "accepted", "refused")
+    Path(str(capture) + ".capture.json").write_text(json.dumps({
+        "started": 0, "recorded": 0, "complete": True, "failed": False}))
+    check("a certified empty Reference capture is accepted", uo._load(work, certified=True)[0], [])
 
 print(f"\nALL {passed} UPSTREAM ORIGIN TESTS PASSED")

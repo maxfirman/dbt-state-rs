@@ -113,9 +113,10 @@ downstream `ox_dn` ([`_upstream_origin.py`](../../experiments/capture_scenarios/
   the run's own recording proxy as a trap. The driver fails a step during
   which the proxy records an RPC. All 14 invocations of each follow-up
   exited 0, and none recorded an RPC; each follow-up capture holds zero
-  RPCs. The sanitized invocations, the input rows and the Reference rows are
-  in each case's evidence document under `verified_reference`, linked to the
-  original run id, relation and phase.
+  RPCs. Each case’s `verified_reference` section retains the sanitized build
+  command, the input rows and the Reference rows by original run ID,
+  relation and phase. The follow-up work directory contains the individual
+  read commands and exits in `state_free.json`.
 
 ## Results
 
