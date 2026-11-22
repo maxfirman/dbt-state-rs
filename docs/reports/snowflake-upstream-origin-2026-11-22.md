@@ -18,7 +18,7 @@ code. The comparison with Databricks (#238) and any policy change belong to
   table upstream (run 2). Origin did not separate the cases: hosted refused
   the confirmed copy (B) just as it refused the independent builds.
 - **Observed.** Hosted served the right rows in every case. Every dev
-  downstream held the rows of the State-disabled Reference execution, after
+  downstream held the rows measured after the Reference step, after
   both the first and the next dev build. Hosted shows no wrong-marker
   result.
 - **Observed, correctness finding (this server).** This server copies prod's
@@ -57,7 +57,7 @@ code. The comparison with Databricks (#238) and any policy change belong to
   It is `dev_clone` with `allow_clones: false` (it sends `clone_chain_depth_limit: 0`),
   added to the local `~/.dbt/profiles.yml` for this run.
 - **Evidence in the tree.** The fixtures hold every hosted request and
-  response quoted below. The rows come from State-free `dbt show` reads.
+  response quoted below. The rows come from `dbt show` reads.
   [`evidence/snowflake-upstream-origin/`](evidence/snowflake-upstream-origin/)
   holds one document per case (`A.json` … `D.json`), written by
   `experiments/upstream_origin.py extract`. For hosted run 1, hosted run 2 and
@@ -96,11 +96,14 @@ downstream `ox_dn` ([`_upstream_origin.py`](../../experiments/capture_scenarios/
   `(1, 'same')`. D's prod input holds `(1, 'prod')` and its dev input
   `(1, 'dev')`. Run 1 sets `pre_clone: never` on the upstream; run 2 builds it
   on `dev_noclone`.
-- Then, per case: the next unchanged dev build. Last: a State-disabled
-  `dbt build --full-refresh --no-manage-state` of every dev node (the
-  Reference execution, the driver's `Reference` step), read back. The
-  capture's reads also pass `--no-manage-state`. Both run without the proxy
-  or the State environment.
+- After the next unchanged dev build, the original driver ran a full refresh
+  of every dev node and read the rows back. It cleared the State environment
+  override and the recording proxy URL. The effective project and user State
+  settings for those three runs were not retained, so whether State was
+  disabled during the original Reference steps remains unverified. The
+  current driver passes `--no-manage-state` on each Reference and Read.
+  Repeat the Reference comparison on Snowflake with this driver to verify
+  independence and retain the command and per-phase row evidence.
 
 ## Results
 
@@ -122,6 +125,15 @@ because both its query and its upstream data are up to date". I*n* =
 | C run 2 | EXEC on `dev_noclone` (T39), confirmed (T40); SKIP on `dev_clone` (T44) | EXEC (T45) | SKIP (T74) | same / same / same / same | CLONE (gap T45; rehearsal served same) |
 | D run 1 | EXEC (I42), confirmed (I43) | EXEC (I44) | SKIP (I67) | prod / **dev** / dev / dev | CLONE (gap I44) |
 | D run 2 | EXEC on `dev_noclone` (T51), confirmed (T52); SKIP on `dev_clone` (T56) | EXEC (T57) | SKIP (T80) | prod / **dev** / dev / dev | CLONE (gap T57); **rehearsal served prod, wrong marker** |
+
+An offline check of the recorded inputs also establishes the expected marker
+in B, C and D. Each captured downstream SQL selects only `id, v` from the
+dev upstream. Running those SELECTs in DuckDB against the corresponding
+retained upstream rows reproduced the recorded Reference rows in all three
+runs, both after the first build and after the unchanged submit. In the
+Rust rehearsal of D, the expected row was `(1, 'dev')` on both occasions
+and the downstream served `(1, 'prod')`. The Snowflake Reference setting
+remains a separate verification item.
 
 Every confirmation answered `success: true` with `failed_to_clone: false`,
 so no copy fell back to a build on the client.

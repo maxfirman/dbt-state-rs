@@ -196,6 +196,11 @@ no_ref = uo.record(ROWS, STEPS, [x for x in READS if x["step"] != 16])["d"]
 check("without the Reference read, the finding is inconclusive",
       (no_ref["wrong_marker"], no_ref["missing"], no_ref["rows"]["reference"]),
       (None, ["reference"], None))
+wrong_relation = [dict(rd, relation=rd["relation"].replace(NAMES["od_dn"], NAMES["ob_dn"]))
+                  if rd["step"] == 16 else rd for rd in READS]
+mislabelled = uo.record(ROWS, STEPS, wrong_relation)["d"]
+check("a read of a different relation at the Reference step is inconclusive",
+      (mislabelled["wrong_marker"], mislabelled["missing"]), (None, ["reference"]))
 no_first = uo.record(ROWS, STEPS, [x for x in READS if x["step"] != 9])["d"]
 check("without the first dev read, the repeat read keeps its own phase",
       (no_first["rows"]["served"], no_first["rows"]["after_next"], no_first["wrong_marker"],

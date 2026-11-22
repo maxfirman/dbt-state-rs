@@ -67,6 +67,67 @@ struct KnownGap {
     /// (#191).
     #[serde(default)]
     ignore_explain_lines: Vec<String>,
+    /// Optional badge-scoped exemption for a `GetExplainMessages` comparison:
+    /// on HOSTED lines whose (normalized) text is `text` and whose badge is
+    /// `badge`, the badge is cleared before comparing. Combined with
+    /// `ignore_explain_lines`, the decision, the description and the rest of
+    /// the tree must then match exactly, and at least one badge must have
+    /// been cleared. Used for hosted's `<FRESH>` listing of a same-input
+    /// upstream in a Snowflake copy tree (#239, #252).
+    #[serde(default)]
+    ignore_explain_badges: Vec<ExplainBadgeGap>,
+    /// The local payload values a submit gap pins, by top-level field of the
+    /// local response's decision variant (#239): a divergent local decision
+    /// must stay the characterized one, not merely differ from hosted. A
+    /// field-scoped `ready_to_clone` gap must pin every field it ignores.
+    #[serde(default)]
+    local_payload_fields: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExplainBadgeGap {
+    text: String,
+    badge: i64,
+}
+
+/// Assert each of `gap.local_payload_fields` equals that field of the local
+/// response's decision-variant payload.
+fn assert_local_payload_fields(response: &serde_json::Value, gap: &KnownGap, context: &str) {
+    let variants = response["response"].as_object();
+    let payload = variants
+        .and_then(|v| v.get(&gap.local_variant))
+        .unwrap_or_else(|| {
+            panic!(
+                "{context}: local response has no {} payload",
+                gap.local_variant
+            )
+        });
+    for (field, want) in &gap.local_payload_fields {
+        assert_eq!(
+            &payload[field], want,
+            "{context}: characterized local {field} changed"
+        );
+    }
+}
+
+/// Clear the badge of every line whose text and badge match one of `badges`;
+/// whether any was cleared.
+fn clear_explain_badges(tree: &mut serde_json::Value, badges: &[ExplainBadgeGap]) -> bool {
+    let mut cleared = false;
+    if let serde_json::Value::Array(lines) = tree {
+        for l in lines.iter_mut() {
+            if badges.iter().any(|b| {
+                l["text"].as_str() == Some(b.text.as_str()) && l["badge"].as_i64() == Some(b.badge)
+            }) {
+                l["badge"] = serde_json::Value::Null;
+                cleared = true;
+            }
+            if let Some(children) = l.get_mut("children") {
+                cleared |= clear_explain_badges(children, badges);
+            }
+        }
+    }
+    cleared
 }
 
 fn captured_submit_request<T>(
@@ -662,8 +723,8 @@ fn retain_named_fields(value: &mut serde_json::Value, fields: &[String]) {
 /// Assert a FIELD-SCOPED known gap: the two `normalize_ids`-normalized responses
 /// must match EXACTLY outside `fields`, and the exempted `fields` THEMSELVES must
 /// genuinely differ (else the exemption is stale — something else differs, or the
-/// gap is resolved). Shared by the execute / skip submit arms and (structurally)
-/// the explain arm. `fields` may be top-level or one-level dotted paths
+/// gap is resolved). Shared by the skip and copy submit arms and (structurally)
+/// the execute and explain arms. `fields` may be top-level or one-level dotted paths
 /// (`explained_decision.decision_description`).
 fn assert_field_scoped_gap(
     ours: &serde_json::Value,
@@ -894,6 +955,39 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
     let empty =
         serde_json::json!({"response": {"skip_execution": {"transformed_nodes_by_query": {}}}});
     assert_eq!(normalize_volatile_values(empty.clone()), Ok(empty));
+}
+
+#[test]
+fn clear_explain_badges_clears_only_the_named_text_and_badge() {
+    let line = |text: &str, badge: Option<i64>, children: serde_json::Value| serde_json::json!({"text": text, "marker": null, "badge": badge, "children": children});
+    let mut hosted = serde_json::json!([line(
+        "upstream dependencies",
+        None,
+        serde_json::json!([
+            line("«FQN»", Some(1), serde_json::json!([])),
+            line("«FQN»", Some(3), serde_json::json!([])),
+            line("table analysis («FQN»)", Some(1), serde_json::json!([])),
+        ])
+    )]);
+    let gap = [ExplainBadgeGap {
+        text: "«FQN»".into(),
+        badge: 1,
+    }];
+    assert!(clear_explain_badges(&mut hosted, &gap));
+    assert_eq!(
+        hosted,
+        serde_json::json!([line(
+            "upstream dependencies",
+            None,
+            serde_json::json!([
+                line("«FQN»", None, serde_json::json!([])),
+                line("«FQN»", Some(3), serde_json::json!([])),
+                line("table analysis («FQN»)", Some(1), serde_json::json!([])),
+            ])
+        )])
+    );
+    // Nothing left to clear: a stale exemption is reported.
+    assert!(!clear_explain_badges(&mut hosted, &gap));
 }
 
 #[test]
@@ -1150,7 +1244,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        154,
+        155,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1282,6 +1376,11 @@ async fn conformance_replay_all_corpora() {
                             assert_eq!(
                                 local_variant, gap.local_variant,
                                 "{context}: characterized local decision changed"
+                            );
+                            assert_local_payload_fields(
+                                &serde_json::to_value(&response).unwrap(),
+                                gap,
+                                &context,
                             );
                             seen_gaps.insert((gap.fixture.clone(), i));
                             gaps += 1;
@@ -1442,7 +1541,39 @@ async fn conformance_replay_all_corpora() {
                                 let ours =
                                     comparable(serde_json::to_value(&response).unwrap(), &context);
                                 let real = comparable(e.response.clone(), &context);
-                                if ours != real {
+                                // A field-scoped gap: both copy, from different
+                                // sources (#239). The payload must match exactly
+                                // outside the named fields, which must differ.
+                                if let Some(gap) = known_gap.filter(|g| !g.ignore_fields.is_empty())
+                                {
+                                    assert!(!gap.reason.trim().is_empty());
+                                    assert_eq!(
+                                        local_variant, gap.local_variant,
+                                        "{context}: characterized local copy changed"
+                                    );
+                                    // The local grant itself is pinned: a change
+                                    // of source, SQL, epoch or runtime fails.
+                                    for f in &gap.ignore_fields {
+                                        assert!(
+                                            gap.local_payload_fields.contains_key(f),
+                                            "{context}: a field-scoped copy gap must pin \
+                                             local {f} in local_payload_fields"
+                                        );
+                                    }
+                                    assert_local_payload_fields(
+                                        &serde_json::to_value(&response).unwrap(),
+                                        gap,
+                                        &context,
+                                    );
+                                    assert_field_scoped_gap(
+                                        &ours,
+                                        &real,
+                                        &gap.ignore_fields,
+                                        &context,
+                                    );
+                                    seen_gaps.insert((gap.fixture.clone(), i));
+                                    gaps += 1;
+                                } else if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
                                     ));
@@ -2815,13 +2946,21 @@ async fn replay_explain_messages(
                 // keeps the main gate asserting the hosted tree DIRECTLY while
                 // scoping the one tolerated field, rather than waving the
                 // whole entry through.
-                if !gap.ignore_explain_lines.is_empty() {
+                if !gap.ignore_explain_lines.is_empty() || !gap.ignore_explain_badges.is_empty() {
                     let mut stripped = hosted_tree.clone();
                     assert!(
-                        strip_explain_lines(&mut stripped, &gap.ignore_explain_lines),
+                        gap.ignore_explain_lines.is_empty()
+                            || strip_explain_lines(&mut stripped, &gap.ignore_explain_lines),
                         "{context}: none of the ignore_explain_lines {:?} is in the hosted tree; \
                          stale exemption",
                         gap.ignore_explain_lines
+                    );
+                    assert!(
+                        gap.ignore_explain_badges.is_empty()
+                            || clear_explain_badges(&mut stripped, &gap.ignore_explain_badges),
+                        "{context}: none of the ignore_explain_badges {:?} is in the hosted \
+                         tree; stale exemption",
+                        gap.ignore_explain_badges
                     );
                     assert!(
                         decision_matches && desc_matches && stripped == local_tree,

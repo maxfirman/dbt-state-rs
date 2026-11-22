@@ -175,11 +175,11 @@ def _planned_reads(steps, name):
 
 def _rows_by_phase(steps, reads, name):
     """({phase: rows, or None when not measured}, [every planned read with its rows])."""
-    by_step = {rd["step"]: rd["rows"] for rd in reads}
+    by_read = {(rd["step"], rd["relation"]): rd["rows"] for rd in reads}
     rows = dict.fromkeys(PHASES)
     listed = []
     for step, phase, relation in _planned_reads(steps, name):
-        got = by_step.get(step)
+        got = by_read.get((step, relation))
         listed.append({"phase": phase, "step": step, "relation": relation, "rows": got})
         if got is not None:
             rows[phase] = got

@@ -409,13 +409,19 @@ server keeps the conservative behavior described.
   own copies. `clone_chain_upstream_history.jsonl` is characterization-only
   because every copy source predates the capture
   (`lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`).
+  #239 covers part of the second question with crafted histories: after
+  passing over a stale same-upstream source, hosted copied an older fresh
+  one and never a source reading another relation in a fixed third schema;
+  a source whose upstream is in its own Target's schema, as a dbt `ref`
+  resolves it, was not among the candidates
+  ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 - **Upstream origin and submit-time copy (#237, live, 2026-11-22).** With
   dbt 2.0.11 on Snowflake, hosted copied an absent FULL dev downstream only
   when it read prod's physical upstream (byte-identical SQL). It built the
   downstream when its dev upstream was a confirmed copy of prod's (RegisterClone
   or submit copy) or an independent build of the same logic, for a merge
-  incremental and a table upstream alike. It served the Reference execution's
-  rows in every case. Older captures copied a downstream over a dev upstream
+  incremental and a table upstream alike. Its rows matched the read after the Reference step
+  in every case. The original Reference's effective State setting is unverified. Older captures copied a downstream over a dev upstream
   copy: `explain_clone_history.jsonl` entry 12 (client 2.0.6, the source
   built and confirmed in the capture, B's run-2 shape) and
   `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
@@ -694,13 +700,37 @@ T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
 (I23, T29, T36), the rendering gap #239 also reports.
 **Correctness finding:** in D the copy
 serves rows computed from prod's input. A native run of the table scenario
-against this server served `v='prod'` where the State-disabled Reference
-execution serves `v='dev'`. #239's middle source shows the same outcome
+against this server served `v='prod'` where the measured dev upstream and the
+Reference-step read both held `v='dev'`. #239's middle source shows the same outcome
 (a source that read another relation of the same name, there in a third
 schema); a shared cause is inferred from `copy_search.rs`, not observed.
 Evidence: `docs/reports/evidence/snowflake-upstream-origin/`. Open for #242 and
 #243, not an accepted divergence
 ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
+
+**Open — copy source choice among competing sources (#239, crafted,
+2026-11-21).** `copy_source_choice.jsonl` crafts thirteen Snowflake histories
+in which an absent FULL destination could copy a fresh source that read its
+upstream relation (`old`), a source whose SQL matches once schemas are
+abstracted but reads another relation of the same name (`mid`), and a stale
+source that read the upstream before its change (`new`). Hosted copies `old`
+in every history that has it, whatever the completion and confirmation
+order, and builds when `mid` or `new` is alone, also when `mid` read its
+relation at the destination's epoch. This server agrees in seven histories.
+It copies `mid` alone (entries 10, 78), copies `mid` over `old` when `mid`
+completed later (entries 20, 26), and builds when all three compete and
+`mid` completed after `old` (entries 46, 54). `submit_decision/copy_search.rs`
+copies an equivalent whose recorded upstream reads differ from the submit's
+unjudged when it is the first candidate offered, and stops at one after a
+freshness rejection. Entries 10 and 78 serve a result computed from another
+physical input than the destination reads. Why hosted refuses `mid` (logic
+identity, or a requirement that the source read the destination's own
+upstream relations) is not observable in these histories. These decision
+gaps are open for #242 and #243, not accepted divergences. Separately,
+hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
+that this server renders on Databricks only; those Explain gaps (entries 3,
+7, 33, 39, 61, 67, 75) are tracked in #252
+([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 
 ### Accepted divergences
 
