@@ -705,7 +705,7 @@ says "empty".
 | Databricks | Source-less APPEND, MERGE, DELETE_INSERT, root SQL | unseeded RAND first build and unchanged refusal | empty, uncaptured | priority entries 13, 14, 18, 59–61 |
 | Databricks | data test without a Target relation (`__target_query__`), its own SQL | unseeded RAND on first execution and unchanged rerun with complete results | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 10, 22 |
 | Databricks | table downstream of a volatile model | — | empty map on first build, within-tolerance Reuse, zero-tolerance rebuild after ordinary volatile data drift, and both consumers rebuilding after the captured producer transition | `databricks_volatile_evaluation.jsonl` entries 9, 26; priority entries 35, 69; producer entries 9, 10, 22, 23, 32, 33, 44, 45 |
-| Databricks | other rebuilds and refusals, node kinds, query dependencies, mixed cases, and Result copy | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
+| Databricks | other rebuilds and refusals, node kinds, query dependencies, mixed cases, and Result copy; SQL calling a captured form beside another function, or not one query (rendered before #213, narrowed by `Cell::with_functions`) | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
 
 The [Databricks characterization](databricks-volatile.md) records the
