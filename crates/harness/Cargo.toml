@@ -46,6 +46,9 @@ reqwest.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+dbt-state-auth = { path = "../auth" }
+base64.workspace = true
+tempfile.workspace = true
 dbt-state-server = { path = "../server" }
 sqlx.workspace = true
 tokio.workspace = true

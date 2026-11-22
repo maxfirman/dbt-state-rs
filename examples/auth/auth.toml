@@ -1,0 +1,40 @@
+# Minimal auth config for `DBT_STATE_AUTH=oidc`
+# (DBT_STATE_AUTH_CONFIG=/path/to/auth.toml). Read once at startup; changes
+# apply on restart. Unknown keys are refused.
+
+[broker]
+# The Token broker's public URL: the `iss` of every token it issues.
+issuer = "https://auth.state.example.com"
+
+[api]
+# The dbt State API audience: the only `aud` the gRPC server accepts.
+audience = "https://state.example.com"
+
+[tokens]
+# Optional. Person tokens: 15 to 240 minutes (default 60).
+person_lifetime_minutes = 60
+# Machine tokens: 15 to 60 minutes (default 15).
+machine_lifetime_minutes = 15
+
+[signing]
+# RS256 keys from mounted PEM files (PKCS#8 or PKCS#1, 2048 to 4096 bits).
+# Every listed key verifies tokens; new tokens are signed with the active one.
+# Relative paths resolve from this file's directory.
+active_key_id = "2026-11"
+
+[[signing.keys]]
+id = "2026-11"
+private_key_file = "keys/signing-2026-11.pem"
+
+[[signing.keys]]
+id = "2026-05"
+private_key_file = "keys/signing-2026-05.pem"
+
+# Organization ids: non-empty visible ASCII, no ':' or whitespace, not '*'.
+[[organizations]]
+id = "analytics"
+
+[[organizations]]
+id = "finance"
+# A disabled Organization is refused on every request.
+disabled = true

@@ -1,10 +1,11 @@
 # Architecture
 
-Cargo workspace with four crates. The server depends on the proto crate; the
-harness depends on both to drive replay and differential tests.
+Cargo workspace with five crates. The server depends on the proto and auth
+crates; the harness depends on them to drive replay and differential tests.
 
 ```
 crates/proto     generated tonic stubs (server + client) from the .proto files
+crates/auth      auth core: scope format, TOML auth config, RS256 tokens, authenticated context
 crates/server    the dbt State server (decision engine + Postgres store + gRPC)
 crates/harness   recording proxy, state probe, golden fixtures, differential + fuzz tooling, tests
 crates/ui        optional read-only console, scoped to one configured organization
@@ -34,10 +35,11 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 | Module | Responsibility |
 |---|---|
-| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_REQUIRE_ORG_HEADER` (reject requests without `x-organization-id`). |
-| `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations. |
+| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_AUTH` (`none` or `oidc`), `DBT_STATE_AUTH_CONFIG` (`oidc`: TOML auth config, loaded here), `DBT_STATE_ALLOW_INSECURE` (`none` on a non-loopback address), `DBT_STATE_REQUIRE_ORG_HEADER` (`none`: reject requests without `x-organization-id`; a startup error in `oidc`). Every startup refusal happens before connecting. |
+| `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`, the `oidc` authenticator), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations; `with_oidc` selects `oidc` mode. |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
-| `request_scope.rs` | One `RequestScope` per gRPC call: the Organization (`x-organization-id`, default `local`; `UNAUTHENTICATED` when `require_org_header` is set and it is missing), the dbt invocation id and the session id. `request_scope::organization` is the only place the Organization is resolved. |
+| `grpc_auth.rs` | The authentication layer in front of every service except `grpc.health.v1`. In `oidc` mode it verifies the token and the Organization (`dbt_state_auth::RequestAuthenticator`), puts the `AuthenticatedContext` in the request extensions, and refuses with `UNAUTHENTICATED` / `PERMISSION_DENIED` (logged at `warn`). In `none` mode it passes calls through. |
+| `request_scope.rs` | One `RequestScope` per gRPC call: the Organization, the dbt invocation id and the session id. `request_scope::organization` is the only place the Organization is resolved: in `oidc` mode from the `AuthenticatedContext`; in `none` mode from `x-organization-id`, default `local` (`UNAUTHENTICATED` when `require_org_header` is set and it is missing). |
 | `services.rs` | gRPC handlers. Each one that scopes by Organization first resolves its `RequestScope`, then calls `submit_decision`, `copy_registration` or the store with its Organization, maps outcomes to the wire (both clone oneofs) and spawns capture from the same scope. Re-exports `sql_execution` for upgrade tests. |
 | `submit_decision/` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`; `submit_sql_explained` also returns the `ExplainEvidence` capture persists, in the decision's resolved naming. Pure internal seams: `copy_search.rs` (which equivalent the Result copy fallback copies) and `diagnostics.rs` (which refusal diagnostic asks State history what, in hosted's precedence order). |
 | `copy_registration.rs` | How one RegisterClone request is decided and recorded: `result_copy::register_lookup`, the one matching State history read, `result_copy::plan_register`, and the pending copy row. Returns a `RegisterOutcome`. |
@@ -338,7 +340,7 @@ new semantic forms require independent expectations and version-transition tests
 
 | Service | Methods |
 |---|---|
-| `grpc.health.v1.Health` | reports `SERVING` |
+| `grpc.health.v1.Health` | reports `SERVING`; needs no token in `oidc` mode |
 | `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` (`skip_execution` only for an unchanged data test without upstreams, otherwise `undecided`) |
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` |
 | `Clone` | `RegisterClone` |
@@ -475,6 +477,21 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
    when external modifications are ignored; later delivery cannot prove recovery.
    Logical test/deferral histories and historical copy provenance retain their
    separate ordering rules.
+
+## auth crate
+
+`crates/auth` (`dbt-state-auth`) is shared by the gRPC server and, later, the
+Token broker and the UI, so none of them depends on another. It is pure apart
+from reading the config and key files.
+
+| Module | Responsibility |
+|---|---|
+| `organization.rs` | `OrganizationId` (non-empty visible ASCII, no `:`, not `*`), `Role` (`developer` < `admin`), declared `Organizations` (active or disabled). |
+| `scope.rs` | The `scope` claim: `Scope::issue` (highest Role per declared Organization; active ones as `org` + `app` entries, disabled ones as `app` only) and the strict `Scope::parse`. `tests/scope_proptest.rs` checks both against ports of the pinned clients' scope rules (`tests/client_scope/`). |
+| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer`, `[api] audience`, `[tokens]` lifetimes, `[signing]` keys, `[[organizations]]`), unknown keys refused. Builds the `TokenIssuer`, `TokenVerifier` and `RequestAuthenticator`. |
+| `keys.rs` | RS256 keys from PEM files (PKCS#8 or PKCS#1), several key ids, one active; never echoes key material. |
+| `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId`, `PrincipalKind` (person tokens carry `sid`). |
+| `context.rs` | `RequestAuthenticator::authenticate`: token, then Organization; an `AuthenticatedContext` (Principal, Principal kind, Organization, Role, client id, session) or a `Rejection` with its gRPC class, fixed message and log reason. |
 
 ## ui crate
 

@@ -512,12 +512,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "dbt-state-auth"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "proptest",
+ "ring",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "dbt-state-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "dbt-state-auth",
  "dbt-state-proto",
  "dbt-state-server",
  "prost",
@@ -527,6 +544,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -556,6 +574,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dbt-state-auth",
  "dbt-state-proto",
  "hex",
  "md-5",
@@ -567,12 +586,14 @@ dependencies = [
  "sha2 0.10.9",
  "sqlparser",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-health",
  "tonic-prost",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",

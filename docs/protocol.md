@@ -26,10 +26,12 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
   `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, and in newer clients
   `x-dbt-invocation-id`.
 - The server reads three of them:
-  - `x-organization-id` scopes every store query. When absent the tenant is
-    `local`. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without a
-    non-empty value (`UNAUTHENTICATED`). This checks presence only; it does not
-    authenticate the organization.
+  - `x-organization-id` scopes every store query.
+    - In `DBT_STATE_AUTH=none` mode (the default), an absent header means the
+      `local` Organization. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects
+      requests without a non-empty value (`UNAUTHENTICATED`). This checks
+      presence only; it does not authenticate the Organization.
+    - In `DBT_STATE_AUTH=oidc` mode, see [Authentication](#authentication-oidc-mode).
   - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
   - Each call reads them once, into its request scope
     (`crates/server/src/request_scope.rs`). The handler and the decision
@@ -37,6 +39,42 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 - `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
   under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
   that build age is measured against. Never enable that clock in a deployment.
+
+## Authentication (`oidc` mode)
+
+With `DBT_STATE_AUTH=oidc`, a layer in front of every service except
+`grpc.health.v1` (`crates/server/src/grpc_auth.rs`) authenticates each call
+before any handler runs, using the auth core (`crates/auth`) and the TOML
+auth config (`DBT_STATE_AUTH_CONFIG`, example in
+[`examples/auth/auth.toml`](../examples/auth/auth.toml)).
+
+- The token is the `authorization: Bearer` value: an RS256 JWT with `iss`
+  (the Token broker), `aud` (the configured dbt State API audience), `azp`,
+  `sub` (the Principal), `scope`, `iat` and `exp`, plus `sid` on person
+  tokens. The JOSE header's `kid` names one of the configured signing keys.
+- `scope` uses the runcache grammar: `runcache:scope:org:<ORG>:<role>` and
+  `runcache:scope:app:<ORG>:<role>` entries separated by single spaces. An
+  active Organization appears under both kinds, a disabled one only as `app`.
+  Roles are `developer` and `admin`. `*` is never issued or accepted.
+- `x-organization-id` must name an Organization that is active in config and
+  listed in an `org` entry of the token. Handlers take the Organization from
+  the authenticated context, never from the raw header.
+
+Refusals use fixed messages; the reason is logged at `warn`, never with the
+token:
+
+| Code | Cause | Message |
+|---|---|---|
+| `UNAUTHENTICATED` | no token | `missing bearer token` |
+| | not `Bearer <JWT>`, not RS256, claims missing or `scope` outside the grammar | `malformed bearer token` |
+| | not signed by a configured key | `invalid bearer token signature` |
+| | another issuer | `bearer token has the wrong issuer` |
+| | another audience (for example a UI token) | `bearer token has the wrong audience` |
+| | past `exp` by more than 60 s | `bearer token has expired` |
+| `PERMISSION_DENIED` | no or empty `x-organization-id` | `missing x-organization-id metadata` |
+| | an Organization unknown or disabled in config, or not among the token's active entries | `access to the organization is denied` |
+
+Hosted's own codes and messages for these failures are not characterized.
 
 ## Services
 

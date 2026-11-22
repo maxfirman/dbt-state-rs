@@ -161,7 +161,19 @@ pub async fn start_server_on_database(database: std::sync::Arc<TestDatabase>) ->
 
 /// Native acceptance uses the production clock and never accepts replay metadata.
 pub async fn start_server_native() -> TestServer {
-    start_server_with_database_clock(false, None, dbt_state_server::Clock::System).await
+    start_server_with_database_clock(false, None, dbt_state_server::Clock::System, None).await
+}
+
+/// A server in `oidc` mode: every RPC but health needs a token `auth`
+/// accepts, for an active Organization of `auth`'s config.
+pub async fn start_server_oidc(auth: &super::oidc::TestAuth) -> TestServer {
+    start_server_with_database_clock(
+        false,
+        None,
+        dbt_state_server::Clock::Replay,
+        Some(auth.config().request_authenticator()),
+    )
+    .await
 }
 
 async fn start_server_with_database(
@@ -172,6 +184,7 @@ async fn start_server_with_database(
         require_org_header,
         database,
         dbt_state_server::Clock::Replay,
+        None,
     )
     .await
 }
@@ -180,6 +193,7 @@ async fn start_server_with_database_clock(
     require_org_header: bool,
     database: Option<std::sync::Arc<TestDatabase>>,
     clock: dbt_state_server::Clock,
+    oidc: Option<dbt_state_auth::RequestAuthenticator>,
 ) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
@@ -195,7 +209,10 @@ async fn start_server_with_database_clock(
         // migration/startup panic. This drops any in-flight capture transactions.
         let result = catch_unwind(AssertUnwindSafe(|| {
             runtime.block_on(async {
-                let state = database.state(require_org_header).await.with_clock(clock);
+                let mut state = database.state(require_org_header).await.with_clock(clock);
+                if let Some(authenticator) = oidc {
+                    state = state.with_oidc(authenticator);
+                }
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
                 let addr = listener.local_addr().expect("server address");
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
