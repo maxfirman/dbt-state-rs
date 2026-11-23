@@ -448,10 +448,16 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one, and anything
   else that could read a relation or a context without being resolved (a
   table function outside a pure set, a one-part name of a later sibling
-  CTE, an unsupported FROM construct, `CURRENT_SCHEMAS()`, any other
-  `SYS_CONTEXT` property or namespace, or a session `SYS_CONTEXT` inside a
-  view) leaves the build
-  without a binding. So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the
+  CTE, an unsupported FROM construct, any other `SYS_CONTEXT` property or
+  namespace, or a session `SYS_CONTEXT` inside a view) leaves the build
+  without a binding. So does any other Snowflake context function outside
+  the clock family (the session, statement or transaction, the principal
+  and its roles, the warehouse, the client, the account, the search path,
+  a view's `INVOKER_ROLE()`, which is its owner's role) and a session
+  variable (`$name`, `GETVARIABLE`): the request identifies none of them,
+  so a matching database does not make the results equal. The clock
+  functions stay with Volatile evaluation and `tolerate_nondeterminism`.
+  A string constant may be single- or dollar-quoted (`$$DATABASE$$`). So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the
   recorded epochs do not identify the version it reads, and an `OFFSET`
   is relative to each query's own time. A workload also has no binding
   when a query dependency is not named in three parts, when two
@@ -562,7 +568,8 @@ each Snowflake build is copied from only once rebuilt, and a copy whose
 build it cannot establish rebuilds once as its own Target relation's Reuse
 candidate. A binding hashed under an earlier binding version
 (`dbt-state-physical-binding-v1` before the fourth review of #266, `v2`
-before the fifth, `v3` before the sixth) never equals a current one, so those builds too are copied from only once
+before the fifth, `v3` before the sixth, `v4` before the seventh) never
+equals a current one, so those builds too are copied from only once
 rebuilt, and a copy holding one rebuilds once. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.

@@ -142,8 +142,10 @@ Do not weaken these without new evidence.
   `SEARCH_PATH`); inside a view names resolve in the view's own schema.
   `CURRENT_DATABASE()`, `CURRENT_SCHEMA()` and the session `SYS_CONTEXT`
   database and schema are bound with each value they read (a view's own
-  inside a view); one the request omits, Time Travel, `CURRENT_SCHEMAS()`,
-  any other `SYS_CONTEXT`, conflicting definitions of one view, typed view
+  inside a view); one the request omits, Time Travel, any other
+  `SYS_CONTEXT`, any other non-clock context function (session, principal,
+  roles, `INVOKER_ROLE()`, warehouse, search path), session variables,
+  conflicting definitions of one view, typed view
   columns and traversals past 32 levels on any path or 1024 references
   leave no binding. Every base
   relation it reads must be reported by the submit and recorded by the
@@ -767,7 +769,7 @@ This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
 (runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
-`130336ee9432`, `15355882dd2e`, `18143533c882`, `193559af41fb` and `204310ef6ee3`) served
+`130336ee9432`, `15355882dd2e`, `18143533c882`, `193559af41fb`, `204310ef6ee3` and `2134512b204a`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
@@ -806,7 +808,10 @@ any of them is not captured. The sixth review added three more
 'SCHEMA')` in two schemas and `CURRENT_SCHEMA()` with `default_schema`
 omitted (the server builds both), and `CURRENT_DATABASE()` across two
 schemas of one database (it copies). Hosted is not captured for these
-either.
+either, nor for the seventh review's (`review266_context_qualification.rs`):
+`CURRENT_SESSION()` and a view's `INVOKER_ROLE()` beside a matching
+`CURRENT_DATABASE()` (the server builds both) and a dollar-quoted
+`SYS_CONTEXT` property (it copies).
 
 **Resolved 2026-11-22 — copy source choice among competing sources (#239,
 crafted; #264).** `copy_source_choice.jsonl` crafts thirteen Snowflake

@@ -27,9 +27,12 @@
 //! inside a view. Anything else that could read a relation or a context the
 //! request does not identify (a session database or schema the request
 //! omits, a one-part name of a later sibling CTE, a table function outside
-//! the pure set, an unsupported FROM construct, Time Travel,
-//! `CURRENT_SCHEMAS()`, any other `SYS_CONTEXT`, a cycle of dependencies,
-//! SQL that does not parse) leaves the workload without a physical binding. So do two definitions of one view (however
+//! the pure set, an unsupported FROM construct, Time Travel, any other
+//! `SYS_CONTEXT`, another context function outside the clock family
+//! ([`UNKNOWN_CONTEXT_FUNCTIONS`]: the session, principal, roles, view
+//! invoker, warehouse, account, search path), a session variable, a cycle
+//! of dependencies, SQL that does not parse) leaves the workload without a
+//! physical binding. So do two definitions of one view (however
 //! its name is spelled), a view's declared columns with a type or options,
 //! and a traversal with a definition deeper than [`MAX_DEPTH`] on any path
 //! or wider than [`MAX_VISITS`] references. A view's declared column names
@@ -54,7 +57,7 @@ use std::ops::ControlFlow;
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
 /// frames.
-const VERSION: &[u8] = b"dbt-state-physical-binding-v4";
+const VERSION: &[u8] = b"dbt-state-physical-binding-v5";
 
 /// Table functions that read no relation.
 const PURE_TABLE_FUNCTIONS: &[&str] = &[
@@ -62,6 +65,49 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "GENERATOR",
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
+];
+
+/// Snowflake context functions (`functions-context`) whose value the
+/// request does not identify: the session, statement and transaction, the
+/// principal and its roles, the warehouse, the client, the account and its
+/// region and version, session variables, and a view's invoker (its
+/// owner's role). Each leaves no binding. The clock functions are Volatile
+/// evaluation's (`sql_norm::VOLATILE_FUNCTIONS`), `CURRENT_DATABASE()` and
+/// `CURRENT_SCHEMA()` are bound ([`Context`]), and `SYS_CONTEXT` is judged
+/// by its property.
+const UNKNOWN_CONTEXT_FUNCTIONS: &[&str] = &[
+    "ALL_USER_NAMES",
+    "CURRENT_ACCOUNT",
+    "CURRENT_ACCOUNT_NAME",
+    "CURRENT_AVAILABLE_ROLES",
+    "CURRENT_CLIENT",
+    "CURRENT_IP_ADDRESS",
+    "CURRENT_ORGANIZATION_NAME",
+    "CURRENT_ORGANIZATION_USER",
+    "CURRENT_REGION",
+    "CURRENT_ROLE",
+    "CURRENT_ROLE_TYPE",
+    "CURRENT_SCHEMAS",
+    "CURRENT_SECONDARY_ROLES",
+    "CURRENT_SESSION",
+    "CURRENT_STATEMENT",
+    "CURRENT_TRANSACTION",
+    "CURRENT_USER",
+    "CURRENT_VERSION",
+    "CURRENT_WAREHOUSE",
+    "GETVARIABLE",
+    "GET_CONDITION_QUERY_UUID",
+    "INVOKER_ROLE",
+    "INVOKER_SHARE",
+    "IS_APPLICATION_ROLE_IN_SESSION",
+    "IS_DATABASE_ROLE_IN_SESSION",
+    "IS_GRANTED_TO_INVOKER_ROLE",
+    "IS_INSTANCE_ROLE_IN_SESSION",
+    "IS_ROLE_IN_SESSION",
+    "LAST_QUERY_ID",
+    "LAST_TRANSACTION",
+    "POLICY_CONTEXT",
+    "SET_SYS_CONTEXT",
 ];
 
 /// The context values a query reads ([`References::context`]).
@@ -394,9 +440,11 @@ fn ident_key(id: &Ident) -> String {
     }
 }
 
+/// `v` when it is a string constant: single- or dollar-quoted.
 fn string_literal(v: &Value) -> Option<&str> {
     match v {
         Value::SingleQuotedString(s) => Some(s),
+        Value::DollarQuotedString(s) if s.tag.is_none() => Some(&s.value),
         _ => None,
     }
 }
@@ -491,8 +539,25 @@ impl VisitorMut for References<'_> {
     }
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-        let Expr::Function(f) = expr else {
-            return ControlFlow::Continue(());
+        let f = match expr {
+            Expr::Function(f) => f,
+            // `CURRENT_USER` may be called without parentheses.
+            Expr::Identifier(id)
+                if id.quote_style.is_none() && id.value.eq_ignore_ascii_case("CURRENT_USER") =>
+            {
+                self.unbound = true;
+                return ControlFlow::Continue(());
+            }
+            // A session variable (`$name`; `$1` is a column position).
+            Expr::Value(v) => {
+                if let Value::Placeholder(p) = &v.value {
+                    if p.starts_with('$') && !p[1..].bytes().all(|b| b.is_ascii_digit()) {
+                        self.unbound = true;
+                    }
+                }
+                return ControlFlow::Continue(());
+            }
+            _ => return ControlFlow::Continue(()),
         };
         let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() else {
             return ControlFlow::Continue(());
@@ -500,8 +565,7 @@ impl VisitorMut for References<'_> {
         match id.value.to_ascii_uppercase().as_str() {
             "CURRENT_DATABASE" => self.context.database = true,
             "CURRENT_SCHEMA" => self.context.schema = true,
-            // The search path, which no request carries.
-            "CURRENT_SCHEMAS" => self.unbound = true,
+            name if UNKNOWN_CONTEXT_FUNCTIONS.contains(&name) => self.unbound = true,
             "SYS_CONTEXT" => {
                 // The session's database or schema, in the root SQL. Any
                 // other property, namespace or call, or one inside a view,
@@ -896,6 +960,40 @@ mod tests {
                 "create view V as select sys_context('SNOWFLAKE$SESSION', 'SCHEMA') as v from db.raw.u"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn a_context_the_request_does_not_identify_has_no_binding() {
+        let root = |sql: &str| binding(&request(sql, "PROD", &["DB.RAW.U"])).map(|b| b.hash);
+        // The session, the principal and the view's invoker (seventh review
+        // of #266), with a database that matches.
+        for sql in [
+            "select current_database() as db, current_session() as sid from db.raw.u",
+            "select current_user() as v from db.raw.u",
+            "select current_user as v from db.raw.u",
+            "select current_role() as v from db.raw.u",
+            "select current_warehouse() as v from db.raw.u",
+            "select last_query_id() as v from db.raw.u",
+            "select getvariable('X') as v from db.raw.u",
+            "select $x as v from db.raw.u",
+        ] {
+            assert_eq!(root(sql), None, "{sql}");
+        }
+        let mut req = request("select owner_role from db.prod.v", "PROD", &["DB.RAW.U"]);
+        req.query_dependencies = vec![view(
+            "DB.PROD.V",
+            "create view V as select current_database() as db, invoker_role() as owner_role from db.raw.u",
+            "PROD",
+        )];
+        assert_eq!(binding(&req), None);
+        // A column position, a clock (Volatile evaluation's) and a
+        // dollar-quoted constant are known.
+        assert!(root("select $1 as v from db.raw.u").is_some());
+        assert!(root("select current_timestamp() as v from db.raw.u").is_some());
+        assert!(
+            root("select sys_context('SNOWFLAKE$SESSION', $$DATABASE$$) as v from db.raw.u")
+                .is_some()
         );
     }
 

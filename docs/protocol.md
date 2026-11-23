@@ -798,7 +798,8 @@ When the fallback applies:
   other reported or defined relation shares it and a view's in the view's
   own schema, with each database or schema value it reads
   (`CURRENT_DATABASE()`, `CURRENT_SCHEMA()`, the session `SYS_CONTEXT`),
-  none when the request omits it; Time Travel has none;
+  none when the request omits it; Time Travel and any other non-clock
+  context function or session variable have none;
   `executions.node_binding_hash`), every base
   relation it reads must be reported by both, and a read of the submit's own
   Target relation is never copied (#264, ADR 0007 "Result copy over
