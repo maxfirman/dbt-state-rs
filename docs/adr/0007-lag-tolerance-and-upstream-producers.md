@@ -435,15 +435,22 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   that last component is the one in the default schema. Inside a view
   Snowflake does not use the search path: its names resolve in the view's
   own database and schema, whatever context the request declares for it.
-  SQL calling `CURRENT_DATABASE()` or `CURRENT_SCHEMA()` is bound with the
-  database and schema it runs in (the session's for the root SQL, the
-  view's own inside a view), so two views of one definition in two schemas
-  that return their schema differ. CTE references are no reads (a CTE is
+  SQL that reads the database or schema it runs in is bound with each
+  value it reads, the session's for the root SQL and the view's own inside
+  a view: `CURRENT_DATABASE()` the database, `CURRENT_SCHEMA()` the
+  schema, and in the root SQL `SYS_CONTEXT('SNOWFLAKE$SESSION',
+  'DATABASE' | 'SCHEMA')` the session's. So two views of one definition in
+  two schemas that return their schema differ, and a query returning only
+  its database still copies across schemas of that database. A value the
+  request omits (an optional `default_schema`, an empty
+  `default_catalog`) leaves no binding. CTE references are no reads (a CTE is
   in scope in its own definition: `RECURSIVE` is optional on Snowflake), a
   table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one, and anything
   else that could read a relation or a context without being resolved (a
   table function outside a pure set, a one-part name of a later sibling
-  CTE, an unsupported FROM construct, `CURRENT_SCHEMAS()`) leaves the build
+  CTE, an unsupported FROM construct, `CURRENT_SCHEMAS()`, any other
+  `SYS_CONTEXT` property or namespace, or a session `SYS_CONTEXT` inside a
+  view) leaves the build
   without a binding. So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the
   recorded epochs do not identify the version it reads, and an `OFFSET`
   is relative to each query's own time. A workload also has no binding
@@ -555,7 +562,7 @@ each Snowflake build is copied from only once rebuilt, and a copy whose
 build it cannot establish rebuilds once as its own Target relation's Reuse
 candidate. A binding hashed under an earlier binding version
 (`dbt-state-physical-binding-v1` before the fourth review of #266, `v2`
-before the fifth) never equals a current one, so those builds too are copied from only once
+before the fifth, `v3` before the sixth) never equals a current one, so those builds too are copied from only once
 rebuilt, and a copy holding one rebuilds once. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.

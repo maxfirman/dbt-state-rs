@@ -140,9 +140,10 @@ Do not weaken these without new evidence.
   name in the root SQL is bound only when the one reported or defined
   relation of that name is in the default schema (no request carries
   `SEARCH_PATH`); inside a view names resolve in the view's own schema.
-  `CURRENT_DATABASE()` and `CURRENT_SCHEMA()` are bound with the database
-  and schema they return (a view's own inside a view). Time Travel,
-  `CURRENT_SCHEMAS()`, conflicting definitions of one view, typed view
+  `CURRENT_DATABASE()`, `CURRENT_SCHEMA()` and the session `SYS_CONTEXT`
+  database and schema are bound with each value they read (a view's own
+  inside a view); one the request omits, Time Travel, `CURRENT_SCHEMAS()`,
+  any other `SYS_CONTEXT`, conflicting definitions of one view, typed view
   columns and traversals past 32 levels on any path or 1024 references
   leave no binding. Every base
   relation it reads must be reported by the submit and recorded by the
@@ -766,7 +767,7 @@ This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
 (runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
-`130336ee9432`, `15355882dd2e`, `18143533c882` and `193559af41fb`) served
+`130336ee9432`, `15355882dd2e`, `18143533c882`, `193559af41fb` and `204310ef6ee3`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
@@ -800,7 +801,12 @@ definition returning `CURRENT_SCHEMA()` in their own schemas, a read `AT
 upstream change at one reported epoch, and a shared view whose `U` and
 `OTHER.U` are both reported. The server builds the first two and copies the
 third, following Snowflake's documented resolution. Whether hosted copies
-any of them is not captured.
+any of them is not captured. The sixth review added three more
+(`review266_session_context.rs`): `SYS_CONTEXT('SNOWFLAKE$SESSION',
+'SCHEMA')` in two schemas and `CURRENT_SCHEMA()` with `default_schema`
+omitted (the server builds both), and `CURRENT_DATABASE()` across two
+schemas of one database (it copies). Hosted is not captured for these
+either.
 
 **Resolved 2026-11-22 — copy source choice among competing sources (#239,
 crafted; #264).** `copy_source_choice.jsonl` crafts thirteen Snowflake

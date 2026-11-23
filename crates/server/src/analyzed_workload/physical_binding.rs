@@ -20,14 +20,16 @@
 //! `IDENTIFIER('<name>')`) is resolved like a name. A reference to a query
 //! dependency is bound to its definition, itself so resolved, so two views
 //! of one definition in one schema bind alike and swapping definitions
-//! between references does not. SQL calling `CURRENT_DATABASE()` or
-//! `CURRENT_SCHEMA()` is bound with the database and schema it runs in (the
-//! session's for the root SQL, the view's own inside a view). Anything else
-//! that could read a relation or a context the request does not identify (a
-//! one-part name of a later sibling CTE, a table function outside the pure
-//! set, an unsupported FROM construct, Time Travel, `CURRENT_SCHEMAS()`, a
-//! cycle of dependencies, SQL that does not parse) leaves the workload
-//! without a physical binding. So do two definitions of one view (however
+//! between references does not. SQL reading the database or schema it runs
+//! in (`CURRENT_DATABASE()`, `CURRENT_SCHEMA()`, and in the root SQL
+//! `SYS_CONTEXT('SNOWFLAKE$SESSION', 'DATABASE' | 'SCHEMA')`) is bound with
+//! each value it reads: the session's for the root SQL, the view's own
+//! inside a view. Anything else that could read a relation or a context the
+//! request does not identify (a session database or schema the request
+//! omits, a one-part name of a later sibling CTE, a table function outside
+//! the pure set, an unsupported FROM construct, Time Travel,
+//! `CURRENT_SCHEMAS()`, any other `SYS_CONTEXT`, a cycle of dependencies,
+//! SQL that does not parse) leaves the workload without a physical binding. So do two definitions of one view (however
 //! its name is spelled), a view's declared columns with a type or options,
 //! and a traversal with a definition deeper than [`MAX_DEPTH`] on any path
 //! or wider than [`MAX_VISITS`] references. A view's declared column names
@@ -52,7 +54,7 @@ use std::ops::ControlFlow;
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
 /// frames.
-const VERSION: &[u8] = b"dbt-state-physical-binding-v3";
+const VERSION: &[u8] = b"dbt-state-physical-binding-v4";
 
 /// Table functions that read no relation.
 const PURE_TABLE_FUNCTIONS: &[&str] = &[
@@ -62,9 +64,16 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "STRTOK_SPLIT_TO_TABLE",
 ];
 
-/// Functions returning the database or schema the SQL runs in: the
-/// session's in the root SQL, the view's own inside a view.
-const CONTEXT_FUNCTIONS: &[&str] = &["CURRENT_DATABASE", "CURRENT_SCHEMA"];
+/// The context values a query reads ([`References::context`]).
+#[derive(Debug, Default, Clone, Copy)]
+struct Context {
+    /// The database it runs in: `CURRENT_DATABASE()`,
+    /// `SYS_CONTEXT('SNOWFLAKE$SESSION', 'DATABASE')`.
+    database: bool,
+    /// The schema it runs in: `CURRENT_SCHEMA()`,
+    /// `SYS_CONTEXT('SNOWFLAKE$SESSION', 'SCHEMA')`.
+    schema: bool,
+}
 
 /// The most nested query dependency definitions bound
 /// (`docs/architecture.md`, dependency traversal).
@@ -218,7 +227,7 @@ impl Binder<'_> {
             known: (!in_view).then_some(self.known),
             frames: Vec::new(),
             resolved: Vec::new(),
-            context: false,
+            context: Context::default(),
             unbound: false,
         };
         let _ = query.visit(&mut references);
@@ -250,16 +259,21 @@ impl Binder<'_> {
         for (i, bound) in bound.iter().enumerate().rev() {
             rendered = rendered.replace(&format!("\"{PLACEHOLDER}{i}\""), bound);
         }
-        // `CURRENT_DATABASE()` and `CURRENT_SCHEMA()` return the session's
-        // in the root SQL and the view's own inside a view.
-        let context = if references.context {
-            format!(
-                "context {} ",
-                quoted(&[references.catalog, references.schema])
-            )
-        } else {
-            String::new()
-        };
+        // Each context value read, the session's in the root SQL and the
+        // view's own inside a view; one the request does not supply leaves
+        // no binding.
+        let mut context = String::new();
+        for (read, name, value) in [
+            (references.context.database, "database", &references.catalog),
+            (references.context.schema, "schema", &references.schema),
+        ] {
+            if read {
+                if value.is_empty() {
+                    return None;
+                }
+                context.push_str(&format!("{name} {} ", quoted(std::slice::from_ref(value))));
+            }
+        }
         Some(format!(
             "{context}{columns}{}",
             crate::sql_norm::normalize_sql(&rendered)
@@ -318,9 +332,8 @@ struct References<'a> {
     known: Option<&'a [Relation]>,
     frames: Vec<Frame>,
     resolved: Vec<Relation>,
-    /// Whether the SQL returns its database or schema
-    /// ([`CONTEXT_FUNCTIONS`]).
-    context: bool,
+    /// The context values the SQL reads.
+    context: Context,
     unbound: bool,
 }
 
@@ -391,7 +404,15 @@ fn string_literal(v: &Value) -> Option<&str> {
 /// The literal a single-argument `IDENTIFIER(...)` call names.
 fn identifier_literal(args: &[FunctionArg]) -> Option<&str> {
     match args {
-        [FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(v)))] => string_literal(&v.value),
+        [arg] => literal_arg(arg),
+        _ => None,
+    }
+}
+
+/// `arg` when it is a string literal.
+fn literal_arg(arg: &FunctionArg) -> Option<&str> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(v))) => string_literal(&v.value),
         _ => None,
     }
 }
@@ -470,16 +491,38 @@ impl VisitorMut for References<'_> {
     }
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
-        if let Expr::Function(f) = expr {
-            if let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() {
-                let name = id.value.to_ascii_uppercase();
-                if CONTEXT_FUNCTIONS.contains(&name.as_str()) {
-                    self.context = true;
-                } else if name == "CURRENT_SCHEMAS" {
-                    // The search path, which no request carries.
-                    self.unbound = true;
+        let Expr::Function(f) = expr else {
+            return ControlFlow::Continue(());
+        };
+        let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() else {
+            return ControlFlow::Continue(());
+        };
+        match id.value.to_ascii_uppercase().as_str() {
+            "CURRENT_DATABASE" => self.context.database = true,
+            "CURRENT_SCHEMA" => self.context.schema = true,
+            // The search path, which no request carries.
+            "CURRENT_SCHEMAS" => self.unbound = true,
+            "SYS_CONTEXT" => {
+                // The session's database or schema, in the root SQL. Any
+                // other property, namespace or call, or one inside a view,
+                // reads a context the request does not identify.
+                let property = match &f.args {
+                    FunctionArguments::List(list) => match list.args.as_slice() {
+                        [namespace, property] => literal_arg(namespace)
+                            .filter(|n| n.eq_ignore_ascii_case("SNOWFLAKE$SESSION"))
+                            .and(literal_arg(property))
+                            .map(str::to_ascii_uppercase),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match property.as_deref() {
+                    Some("DATABASE") if self.known.is_some() => self.context.database = true,
+                    Some("SCHEMA") if self.known.is_some() => self.context.schema = true,
+                    _ => self.unbound = true,
                 }
             }
+            _ => {}
         }
         ControlFlow::Continue(())
     }
@@ -807,14 +850,51 @@ mod tests {
         assert_ne!(in_view("PROD", body), in_view("DEV", body));
         let plain = "create view V as select v from db.raw.u";
         assert_eq!(in_view("PROD", plain), in_view("DEV", plain));
-        // In the root SQL, the session's.
+        // In the root SQL, the session's, each value only when read.
         let root =
             |schema: &str, sql: &str| binding(&request(sql, schema, &["DB.RAW.U"])).map(|b| b.hash);
-        let sql = "select current_database() || current_schema() as v from db.raw.u";
-        assert_ne!(root("PROD", sql), root("DEV", sql));
-        // The search path is unknown.
+        for sql in [
+            "select current_schema() as v from db.raw.u",
+            "select sys_context('SNOWFLAKE$SESSION', 'SCHEMA') as v from db.raw.u",
+        ] {
+            assert!(root("PROD", sql).is_some(), "{sql}");
+            assert_ne!(root("PROD", sql), root("DEV", sql), "{sql}");
+        }
+        for sql in [
+            "select current_database() as v from db.raw.u",
+            "select sys_context('snowflake$session', 'database') as v from db.raw.u",
+        ] {
+            assert!(root("PROD", sql).is_some(), "{sql}");
+            assert_eq!(root("PROD", sql), root("DEV", sql), "{sql}");
+        }
+        // A value the request does not supply has no binding.
+        let mut omitted = request(
+            "select current_schema() as v from db.raw.u",
+            "PROD",
+            &["DB.RAW.U"],
+        );
+        omitted.default_schema = None;
+        assert_eq!(binding(&omitted), None);
+        omitted.sql = "select current_database() as v from db.raw.u".into();
+        assert!(binding(&omitted).is_some());
+        omitted.default_catalog = String::new();
+        assert_eq!(binding(&omitted), None);
+        // The search path, any other session context, and the session's
+        // context inside a view are unknown.
+        for sql in [
+            "select current_schemas() as v from db.raw.u",
+            "select sys_context('SNOWFLAKE$SESSION', 'SCHEMAS') as v from db.raw.u",
+            "select sys_context('SNOWFLAKE$SESSION', 'ROLE') as v from db.raw.u",
+            "select sys_context('SNOWFLAKE$CURRENT', 'SCHEMA') as v from db.raw.u",
+            "select sys_context('SNOWFLAKE$SESSION', $p) as v from db.raw.u",
+        ] {
+            assert_eq!(root("PROD", sql), None, "{sql}");
+        }
         assert_eq!(
-            root("PROD", "select current_schemas() as v from db.raw.u"),
+            in_view(
+                "PROD",
+                "create view V as select sys_context('SNOWFLAKE$SESSION', 'SCHEMA') as v from db.raw.u"
+            ),
             None
         );
     }
