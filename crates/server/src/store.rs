@@ -184,6 +184,8 @@ pub struct ExecutionRow {
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub node_namespace_logic_hash: Option<String>,
+    /// The build's physical binding identity (Snowflake, migration 0034).
+    pub node_binding_hash: Option<String>,
     /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
     pub node_template_hash: Option<String>,
     pub values_hash: Option<String>,
@@ -285,7 +287,7 @@ impl ExecutionRow {
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
         clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, producer_revision, \
-        clone_source_execution_id, data_test_key, \
+        clone_source_execution_id, data_test_key, node_binding_hash, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -357,6 +359,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
                 .try_get::<Option<serde_json::Value>, _>("submit_copy_provenance")?
                 .and_then(|value| serde_json::from_value(value).ok()),
             node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
+            node_binding_hash: row.try_get("node_binding_hash")?,
             node_template_hash: row.try_get("node_template_hash")?,
             values_hash: row.try_get("values_hash")?,
             dialect: row.try_get("dialect")?,
@@ -588,10 +591,10 @@ impl Store {
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
                 node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, producer_revision,
-                data_test_key, clone_source_execution_id, principal_id
+                data_test_key, clone_source_execution_id, principal_id, node_binding_hash
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                       $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-                      $35,$36,$37,$38)
+                      $35,$36,$37,$38,$39)
             "#,
         )
         .bind(&e.org_id)
@@ -646,6 +649,7 @@ impl Store {
         .bind(&e.data_test_key)
         .bind(e.clone_source_execution_id)
         .bind(e.principal.as_ref().map(|p| p.as_str()))
+        .bind(&e.node_binding_hash)
         .execute(executor)
         .await?;
         Ok(())

@@ -127,6 +127,13 @@ equivalent that read that build may be copied for the workload. Such an
 input is said to be read through a copy.
 _Avoid_: Alias, equivalent relation
 
+**Physical binding**:
+Which physical relation each relation reference of a workload reads, each
+resolved in the context of the SQL that names it and a view through its
+definition. Two workloads with the same Logical copy identity can bind
+their references differently.
+_Avoid_: Input set, reported tables
+
 **Decision reason**:
 The one cause a decision records for building, reusing or copying a workload's
 result, such as a first build, no reuse candidate, an outdated upstream or a

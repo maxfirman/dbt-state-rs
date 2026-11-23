@@ -421,28 +421,32 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   qualification, checked before any freshness policy, so Lag tolerance
   never admits a Stand-in of another build. A copy of a copy stands for
   itself, and so does a copy of a relation the submit also reads directly.
-- *Each reference keeps its binding.* With a Stand-in, the submit's SQL and
-  its query dependency definitions, with each copy read as its source (and
-  its Target relation's schema read as the build's), must have the build's
-  copy logic identity. Two copies swapped between the references of a join,
-  in the root SQL or inside a view's definition, read the same relations but
-  bind them the other way, so they differ. Only Snowflake's
-  schema-abstracted identity supports the check; elsewhere no Stand-in is
-  used.
-- *The submit's own Target relation is the only read set aside.* The
-  build's Target relation is a genuine input of a submit that reads it.
-- *Every base relation the SQL reads is reported* (Snowflake, for a kind the
-  Warehouse rules copy; `copy_search::sql_reads_are_reported`). A base
-  relation is one the root SQL, or the definition of a query dependency it
-  reads, names in FROM or JOIN and that is no query dependency itself (a
-  view read through its definition, which the copy logic identity binds to
-  its name); a CTE reference or a view's declared name is none. A read
-  nothing reports proves nothing, also when another input is reported. A
-  read of the submit's own Target relation is never covered: its prior
-  contents differ between the two Target relations. A kind that only
-  reports its equivalent in its codes keeps reporting it (client 2.0.11
-  reports no reads for a view). DuckDB's checked copy graph already binds
-  each physical input exactly.
+- *Each reference reads what the build's did* (Snowflake, for a kind the
+  Warehouse rules copy; `copy_search::binds_as_held`). Every build records
+  its *physical binding* (`analyzed_workload::physical_binding`,
+  `executions.node_binding_hash`, migration 0034): its SQL and the query
+  dependency definitions it reads, with every relation reference resolved
+  in the default catalog and schema of the SQL that names it and replaced by
+  the physical relation, a view by its definition so bound. CTE references
+  are no reads (a CTE is in scope in its own definition: `RECURSIVE` is
+  optional on Snowflake), a table literal (`TABLE('…')`, `IDENTIFIER('…')`)
+  is one, and anything else that could read a relation without being
+  resolved (a table function outside a pure set, a one-part name of a later
+  sibling CTE, an unsupported FROM construct) leaves the build without a
+  binding. The submit, each Stand-in read as its source, must have the
+  build's binding, so two inputs swapped between references, inside a view
+  too, or an unqualified reference that resolves in another schema,
+  differ, even with the same reported inputs.
+- *Every read is evidenced on both sides.* Each base relation the submit's
+  binding reads must be among its reported inputs and must not be its own
+  Target relation, whose prior contents differ between the two Target
+  relations; the same relation, read as its source, must be among what the
+  build recorded, so a build that under-reported its own reads proves
+  nothing. The build must have recorded each upstream once: a relation
+  recorded twice has no one epoch to judge.
+- *Other Warehouses.* DuckDB's checked copy graph already binds each
+  physical input exactly and keeps its rule; Databricks requires exact
+  current inputs.
 - *Then it is judged as the reuse candidate,* over the build's recorded
   epochs and with the equivalent's own build age (a copy's is its copy
   time; hosted copied a copy within Lag tolerance whose source build was
@@ -481,7 +485,12 @@ unchanged submit is judged over them.
   upstream with the same row (case C).
 - *Compare the set of inputs only.* Rejected: two copies swapped between a
   join's references have the same set and epochs but project the other
-  input's values (review of #266).
+  input's values (review of #266), and an unqualified reference resolving in
+  each default schema reads another input under identical reported sets
+  (third review of #266).
+- *Infer the build's bindings from the schema-abstracted identity.*
+  Rejected: that identity abstracts exactly the schemas that decide what an
+  unqualified or schema-relative reference reads.
 - *Judge a copy's resubmit over the epochs it recorded at copy time.*
   Rejected: a copy made within Lag tolerance then looked fresh forever
   (second review of #266).
@@ -502,9 +511,12 @@ a dev input no recorded build or copy produced
 (`clone_fallback_stale_source.jsonl` and `clone_fallback_zero_tolerance.jsonl`,
 entry 2 each) are keyed replay gaps: the server builds there. A copy over an
 existing Target relation follows the same rule, since every copy is now
-judged. A Result copy recorded before migration 0029 has no recorded source
-build (`clone_source_execution_id`): it is passed over as a copy source and,
-as its own Target relation's Reuse candidate, rebuilds once. A copy over a Stand-in is recorded and explained as a judged copy,
+judged. A Snowflake build recorded before migration 0034 has no physical
+binding, and a Result copy recorded before migration 0029 no recorded source
+build (`clone_source_execution_id`): neither qualifies, so after the upgrade
+each Snowflake build is copied from only once rebuilt, and a copy whose
+build it cannot establish rebuilds once as its own Target relation's Reuse
+candidate. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.
 

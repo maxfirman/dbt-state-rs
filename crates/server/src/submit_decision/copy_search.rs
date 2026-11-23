@@ -123,25 +123,25 @@ impl AlignedRead {
 
 /// The submit's upstream reads (every input but its own Target relation),
 /// each aligned with the relation `held`, a build, recorded at build time,
-/// when they are exactly the physical relations `held` recorded, however
-/// each is spelled ([`crate::copy_lifecycle::canonical_reads`]); `None`
-/// otherwise:
+/// when the submit is proven to read what `held` read; `None` otherwise:
 ///
 /// - Each input is itself, and a relation `held` shares with the submit is
 ///   judged for drift (PR #127 review). `held`'s own Target relation is a
 ///   genuine input of the submit when the submit reads it, never filtered.
 /// - An input read through a copy this server recorded is given as its
 ///   Stand-in when `held` did not record the input but recorded the
-///   Stand-in's relation at exactly the Stand-in's epoch: it then holds the
-///   build `held` read. A copy of a relation the submit also reads directly
-///   stands for itself. With a Stand-in, the submit's SQL and query
-///   dependency definitions with each copy read as its source must have
-///   `held`'s logic, so each reference still reads what `held`'s did (a
-///   Snowflake schema-abstracted identity only).
-/// - On Snowflake, a submit the Warehouse rules copy must report every base
-///   relation its SQL reads ([`sql_reads_are_reported`]): a read nothing
-///   reports proves nothing. DuckDB's checked copy graph already binds each
-///   physical input exactly.
+///   Stand-in's relation, once, at exactly the Stand-in's epoch: it then
+///   holds the build `held` read. A copy of a relation the submit also reads
+///   directly stands for itself.
+/// - `held` recorded each of its upstreams once: a relation recorded twice
+///   has no one epoch to judge (`docs/protocol.md`, Identity).
+/// - The physical relations agree, however each is spelled
+///   ([`crate::copy_lifecycle::canonical_reads`]).
+/// - On Snowflake, each reference binds as `held`'s did
+///   ([`binds_as_held`]): the submit, each Stand-in read as its source, has
+///   `held`'s physical binding identity; every base relation it reads is
+///   reported, none is its own Target relation, and `held` recorded each.
+///   DuckDB's checked copy graph already binds each physical input exactly.
 pub(super) fn reads_as_recorded(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
@@ -149,23 +149,28 @@ pub(super) fn reads_as_recorded(
     held: &ExecutionRow,
 ) -> Option<Vec<AlignedRead>> {
     use crate::copy_lifecycle::canonical_reads;
+    let held_target = canonical_identifiers(&held.target_table);
+    let held_reads: Vec<(Vec<String>, Option<i64>)> = held
+        .input_tables
+        .iter()
+        .map(|t| (canonical_identifiers(&t.name), t.last_modified_epoch))
+        .filter(|(name, _)| *name != held_target)
+        .collect();
     let recorded = canonical_reads(&held.input_tables, &held.target_table, None);
+    if recorded.len() != held_reads.len() {
+        return None;
+    }
     let recorded_at = |input: &InputTable| {
         let name = canonical_identifiers(&input.name);
-        held.input_tables
+        held_reads
             .iter()
-            .filter(|t| canonical_identifiers(&t.name) == name)
-            .map(|t| t.last_modified_epoch)
-            .collect::<Vec<_>>()
+            .find(|(read, _)| *read == name)
+            .map(|(_, epoch)| *epoch)
     };
-    let was_recorded = |input: &InputTable| recorded.contains(&canonical_identifiers(&input.name));
     let upstreams: Vec<&InputRead> = reads
         .iter()
         .filter(|read| !is_target_relation(evidence, &read.input))
         .collect();
-    if !sql_reads_are_reported(req, evidence, &upstreams) {
-        return None;
-    }
     let read_directly = |stand_in: &InputTable| {
         let name = canonical_identifiers(&stand_in.name);
         upstreams
@@ -178,8 +183,8 @@ pub(super) fn reads_as_recorded(
             read: read.input.clone(),
             as_recorded: match &read.stand_in {
                 Some(stand_in)
-                    if !was_recorded(&read.input)
-                        && recorded_at(stand_in) == [stand_in.last_modified_epoch]
+                    if recorded_at(&read.input).is_none()
+                        && recorded_at(stand_in) == Some(stand_in.last_modified_epoch)
                         && !read_directly(stand_in) =>
                 {
                     stand_in.clone()
@@ -190,12 +195,63 @@ pub(super) fn reads_as_recorded(
         .collect();
     let as_recorded: Vec<InputTable> = aligned.iter().map(|a| a.as_recorded.clone()).collect();
     let same_reads = canonical_reads(&as_recorded, &evidence.target_table, None) == recorded;
-    let stood_in: Vec<(&str, &str)> = aligned
-        .iter()
-        .filter(|a| a.stood_in())
-        .map(|a| (a.read.name.as_str(), a.as_recorded.name.as_str()))
-        .collect();
-    (same_reads && (stood_in.is_empty() || keeps_bindings(req, &stood_in, held))).then_some(aligned)
+    (same_reads && binds_as_held(req, evidence, &aligned, held, &recorded)).then_some(aligned)
+}
+
+/// Whether the submit binds each relation reference as `held` did
+/// (Snowflake; always on other Warehouses, and for a kind the Warehouse
+/// rules do not copy, which only reports its equivalent in its codes):
+/// with each copy in `aligned` read as its Stand-in's source, its physical
+/// binding identity ([`crate::analyzed_workload::physical_binding`]) is
+/// `held`'s, so two inputs swapped between references, or an unqualified
+/// reference that resolves in another schema, differ. Every base relation
+/// it reads must be reported, so a read nothing reports proves nothing, and
+/// none may be its own Target relation, whose prior contents differ
+/// between the two Target relations. `held`'s base reads, the same
+/// relations once the copies are read as their sources, must each be among
+/// what it recorded (`recorded`): a build that under-reported its reads
+/// proves nothing either. A build without a binding (recorded before
+/// migration 0034, or with references that do not resolve) qualifies no
+/// copy.
+fn binds_as_held(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    aligned: &[AlignedRead],
+    held: &ExecutionRow,
+    recorded: &[Vec<String>],
+) -> bool {
+    use crate::analyzed_workload::physical_binding::physical_binding;
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if warehouse != Warehouse::Snowflake
+        || !warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras)
+    {
+        return true;
+    }
+    let Some(held_binding) = held.node_binding_hash.as_deref() else {
+        return false;
+    };
+    let substitute = |relation: &[String]| {
+        aligned
+            .iter()
+            .filter(|a| a.stood_in())
+            .find(|a| canonical_identifiers(&a.read.name) == relation)
+            .map(|a| canonical_identifiers(&a.as_recorded.name))
+    };
+    let Some(binding) = physical_binding(&crate::execution::sql_execution(req), &substitute) else {
+        return false;
+    };
+    let target = canonical_identifiers(&evidence.target_table);
+    let reported = |relation: &Vec<String>| {
+        aligned
+            .iter()
+            .any(|a| canonical_identifiers(&a.read.name) == *relation)
+    };
+    binding.hash == held_binding
+        && binding.base_reads.iter().all(|relation| {
+            *relation != target
+                && reported(relation)
+                && recorded.contains(&substitute(relation).unwrap_or_else(|| relation.clone()))
+        })
 }
 
 /// The inputs a Result copy of `held` into the submit's Target relation
@@ -257,121 +313,6 @@ pub(super) fn records_held_inputs(
     };
     let derived = held_inputs(evidence, held, aligned);
     key(&mut copy.input_tables.iter()) == key(&mut derived.iter())
-}
-
-/// Whether the submit reports every base relation its SQL reads, on
-/// Snowflake, for a submit the Warehouse rules copy. A base relation is one
-/// the root SQL, or the definition of a query dependency it reads, names in
-/// FROM or JOIN and that is no query dependency itself (a view read through
-/// its definition, which the copy logic identity binds to its name); a CTE
-/// reference or a view's declared name is none. A read of the submit's own
-/// Target relation is never covered: its prior contents differ between the
-/// two Target relations. SQL this cannot resolve proves nothing. A kind
-/// that only reports its equivalent in its codes is not copied, so its
-/// reads need no proof (client 2.0.11 reports no reads for a view).
-fn sql_reads_are_reported(
-    req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &ExecutionEvidence,
-    upstreams: &[&InputRead],
-) -> bool {
-    let warehouse = Warehouse::from_dialect(&req.dialect);
-    if warehouse != Warehouse::Snowflake
-        || !warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras)
-    {
-        return true;
-    }
-    let Some(base) = base_relations(req) else {
-        return false;
-    };
-    let target = canonical_identifiers(&evidence.target_table);
-    base.iter().all(|relation| {
-        *relation != target
-            && upstreams
-                .iter()
-                .any(|read| canonical_identifiers(&read.input.name) == *relation)
-    })
-}
-
-/// The base relations of `req` ([`sql_reads_are_reported`]), each in three
-/// canonical parts, a name in fewer parts resolved in the default catalog
-/// and schema of the SQL that names it; `None` when a name cannot be
-/// resolved or the SQL does not parse.
-fn base_relations(req: &qc::SubmitEnrichedSqlRequest) -> Option<Vec<Vec<String>>> {
-    use sqlparser::dialect::SnowflakeDialect;
-    let canonical = |raw: &str| crate::sql_norm::canonical_identifier(raw);
-    let dependencies: Vec<Vec<String>> = req
-        .query_dependencies
-        .iter()
-        .map(|d| canonical_identifiers(&d.name))
-        .collect();
-    let mut seen = vec![false; dependencies.len()];
-    let root_schema = req.default_schema.clone().unwrap_or_default();
-    let mut pending = vec![(req.sql.as_str(), req.default_catalog.as_str(), root_schema)];
-    let mut base = Vec::new();
-    while let Some((sql, catalog, schema)) = pending.pop() {
-        for mut name in crate::sql_identity::relations_in(sql, &SnowflakeDialect {})? {
-            if name.len() == 2 && !catalog.is_empty() {
-                name.insert(0, canonical(catalog));
-            } else if name.len() == 1 && !catalog.is_empty() && !schema.is_empty() {
-                name.insert(0, canonical(&schema));
-                name.insert(0, canonical(catalog));
-            }
-            if name.len() != 3 {
-                return None;
-            }
-            match dependencies.iter().position(|dep| *dep == name) {
-                Some(i) => {
-                    if !std::mem::replace(&mut seen[i], true) {
-                        let d = &req.query_dependencies[i];
-                        pending.push((
-                            d.query.as_str(),
-                            d.default_catalog.as_str(),
-                            d.default_schema.clone(),
-                        ));
-                    }
-                }
-                None => base.push(name),
-            }
-        }
-    }
-    Some(base)
-}
-
-/// Whether the submit's SQL and query dependency definitions, each copy in
-/// `stood_in` (copy, source) read as its source and its Target relation's
-/// schema read as `held`'s, have the copy logic identity of `held`: each
-/// reference then reads the relation `held`'s did, so two copies swapped
-/// between references, in the root SQL or in a view's definition, differ.
-fn keeps_bindings(
-    req: &qc::SubmitEnrichedSqlRequest,
-    stood_in: &[(&str, &str)],
-    held: &ExecutionRow,
-) -> bool {
-    use crate::sql_norm::{schema_of_object_name, substitute_relations};
-    let substitute = |parts: &[String]| {
-        stood_in
-            .iter()
-            .find(|(copy, _)| canonical_identifiers(copy) == parts)
-            .map(|(_, source)| canonical_identifiers(source))
-    };
-    let mut read_as_source = crate::execution::sql_execution(req);
-    let Some(sql) = substitute_relations(&read_as_source.sql, &substitute) else {
-        return false;
-    };
-    read_as_source.sql = sql;
-    for dependency in &mut read_as_source.query_dependencies {
-        let Some(query) = substitute_relations(&dependency.query, &substitute) else {
-            return false;
-        };
-        dependency.query = query;
-    }
-    let from = req.target_table.as_deref().and_then(schema_of_object_name);
-    let to = schema_of_object_name(&held.target_table);
-    let (Some(from), Some(to)) = (from, to) else {
-        return false;
-    };
-    crate::analyzed_workload::identity::rehomed_copy_logic_hash(&read_as_source, &from, &to)
-        .is_some_and(|hash| held.node_namespace_logic_hash.as_deref() == Some(hash.as_str()))
 }
 
 #[cfg(test)]
@@ -506,11 +447,20 @@ mod tests {
                     &crate::execution::sql_execution(&req),
                 ),
             ),
+            node_binding_hash: binding_hash(&req),
             last_modified_epoch: Some(NOW_MS - 1_000),
             input_tables: inputs,
             status: "confirmed".into(),
             ..ExecutionRow::default()
         }
+    }
+
+    fn binding_hash(req: &qc::SubmitEnrichedSqlRequest) -> Option<String> {
+        crate::analyzed_workload::physical_binding::physical_binding(
+            &crate::execution::sql_execution(req),
+            &|_| None,
+        )
+        .map(|b| b.hash)
     }
 
     /// The current build under `PROD` that read `input`.
@@ -655,10 +605,12 @@ mod tests {
         };
         let prod_inputs = vec![built(p, 100, "p"), built(q, 200, "q")];
         let mut prod = build_of("", prod_inputs.clone());
+        let prod_req = with_view(request(PROD, "", &prod_inputs), p, q);
         prod.node_namespace_logic_hash =
             Some(crate::analyzed_workload::identity::namespace_logic_hash(
-                &crate::execution::sql_execution(&with_view(request(PROD, "", &prod_inputs), p, q)),
+                &crate::execution::sql_execution(&prod_req),
             ));
+        prod.node_binding_hash = binding_hash(&prod_req);
         let stood = |copy: &str, source: &str, epoch, producer: &str| InputRead {
             input: built(copy, epoch + 1_000, "copy"),
             stand_in: Some(InputTable {
@@ -703,29 +655,26 @@ mod tests {
     }
 
     #[test]
-    fn cte_references_and_view_declarations_are_not_base_relations() {
-        let view = |query: &str| {
-            let mut req = request(
-                DEV,
-                "with c as (select v from cdo.zzz.v) select v from c",
-                &[],
-            );
-            req.query_dependencies = vec![qc::QueryDependency {
-                name: "cdo.zzz.v".into(),
-                query: query.into(),
-                default_catalog: "cdo".into(),
-                default_schema: "zzz".into(),
-            }];
-            base_relations(&req)
-        };
-        assert_eq!(view("select 1 as v"), Some(Vec::new()));
+    fn a_build_that_recorded_an_input_twice_has_no_epoch_to_judge() {
+        let dev = submit(vec![read(RAW, 100)]);
+        let sql = join_sql(&[read(RAW, 100)]);
+        let twice = build_of(&sql, vec![read(RAW, 100), read(RAW, 90)]);
         assert_eq!(
-            view("create or replace view v as (select 1 as v)"),
-            Some(Vec::new())
+            dev.offer(&freshness(), &dev.reads(None), twice),
+            Offer::Next
         );
+    }
+
+    #[test]
+    fn a_build_without_a_physical_binding_is_no_copy_source() {
+        let dev = submit(vec![read(RAW, 200)]);
+        let legacy = ExecutionRow {
+            node_binding_hash: None,
+            ..equivalent(read(RAW, 200))
+        };
         assert_eq!(
-            view("create or replace view v as select v from raw"),
-            Some(vec![vec!["CDO".into(), "ZZZ".into(), "RAW".into()]])
+            dev.offer(&freshness(), &dev.reads(None), legacy),
+            Offer::Next
         );
     }
 

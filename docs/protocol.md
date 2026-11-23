@@ -791,10 +791,13 @@ When the fallback applies:
   copy, the build it was copied from, through its copy chain) recorded at
   build time the physical inputs the submit reads: each by its own name, or
   as its Stand-in, an unchanged copy this server recorded of the build at
-  exactly the epoch it recorded, with the submit's SQL and view definitions
-  so read keeping that build's logic. On Snowflake every base relation the
-  SQL reads must be reported, and a read of the submit's own Target relation
-  is never copied (#264, ADR 0007 "Result copy over different inputs"). It
+  exactly the epoch it recorded. On Snowflake the submit, each Stand-in read
+  as its source, must have that build's physical binding (every relation
+  reference, in the SQL and the view definitions it reads, resolved to the
+  physical relation it reads; `executions.node_binding_hash`), every base
+  relation it reads must be reported by both, and a read of the submit's own
+  Target relation is never copied (#264, ADR 0007 "Result copy over
+  different inputs"). It
   is then judged that way, with the equivalent's own build age, and the copy
   records the inputs of the build it holds. A Result copy that is the Target
   relation's Reuse candidate is reused only while it qualifies the same way

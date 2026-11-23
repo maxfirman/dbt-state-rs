@@ -529,6 +529,13 @@ pub fn data_test_history_key(req: &qc::SqlExecution, stand_ins: &[StandIn]) -> O
     Some(hex::encode(h.finalize()))
 }
 
+/// The Physical binding identity a Snowflake build of `req` records
+/// (`executions.node_binding_hash`, #264); `None` for other Warehouses, a
+/// submission that is not copy-eligible, or references that do not resolve.
+pub fn physical_binding_hash(req: &qc::SqlExecution) -> Option<String> {
+    crate::analyzed_workload::analyze(req, crate::analyzed_workload::Purpose::Record).binding_hash
+}
+
 pub fn seed_logic_hash(
     dialect: &str,
     catalog: &str,

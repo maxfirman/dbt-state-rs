@@ -372,6 +372,15 @@ async fn forget_decision_column(db: &impl Db, org_id: &str, decision_id: &str, c
     assert_eq!(updated, 1, "exactly the captured decision");
 }
 
+/// A frozen row of `target` as recorded since migration 0034 (#264): with
+/// the Physical binding identity its build records. Returns the number of
+/// rows touched.
+pub async fn stamp_physical_binding(db: &impl Db, target: &str, hash: &str) -> u64 {
+    Rows::Target(target)
+        .update(db, "node_binding_hash = $3", &[Some(hash)])
+        .await
+}
+
 /// Rows recorded before #200: no data test has a history key and no copy
 /// records the build it was made from. Returns the number of rows touched.
 pub async fn forget_data_test_history_keys(db: &impl Db) -> u64 {

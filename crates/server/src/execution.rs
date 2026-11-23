@@ -72,6 +72,9 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
+    /// The physical binding identity (Snowflake, #264,
+    /// [`crate::analyzed_workload::physical_binding`]).
+    pub(crate) node_binding_hash: Option<String>,
     /// The unrendered-template logic hash, set only in `compare_unrendered_code`
     /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
     /// OR `node_template_hash` (template) equals the submit's.
@@ -187,6 +190,7 @@ impl ExecutionEvidence {
             direct_copy_provenance: analysis.direct_provenance,
             submit_copy_provenance: None,
             node_namespace_logic_hash: analysis.copy_hash,
+            node_binding_hash: analysis.binding_hash,
             node_template_hash: analysis.template_hash,
             input_tables: analysis.inputs,
             sql_reads_relation: analysis.reads_relation,
@@ -234,6 +238,7 @@ impl ExecutionEvidence {
             direct_copy_provenance: None,
             submit_copy_provenance: None,
             node_namespace_logic_hash: None,
+            node_binding_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),
             sql_reads_relation: None,

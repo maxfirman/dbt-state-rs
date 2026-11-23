@@ -14,10 +14,10 @@ the Replay section below describe the server before that change. See
 [ADR 0007](../adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs).
 A native rerun of `upstream_origin_table` against the patched server
 confirms it: run `232206b6851a` (2026-11-22 23:22–23:24 UTC) at the first
-fix, run `0954562b4355` (2026-11-23 09:55–09:57 UTC) after the first review
-of #266, and run `130336ee9432` (Postgres `i264_native3`) after the second,
-all with dbt 2.0.11 of the SHA-256 above. All three decided and served the
-same:
+fix, and runs `0954562b4355` (2026-11-23 09:55–09:57 UTC),
+`130336ee9432` and `15355882dd2e` (Postgres `i264_native4`) after the first,
+second and third reviews of #266, all with dbt 2.0.11 of the SHA-256 above.
+All four decided and served the same:
 
 | Case | Dev downstream, first | Next | Rows: prod / served / after next / verified Reference |
 |---|---|---|---|
@@ -30,7 +30,7 @@ C and D's dev upstream, built on `dev_noclone`, got 6 / 6 as on hosted (it
 got 1 / 10 before). The verified Reference ran `dbt build --no-manage-state
 --target dev_clone --select <the run's dev nodes> --full-refresh` with the
 State URL pointing at the run's own proxy; its capture holds zero RPCs and
-all 14 invocations exited 0. Sanitized per-case records of run `130336ee9432`
+all 14 invocations exited 0. Sanitized per-case records of run `15355882dd2e`
 with its verified Reference are in
 [`evidence/snowflake-upstream-origin-264/`](evidence/snowflake-upstream-origin-264/).
 

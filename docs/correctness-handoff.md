@@ -130,13 +130,15 @@ Do not weaken these without new evidence.
   build it was copied from, through its copy chain) recorded at build time
   the physical inputs the submit reads. Each input is matched by its own
   name, or as its Stand-in (an unchanged copy this server recorded) when the
-  build recorded the Stand-in's relation at exactly its epoch, checked before
-  Lag tolerance; with a Stand-in the submit's SQL so read must keep the
-  build's logic (root SQL and view definitions alike), so copies swapped
-  between a join's references differ. The build's own Target relation stays
-  an input of a submit that reads it, every base relation the Snowflake SQL
-  reads must be reported, and a read of the submit's own Target relation is
-  never copied. It is then judged for freshness like a Reuse candidate, and
+  build recorded the Stand-in's relation, once, at exactly its epoch,
+  checked before Lag tolerance. On Snowflake the submit, so read, must have
+  the build's Physical binding (`analyzed_workload::physical_binding`,
+  migration 0034): every relation reference, in the SQL and in the view
+  definitions it reads, resolved to the physical relation it reads, so
+  inputs swapped between references or an unqualified reference resolving
+  in another schema differ under identical reported inputs. Every base
+  relation it reads must be reported by the submit and recorded by the
+  build, and a read of the submit's own Target relation is never copied. It is then judged for freshness like a Reuse candidate, and
   the copy records the inputs of the build it holds, so its Lag tolerance
   runs out as theirs would. Any
   other equivalent is passed over and the search goes on in its shared order
@@ -154,8 +156,13 @@ Do not weaken these without new evidence.
   `snowflake_copied_upstream_at_another_recorded_epoch_builds`,
   `snowflake_continues_on_stale_and_passes_over_a_different_input`) and the
   review regressions `clone_submit_fallback.rs::review266_*`,
-  `rereview266.rs`, `clone_submit_fallback.rs::a_copy_of_a_copy_sets_aside_the_held_builds_own_target` and
+  `rereview266.rs`, `review266_bindings.rs`, `review266_legacy_epochs.rs`,
+  `clone_submit_fallback.rs::a_copy_of_a_copy_sets_aside_the_held_builds_own_target` and
   `copy_search.rs::review266_stand_in_epoch_is_a_qualification_before_lag`.
+  Snowflake builds recorded before migration 0034 have no binding: after
+  the upgrade each is copied from only once rebuilt, and a copy of one
+  rebuilds once. Function and sequence names, which also resolve through
+  the session's schema, are not bound (uncaptured).
   **Open:** a RegisterClone copy adopted by its own Target relation (#93)
   keeps the clone-age anchor; whether hosted reuses a `dbt clone` copy of
   prod's downstream over an independently built dev upstream is not
@@ -749,8 +756,8 @@ and the verified State-disabled Reference held `v='dev'`
 This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
-(runs `232206b6851a` and, after the reviews of #266, `0954562b4355` and
-`130336ee9432`) served
+(runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
+`130336ee9432` and `15355882dd2e`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
