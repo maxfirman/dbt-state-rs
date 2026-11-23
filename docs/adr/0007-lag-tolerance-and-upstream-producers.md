@@ -427,16 +427,26 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   `executions.node_binding_hash`, migration 0034): its SQL and the query
   dependency definitions it reads, with every relation reference resolved
   in the default catalog and schema of the SQL that names it and replaced by
-  the physical relation, a view by its definition so bound. CTE references
-  are no reads (a CTE is in scope in its own definition: `RECURSIVE` is
-  optional on Snowflake), a table literal (`TABLE('…')`, `IDENTIFIER('…')`)
-  is one, and anything else that could read a relation without being
-  resolved (a table function outside a pure set, a one-part name of a later
-  sibling CTE, an unsupported FROM construct) leaves the build without a
-  binding. The submit, each Stand-in read as its source, must have the
-  build's binding, so two inputs swapped between references, inside a view
-  too, or an unqualified reference that resolves in another schema,
-  differ, even with the same reported inputs.
+  the physical relation, a view by its definition so bound, with its
+  declared column names (they rename its output). CTE references are no
+  reads (a CTE is in scope in its own definition: `RECURSIVE` is optional
+  on Snowflake), a table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one,
+  and anything else that could read a relation without being resolved (a
+  table function outside a pure set, a one-part name of a later sibling
+  CTE, an unsupported FROM construct) leaves the build without a binding.
+  A one-part name resolves through the session's `SEARCH_PATH`, which no
+  request carries: it is bound only when the one relation the workload
+  reports or defines under that last component is the one in the default
+  schema. A workload also has no binding when a query dependency is not
+  named in three parts, when two dependencies have one canonical name
+  (`v` and `"V"`: no one definition is read), when a view declares a column
+  with a type or options, or past 32 definition levels or 1024 references
+  (each definition bound once). The bound SQL is normalized as the
+  Snowflake identity is, so an unquoted identifier's case does not matter.
+  The submit, each Stand-in read as its source, must have the build's
+  binding, so two inputs swapped between references, inside a view too, a
+  view's columns renamed, or an unqualified reference that resolves in
+  another schema, differ, even with the same reported inputs.
 - *Every read is evidenced on both sides.* Each base relation the submit's
   binding reads must be among its reported inputs and must not be its own
   Target relation, whose prior contents differ between the two Target
@@ -473,8 +483,13 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   RegisterClone copy keeps its adoption rule (#93), and Databricks its
   publication checks.
 
-The copy's pending row records the submit's own inputs as read, so its next
-unchanged submit is judged over them.
+A copy that fails to clone is built by the client from the submit's own
+inputs, so the pending copy also keeps those (`fallback_input_tables`,
+migration 0035), and a `failed_to_clone` confirmation records them as the
+build's inputs. Before, the fallback build kept the epochs of the build it
+would have copied: a copy granted within Lag tolerance that failed was then
+rebuilt by a zero-tolerance resubmit, though the fallback had read the
+current input (fourth review of #266).
 
 **Considered.**
 
@@ -491,6 +506,9 @@ unchanged submit is judged over them.
 - *Infer the build's bindings from the schema-abstracted identity.*
   Rejected: that identity abstracts exactly the schemas that decide what an
   unqualified or schema-relative reference reads.
+- *Resolve a one-part name in the default schema.* Rejected: Snowflake
+  resolves it through `SEARCH_PATH`, which can find a relation of that name
+  in another schema first (fourth review of #266).
 - *Judge a copy's resubmit over the epochs it recorded at copy time.*
   Rejected: a copy made within Lag tolerance then looked fresh forever
   (second review of #266).
@@ -516,7 +534,10 @@ binding, and a Result copy recorded before migration 0029 no recorded source
 build (`clone_source_execution_id`): neither qualifies, so after the upgrade
 each Snowflake build is copied from only once rebuilt, and a copy whose
 build it cannot establish rebuilds once as its own Target relation's Reuse
-candidate. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
+candidate. A binding hashed under an earlier binding version
+(`dbt-state-physical-binding-v1`, before the fourth review of #266) never
+equals a current one, so those builds too are copied from only once
+rebuilt, and a copy holding one rebuilds once. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.
 

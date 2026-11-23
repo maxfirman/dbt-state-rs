@@ -794,12 +794,15 @@ When the fallback applies:
   exactly the epoch it recorded. On Snowflake the submit, each Stand-in read
   as its source, must have that build's physical binding (every relation
   reference, in the SQL and the view definitions it reads, resolved to the
-  physical relation it reads; `executions.node_binding_hash`), every base
+  physical relation it reads, a one-part name only when no other reported
+  or defined relation shares it; `executions.node_binding_hash`), every base
   relation it reads must be reported by both, and a read of the submit's own
   Target relation is never copied (#264, ADR 0007 "Result copy over
   different inputs"). It
   is then judged that way, with the equivalent's own build age, and the copy
-  records the inputs of the build it holds. A Result copy that is the Target
+  records the inputs of the build it holds (a `failed_to_clone`
+  confirmation records the submit's inputs, which its fallback build read).
+  A Result copy that is the Target
   relation's Reuse candidate is reused only while it qualifies the same way
   and recorded those inputs. A stale one, or one that read other relations, is
   passed over and the next equivalent is tried, newest build first, up to

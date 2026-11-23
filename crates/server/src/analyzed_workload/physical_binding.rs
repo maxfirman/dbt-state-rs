@@ -8,7 +8,10 @@
 //!
 //! Each relation reference in FROM or JOIN is resolved in the default
 //! catalog and schema of the SQL that names it: the root SQL, or a query
-//! dependency's definition. A CTE reference stays a CTE: a CTE is in scope
+//! dependency's definition. A one-part name resolves through the session's
+//! `SEARCH_PATH`, which no request carries, so it is resolved only when the
+//! one relation the workload reports or defines under that name is the one
+//! in the default schema. A CTE reference stays a CTE: a CTE is in scope
 //! in its query's body and nested queries, in its later siblings and in its
 //! own definition (`RECURSIVE` is optional on Snowflake). A table literal
 //! (`TABLE('<name>')`, `IDENTIFIER('<name>')`) is resolved like a name. A
@@ -18,7 +21,13 @@
 //! a relation (a one-part name of a later sibling CTE, a table function
 //! outside the pure set, an unsupported FROM construct, a cycle of
 //! dependencies, SQL that does not parse) leaves the workload without a
-//! physical binding.
+//! physical binding. So do two definitions of one view (however its name is
+//! spelled), a view's declared columns with a type or options, and a
+//! traversal deeper than [`MAX_DEPTH`] definitions or wider than
+//! [`MAX_VISITS`] references. A view's declared column names are bound with
+//! its query: they rename its output. The bound SQL is normalized as
+//! Snowflake identity is (`sql_norm::normalize_sql`), so an unquoted
+//! identifier's case does not matter.
 //!
 //! Function and sequence names, which also resolve through the session's
 //! schema, are not bound (uncaptured).
@@ -37,7 +46,7 @@ use std::ops::ControlFlow;
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
 /// frames.
-const VERSION: &[u8] = b"dbt-state-physical-binding-v1";
+const VERSION: &[u8] = b"dbt-state-physical-binding-v2";
 
 /// Table functions that read no relation.
 const PURE_TABLE_FUNCTIONS: &[&str] = &[
@@ -46,6 +55,14 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
 ];
+
+/// The most nested query dependency definitions bound
+/// (`docs/architecture.md`, dependency traversal).
+pub(crate) const MAX_DEPTH: usize = 32;
+
+/// The most relation references bound in one workload, every definition
+/// counted once.
+pub(crate) const MAX_VISITS: usize = 1024;
 
 /// The placeholder a resolved reference is rewritten to before binding.
 const PLACEHOLDER: &str = "__dbt_state_reference__";
@@ -78,11 +95,29 @@ pub(crate) fn physical_binding(
         .iter()
         .map(|d| (canonical_name(&d.name), d))
         .collect();
+    // One definition per view, named in full: two definitions of one view,
+    // however spelled, leave which one the warehouse read unknown.
+    for (i, (name, _)) in dependencies.iter().enumerate() {
+        if name.len() != 3 || dependencies[..i].iter().any(|(other, _)| other == name) {
+            return None;
+        }
+    }
+    // What a one-part name could resolve to: each relation reported or
+    // defined.
+    let known: Vec<Relation> = req
+        .tables
+        .iter()
+        .map(|t| canonical_name(&t.name))
+        .chain(dependencies.iter().map(|(name, _)| name.clone()))
+        .collect();
     let mut binder = Binder {
         dependencies: &dependencies,
+        known: &known,
         substitute,
         base_reads: Vec::new(),
         stack: Vec::new(),
+        definitions: vec![None; dependencies.len()],
+        visits: 0,
     };
     let schema = req.default_schema.as_deref().unwrap_or("");
     let root = binder.bind(&req.sql, &req.default_catalog, schema, false)?;
@@ -119,10 +154,16 @@ fn quoted(parts: &[String]) -> String {
 
 struct Binder<'a> {
     dependencies: &'a [(Relation, &'a qc::QueryDependency)],
+    /// Every relation reported or defined ([`References::resolve`]).
+    known: &'a [Relation],
     substitute: &'a dyn Fn(&[String]) -> Option<Relation>,
     base_reads: Vec<Relation>,
     /// The query dependencies being bound, to refuse a cycle.
     stack: Vec<usize>,
+    /// Each query dependency's bound definition, once bound.
+    definitions: Vec<Option<String>>,
+    /// The relation references bound so far ([`MAX_VISITS`]).
+    visits: usize,
 }
 
 impl Binder<'_> {
@@ -132,20 +173,33 @@ impl Binder<'_> {
     /// cannot be.
     fn bind(&mut self, sql: &str, catalog: &str, schema: &str, definition: bool) -> Option<String> {
         let mut statements = Parser::parse_sql(&SnowflakeDialect {}, sql).ok()?;
-        let query: &mut Query = match statements.as_mut_slice() {
-            [Statement::Query(query)] => query,
-            [Statement::CreateView(view)] if definition => &mut view.query,
+        let (query, columns): (&mut Query, String) = match statements.as_mut_slice() {
+            [Statement::Query(query)] => (query, String::new()),
+            [Statement::CreateView(view)] if definition => {
+                // The declared column names rename the view's output.
+                let columns: Option<Vec<String>> = view
+                    .columns
+                    .iter()
+                    .map(|c| {
+                        (c.data_type.is_none() && c.options.is_none()).then(|| ident_key(&c.name))
+                    })
+                    .collect();
+                let columns = columns?;
+                (&mut view.query, format!("({}) ", quoted(&columns)))
+            }
             _ => return None,
         };
         let mut references = References {
             catalog: canonical_identifier(catalog),
             schema: canonical_identifier(schema),
+            known: self.known,
             frames: Vec::new(),
             resolved: Vec::new(),
             unbound: false,
         };
         let _ = query.visit(&mut references);
-        if references.unbound {
+        self.visits += references.resolved.len();
+        if references.unbound || self.visits > MAX_VISITS {
             return None;
         }
         let mut bound = Vec::with_capacity(references.resolved.len());
@@ -158,23 +212,7 @@ impl Binder<'_> {
                     .iter()
                     .position(|(name, _)| *name == relation)
                 {
-                    Some(d) => {
-                        if self.stack.contains(&d) {
-                            return None;
-                        }
-                        self.stack.push(d);
-                        let dependency = self.dependencies[d].1;
-                        let definition = self.bind(
-                            &dependency.query,
-                            &dependency.default_catalog,
-                            &dependency.default_schema,
-                            true,
-                        );
-                        self.stack.pop();
-                        let mut h = Sha256::new();
-                        field(&mut h, definition?.as_bytes());
-                        format!("\"__dbt_state_view__\".\"{}\"", hex::encode(h.finalize()))
-                    }
+                    Some(d) => self.definition(d)?,
                     None => {
                         let read = (self.substitute)(&relation).unwrap_or_else(|| relation.clone());
                         self.base_reads.push(relation);
@@ -188,7 +226,36 @@ impl Binder<'_> {
         for (i, bound) in bound.iter().enumerate().rev() {
             rendered = rendered.replace(&format!("\"{PLACEHOLDER}{i}\""), bound);
         }
-        Some(rendered)
+        Some(format!(
+            "{columns}{}",
+            crate::sql_norm::normalize_sql(&rendered)
+        ))
+    }
+
+    /// Query dependency `d` bound: its definition, bound once in its own
+    /// context, as an opaque relation; `None` on a cycle, beyond
+    /// [`MAX_DEPTH`], or when the definition cannot be bound.
+    fn definition(&mut self, d: usize) -> Option<String> {
+        if let Some(bound) = &self.definitions[d] {
+            return Some(bound.clone());
+        }
+        if self.stack.contains(&d) || self.stack.len() >= MAX_DEPTH {
+            return None;
+        }
+        self.stack.push(d);
+        let dependency = self.dependencies[d].1;
+        let definition = self.bind(
+            &dependency.query,
+            &dependency.default_catalog,
+            &dependency.default_schema,
+            true,
+        );
+        self.stack.pop();
+        let mut h = Sha256::new();
+        field(&mut h, definition?.as_bytes());
+        let bound = format!("\"__dbt_state_view__\".\"{}\"", hex::encode(h.finalize()));
+        self.definitions[d] = Some(bound.clone());
+        Some(bound)
     }
 }
 
@@ -201,19 +268,32 @@ struct Frame {
 
 /// Resolves every relation reference, in visit order, and rewrites it to a
 /// numbered placeholder.
-struct References {
+struct References<'a> {
     catalog: String,
     schema: String,
+    /// Every relation reported or defined.
+    known: &'a [Relation],
     frames: Vec<Frame>,
     resolved: Vec<Relation>,
     unbound: bool,
 }
 
-impl References {
+impl References<'_> {
     fn resolve(&self, parts: Vec<String>) -> Option<Relation> {
         let resolved = match parts.len() {
             1 if !self.catalog.is_empty() && !self.schema.is_empty() => {
-                vec![self.catalog.clone(), self.schema.clone(), parts[0].clone()]
+                // Through `SEARCH_PATH`: only when the one relation of that
+                // name the workload reports or defines is the default
+                // schema's.
+                let resolved = vec![self.catalog.clone(), self.schema.clone(), parts[0].clone()];
+                let mut named = self
+                    .known
+                    .iter()
+                    .filter(|known| known.last() == parts.last());
+                if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
+                    return None;
+                }
+                resolved
             }
             2 if !self.catalog.is_empty() => {
                 vec![self.catalog.clone(), parts[0].clone(), parts[1].clone()]
@@ -301,7 +381,7 @@ fn table_function(expr: &Expr) -> Result<Option<&str>, ()> {
     }
 }
 
-impl VisitorMut for References {
+impl VisitorMut for References<'_> {
     type Break = ();
 
     fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<()> {
@@ -430,12 +510,20 @@ impl VisitorMut for References {
 mod tests {
     use super::*;
 
-    fn request(sql: &str, schema: &str) -> qc::SqlExecution {
+    /// A Snowflake request in catalog `DB` and `schema`, reporting `tables`.
+    fn request(sql: &str, schema: &str, tables: &[&str]) -> qc::SqlExecution {
         qc::SqlExecution {
             dialect: "snowflake".into(),
             default_catalog: "DB".into(),
             default_schema: Some(schema.into()),
             sql: sql.into(),
+            tables: tables
+                .iter()
+                .map(|name| qc::TableModifiedInfo {
+                    name: (*name).into(),
+                    last_modified_epoch: Some(1),
+                })
+                .collect(),
             ..Default::default()
         }
     }
@@ -444,38 +532,93 @@ mod tests {
         physical_binding(req, &|_| None)
     }
 
-    fn reads(sql: &str, schema: &str) -> Option<Vec<String>> {
-        binding(&request(sql, schema)).map(|b| b.base_reads.iter().map(|r| r.join(".")).collect())
+    fn reads(req: &qc::SqlExecution) -> Option<Vec<String>> {
+        binding(req).map(|b| b.base_reads.iter().map(|r| r.join(".")).collect())
+    }
+
+    fn view(name: &str, query: &str, schema: &str) -> qc::QueryDependency {
+        qc::QueryDependency {
+            name: name.into(),
+            query: query.into(),
+            default_catalog: "DB".into(),
+            default_schema: schema.into(),
+        }
     }
 
     #[test]
     fn references_resolve_in_the_default_catalog_and_schema() {
+        let req = request(
+            "select * from u cross join s.t cross join db2.s.w",
+            "dev",
+            &["DB.DEV.U", "DB.S.T", "DB2.S.W"],
+        );
         assert_eq!(
-            reads("select * from u cross join s.u cross join db2.s.u", "dev"),
-            Some(vec!["DB.DEV.U".into(), "DB.S.U".into(), "DB2.S.U".into()])
+            reads(&req),
+            Some(vec!["DB.DEV.U".into(), "DB.S.T".into(), "DB2.S.W".into()])
+        );
+    }
+
+    #[test]
+    fn a_one_part_name_needs_one_candidate_in_the_default_schema() {
+        // Unreported, or reported only in another schema: the search path
+        // could resolve it anywhere.
+        assert_eq!(reads(&request("select * from u", "dev", &[])), None);
+        assert_eq!(reads(&request("select * from u", "dev", &["DB.S.U"])), None);
+        // Two relations of that name: the search path decides (review of #266).
+        assert_eq!(
+            reads(&request(
+                "select l.v from u l cross join aaa.u a cross join zzz.u z",
+                "aaa",
+                &["DB.AAA.U", "DB.ZZZ.U"]
+            )),
+            None
         );
     }
 
     #[test]
     fn the_same_reads_bound_to_other_positions_differ() {
-        let sql = "select local.v from u local cross join aaa.u a cross join zzz.u z";
-        let prod = binding(&request(sql, "AAA")).unwrap();
-        let dev = binding(&request(sql, "ZZZ")).unwrap();
-        assert_ne!(prod.hash, dev.hash);
+        let sql = "select l.v from db.aaa.u l cross join db.zzz.u z";
+        let swapped = "select l.v from db.zzz.u l cross join db.aaa.u z";
+        let tables = ["DB.AAA.U", "DB.ZZZ.U"];
+        assert_ne!(
+            binding(&request(sql, "aaa", &tables)).unwrap().hash,
+            binding(&request(swapped, "aaa", &tables)).unwrap().hash
+        );
         // Fully qualified, the same SQL in two schemas binds alike.
-        let fixed = "select v from db.aaa.u cross join db.zzz.u";
         assert_eq!(
-            binding(&request(fixed, "AAA")).unwrap().hash,
-            binding(&request(fixed, "ZZZ")).unwrap().hash
+            binding(&request(sql, "aaa", &tables)).unwrap().hash,
+            binding(&request(sql, "zzz", &tables)).unwrap().hash
+        );
+    }
+
+    #[test]
+    fn an_unquoted_identifiers_case_does_not_change_the_binding() {
+        let tables = ["DB.AAA.FIXED"];
+        assert_eq!(
+            binding(&request("select v from db.aaa.fixed", "zzz", &tables))
+                .unwrap()
+                .hash,
+            binding(&request("select V from DB.AAA.FIXED", "zzz", &tables))
+                .unwrap()
+                .hash
+        );
+        assert_ne!(
+            binding(&request("select \"v\" from db.aaa.fixed", "zzz", &tables))
+                .unwrap()
+                .hash,
+            binding(&request("select v from db.aaa.fixed", "zzz", &tables))
+                .unwrap()
+                .hash
         );
     }
 
     #[test]
     fn a_substituted_copy_binds_as_its_source() {
-        let source = binding(&request("select v from db.prod.u", "prod")).unwrap();
-        let copy = physical_binding(&request("select v from db.dev.u", "dev"), &|r| {
-            (r == ["DB", "DEV", "U"]).then(|| vec!["DB".into(), "PROD".into(), "U".into()])
-        })
+        let source = binding(&request("select v from db.prod.u", "prod", &["DB.PROD.U"])).unwrap();
+        let copy = physical_binding(
+            &request("select v from db.dev.u", "dev", &["DB.DEV.U"]),
+            &|r| (r == ["DB", "DEV", "U"]).then(|| vec!["DB".into(), "PROD".into(), "U".into()]),
+        )
         .unwrap();
         assert_eq!(copy.hash, source.hash);
         assert_eq!(
@@ -486,78 +629,145 @@ mod tests {
 
     #[test]
     fn ctes_are_not_reads_and_recursion_needs_no_keyword() {
+        let req = |sql| request(sql, "dev", &["DB.S.T", "DB.AAA.FIXED"]);
         assert_eq!(
-            reads("with c as (select v from db.s.t) select v from c", "dev"),
+            reads(&req("with c as (select v from db.s.t) select v from c")),
             Some(vec!["DB.S.T".into()])
         );
         assert_eq!(
-            reads(
-                "with r(n) as (select n from db.aaa.fixed union all select n + 1 from r where n < 3) select n from r",
-                "dev"
-            ),
+            reads(&req(
+                "with r(n) as (select n from db.aaa.fixed union all select n + 1 from r where n < 3) select n from r"
+            )),
             Some(vec!["DB.AAA.FIXED".into()])
         );
         // A later sibling's name is resolved differently across warehouses.
         assert_eq!(
-            reads(
-                "with a as (select * from b), b as (select 1 as x) select * from a",
-                "dev"
-            ),
+            reads(&req(
+                "with a as (select * from b), b as (select 1 as x) select * from a"
+            )),
             None
         );
     }
 
     #[test]
     fn table_literals_are_reads_and_pure_table_functions_are_not() {
+        let req = |sql| request(sql, "dev", &["DB.DEV.U", "DB.S.W"]);
         assert_eq!(
-            reads("select v from table('u')", "dev"),
+            reads(&req("select v from table('u')")),
             Some(vec!["DB.DEV.U".into()])
         );
         assert_eq!(
-            reads("select v from identifier('s.u')", "dev"),
-            Some(vec!["DB.S.U".into()])
+            reads(&req("select v from identifier('s.w')")),
+            Some(vec!["DB.S.W".into()])
         );
         assert_eq!(
-            reads("select v from table(identifier('u'))", "dev"),
+            reads(&req("select v from table(identifier('u'))")),
             Some(vec!["DB.DEV.U".into()])
         );
         assert_eq!(
-            reads(
-                "select f.value from table(flatten(input => array_construct(1))) f",
-                "dev"
-            ),
+            reads(&req(
+                "select f.value from table(flatten(input => array_construct(1))) f"
+            )),
             Some(vec![])
         );
         assert_eq!(
-            reads("select * from table(result_scan(last_query_id()))", "dev"),
+            reads(&req("select * from table(result_scan(last_query_id()))")),
             None
         );
-        assert_eq!(reads("select * from table($1)", "dev"), None);
+        assert_eq!(reads(&req("select * from table($1)")), None);
     }
 
     #[test]
     fn a_view_is_bound_to_its_definition_in_its_own_context() {
-        let mut req = request("select l.v from db.p.v l cross join db.q.v r", "zzz");
-        let view = |schema: &str| qc::QueryDependency {
-            name: format!("DB.{schema}.V"),
-            query: "select v from u".into(),
-            default_catalog: "DB".into(),
-            default_schema: schema.into(),
-        };
-        req.query_dependencies = vec![view("P"), view("Q")];
-        let b = binding(&req).unwrap();
-        assert_eq!(
-            b.base_reads,
-            vec![
-                vec!["DB".to_string(), "P".into(), "U".into()],
-                vec!["DB".into(), "Q".into(), "U".into()]
-            ]
+        let mut req = request(
+            "select l.v from db.p.v l cross join db.q.v r",
+            "zzz",
+            &["DB.P.U", "DB.Q.U"],
         );
+        req.query_dependencies = vec![
+            view("DB.P.V", "select v from db.p.u", "P"),
+            view("DB.Q.V", "select v from db.q.u", "Q"),
+        ];
+        assert_eq!(reads(&req), Some(vec!["DB.P.U".into(), "DB.Q.U".into()]));
         // The declared name of a view is no read.
         req.query_dependencies[0].query = "create or replace view v as (select 1 as v)".into();
+        assert_eq!(reads(&req), Some(vec!["DB.Q.U".into()]));
+    }
+
+    #[test]
+    fn a_views_declared_columns_rename_its_output() {
+        let with_columns = |columns: &str| {
+            let mut req = request("select x from db.s.v", "s", &[]);
+            req.query_dependencies = vec![view(
+                "DB.S.V",
+                &format!("create view v ({columns}) as select 1 as a, 2 as b"),
+                "S",
+            )];
+            binding(&req).map(|b| b.hash)
+        };
+        assert!(with_columns("x, y").is_some());
+        assert_ne!(with_columns("x, y"), with_columns("y, x"));
+        // A declared type or option has no binding.
+        assert_eq!(with_columns("x int, y"), None);
+    }
+
+    #[test]
+    fn two_definitions_of_one_view_have_no_binding() {
+        let mut req = request("select v from db.s.v", "s", &[]);
+        req.query_dependencies = vec![
+            view("DB.S.V", "select 'dummy' as v", "S"),
+            view("\"DB\".\"S\".\"V\"", "select 'other' as v", "S"),
+        ];
+        assert_eq!(binding(&req), None);
+        // A view named in fewer than three parts has none either.
+        req.query_dependencies = vec![view("S.V", "select 1 as v", "S")];
+        assert_eq!(binding(&req), None);
+    }
+
+    #[test]
+    fn traversal_is_bounded_and_binds_each_definition_once() {
+        // A chain of MAX_DEPTH views binds; one more does not.
+        let chain = |depth: usize| {
+            let mut req = request("select v from db.s.v0", "s", &[]);
+            req.query_dependencies = (0..depth)
+                .map(|i| {
+                    let body = if i + 1 == depth {
+                        "select 1 as v".to_string()
+                    } else {
+                        format!("select v from db.s.v{}", i + 1)
+                    };
+                    view(&format!("DB.S.V{i}"), &body, "S")
+                })
+                .collect();
+            binding(&req)
+        };
+        assert!(chain(MAX_DEPTH).is_some());
+        assert_eq!(chain(MAX_DEPTH + 1), None);
+        // A diamond of shared views, each read twice per level: linear
+        // with each definition bound once, exponential otherwise.
+        let mut req = request("select * from db.s.d0 a cross join db.s.d0 b", "s", &[]);
+        req.query_dependencies = (0..30)
+            .map(|i| {
+                let body = if i == 29 {
+                    "select 1 as v".to_string()
+                } else {
+                    format!(
+                        "select * from db.s.d{n} a cross join db.s.d{n} b",
+                        n = i + 1
+                    )
+                };
+                view(&format!("DB.S.D{i}"), &body, "S")
+            })
+            .collect();
+        assert!(binding(&req).is_some());
+        // Too many references in all has no binding.
+        let wide = (0..=MAX_VISITS)
+            .map(|_| "db.s.t")
+            .collect::<Vec<_>>()
+            .join(" cross join ");
         assert_eq!(
-            binding(&req).unwrap().base_reads,
-            vec![vec!["DB".to_string(), "Q".into(), "U".into()]]
+            binding(&request(&format!("select 1 from {wide}"), "s", &["DB.S.T"])),
+            None
         );
     }
 }

@@ -1474,6 +1474,12 @@ async fn result_copy_fallback(
                 }
                 RecordedSource::HeldInputs(inputs) => {
                     let mut pending = evidence.copied_from(&copy);
+                    pending.fallback_input_tables = Some(
+                        evidence
+                            .raw_input_tables
+                            .clone()
+                            .unwrap_or_else(|| evidence.input_tables.clone()),
+                    );
                     pending.input_tables = inputs;
                     pending.raw_input_tables = None;
                     (pending, None)

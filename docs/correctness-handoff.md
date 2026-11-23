@@ -136,11 +136,16 @@ Do not weaken these without new evidence.
   migration 0034): every relation reference, in the SQL and in the view
   definitions it reads, resolved to the physical relation it reads, so
   inputs swapped between references or an unqualified reference resolving
-  in another schema differ under identical reported inputs. Every base
+  in another schema differ under identical reported inputs. A one-part
+  name is bound only when the one reported or defined relation of that name
+  is in the default schema (no request carries `SEARCH_PATH`); conflicting
+  definitions of one view, typed view columns and traversals past 32
+  levels or 1024 references leave no binding. Every base
   relation it reads must be reported by the submit and recorded by the
   build, and a read of the submit's own Target relation is never copied. It is then judged for freshness like a Reuse candidate, and
   the copy records the inputs of the build it holds, so its Lag tolerance
-  runs out as theirs would. Any
+  runs out as theirs would; a copy that fails to clone records its
+  submit's inputs instead (`fallback_input_tables`, migration 0035). Any
   other equivalent is passed over and the search goes on in its shared order
   (`submit_decision/copy_search.rs`,
   [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
@@ -757,7 +762,7 @@ This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
 (runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
-`130336ee9432` and `15355882dd2e`) served
+`130336ee9432`, `15355882dd2e` and `18143533c882`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
