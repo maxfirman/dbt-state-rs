@@ -2208,3 +2208,29 @@ async fn review266_upgrade_rebuilds_an_unsafe_legacy_copy() {
     assert_eq!(explained.messages.len(), 1);
     assert!(explained.messages[0].explain_lines.is_empty());
 }
+
+/// A copy of a copy is judged over the build it holds with that build's own
+/// Target relation set aside, as the build recorded it: a client that
+/// reports each node's own relation (with no epoch before it exists) still
+/// copies the newest copy (`graph_copy.py`, DuckDB CI on #266).
+#[tokio::test]
+async fn a_copy_of_a_copy_sets_aside_the_held_builds_own_target() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let probe = |schema: &str, name: &str| {
+        let target = demo::relation(schema, name);
+        demo::shared_probe(&target, schema).table(&target, None)
+    };
+    sc.build_with(
+        probe(PROD_SCHEMA, "FIRST"),
+        transient_at(1_791_747_221_679).runtime(15),
+    )
+    .await;
+    let second = sc.expect_clone(probe(DEV_SCHEMA, "SECOND")).await;
+    assert!(
+        sc.confirm(&second.request_id, transient_at(1_791_747_300_000))
+            .await
+    );
+    let third = sc.expect_clone(probe(PROD_SCHEMA, "THIRD")).await;
+    assert_eq!(third.clone_source, demo::relation(DEV_SCHEMA, "SECOND"));
+}

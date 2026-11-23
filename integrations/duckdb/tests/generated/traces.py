@@ -45,8 +45,11 @@ def generate(seed, steps):
     # candidate: a stale copy needs a lag tolerance (VERIFIED LIVE 2026-11-10,
     # lag_dropped_targets.jsonl `dset600`; with tolerance 0 hosted builds).
     t.run('dev', 1, 'copy', clones=True, stale=True, tolerance_s=3600)
+    # The copy records the inputs of the build it holds (#264), so it is reused
+    # stale only within the same lag tolerance; at zero tolerance it rebuilds.
     t.add('submit', env='dev', k=1, expect='skip', clones=True, stale=False,
-          allowed_recorded_result=True, policy='confirmed-stale-copy-result-permitted')
+          allowed_recorded_result=True, policy='confirmed-stale-copy-result-permitted',
+          tolerance_s=3600)
     e = t.add('execute', env='prod', k=2)
     t.add('record', execute=e)
     t.add('submit', env='prod', k=2, expect='skip', clones=False, stale=False)

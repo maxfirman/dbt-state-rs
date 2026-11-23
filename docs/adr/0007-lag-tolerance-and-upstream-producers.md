@@ -407,7 +407,8 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   RegisterClone) holds the result of the build it was copied from, followed
   through any copies between (`clone_source_execution_id`,
   `submit_decision::held_build`). Its inputs are the input epochs that build
-  recorded. A copy whose build cannot be established is passed over. Before
+  recorded, with that build's own Target relation set aside (not the
+  copy's). A copy whose build cannot be established is passed over. Before
   this, a CI copy registered after its upstream changed was judged by its
   later confirmation and looked fresh.
 - *Each input is itself, or its Stand-in.* An input that build recorded by
@@ -420,35 +421,51 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   qualification, checked before any freshness policy, so Lag tolerance
   never admits a Stand-in of another build. A copy of a copy stands for
   itself, and so does a copy of a relation the submit also reads directly.
-- *Each reference keeps its binding.* With a Stand-in, the submit's SQL with
-  each copy read as its source (and its Target relation's schema read as the
-  build's) must have the build's copy logic identity. Two copies swapped
-  between the references of a join read the same relations but bind them the
-  other way, so they differ. Only Snowflake's schema-abstracted identity
-  supports the check; elsewhere no Stand-in is used.
+- *Each reference keeps its binding.* With a Stand-in, the submit's SQL and
+  its query dependency definitions, with each copy read as its source (and
+  its Target relation's schema read as the build's), must have the build's
+  copy logic identity. Two copies swapped between the references of a join,
+  in the root SQL or inside a view's definition, read the same relations but
+  bind them the other way, so they differ. Only Snowflake's
+  schema-abstracted identity supports the check; elsewhere no Stand-in is
+  used.
 - *The submit's own Target relation is the only read set aside.* The
   build's Target relation is a genuine input of a submit that reads it.
-- *No reported reads prove nothing for SQL that reads a relation.* A submit
-  the Warehouse rules copy, reporting no upstream reads, qualifies only when
-  its SQL reads no base relation: no relation at all, or only query
-  dependencies whose definitions (bound in the copy logic identity) read no
-  relation but other query dependencies. A kind that only reports its
-  equivalent in its codes keeps reporting it (client 2.0.11 reports no reads
-  for a view).
+- *Every base relation the SQL reads is reported* (Snowflake, for a kind the
+  Warehouse rules copy; `copy_search::sql_reads_are_reported`). A base
+  relation is one the root SQL, or the definition of a query dependency it
+  reads, names in FROM or JOIN and that is no query dependency itself (a
+  view read through its definition, which the copy logic identity binds to
+  its name); a CTE reference or a view's declared name is none. A read
+  nothing reports proves nothing, also when another input is reported. A
+  read of the submit's own Target relation is never covered: its prior
+  contents differ between the two Target relations. A kind that only
+  reports its equivalent in its codes keeps reporting it (client 2.0.11
+  reports no reads for a view). DuckDB's checked copy graph already binds
+  each physical input exactly.
 - *Then it is judged as the reuse candidate,* over the build's recorded
   epochs and with the equivalent's own build age (a copy's is its copy
   time; hosted copied a copy within Lag tolerance whose source build was
   older, `lag_copy_candidates` `wba`).
+- *A copy records the inputs of the build it holds*
+  (`copy_search::held_inputs`): each upstream at the epoch and with the
+  Upstream producer that build recorded, or as read through a Stand-in.
+  Its next submit is then judged against what its rows were computed from,
+  so a copy made within Lag tolerance is reused only while the tolerance
+  still holds, and a stricter resubmit rebuilds it.
 - *Any other equivalent is passed over.* The search goes on to the next one
   in the shared order (newest build first, `COPY_CANDIDATE_LIMIT`). Before
   #264 the first equivalent that read other relations was copied without a
   freshness judgment.
 - *A copy already granted is revalidated before reuse.* A Result copy on
   submit that is the Target relation's Reuse candidate is reused only while
-  the build it holds qualifies for the submit by the rules above
-  (`submit_decision::revalidate_copy_candidate`). One granted by an earlier
-  server over another input is refused at Reuse qualification and rebuilds
-  (6 / 6, the generic rebuild description, no Explain tree). A
+  the build it holds qualifies for the submit by the rules above and the
+  copy recorded that build's inputs
+  (`submit_decision::revalidate_copy_candidate`,
+  `copy_search::records_held_inputs`). One granted by an earlier server over
+  another input, or recorded at the newer epochs its submit read, is refused
+  at Reuse qualification and rebuilds (6 / 6, the generic rebuild
+  description, no Explain tree). A
   RegisterClone copy keeps its adoption rule (#93), and Databricks its
   publication checks.
 
@@ -465,6 +482,9 @@ unchanged submit is judged over them.
 - *Compare the set of inputs only.* Rejected: two copies swapped between a
   join's references have the same set and epochs but project the other
   input's values (review of #266).
+- *Judge a copy's resubmit over the epochs it recorded at copy time.*
+  Rejected: a copy made within Lag tolerance then looked fresh forever
+  (second review of #266).
 - *Invalidate every copy recorded before #264.* Not taken: revalidating
   each copy against the build it holds keeps the ones that qualify and
   needs no migration.

@@ -791,12 +791,14 @@ When the fallback applies:
   copy, the build it was copied from, through its copy chain) recorded at
   build time the physical inputs the submit reads: each by its own name, or
   as its Stand-in, an unchanged copy this server recorded of the build at
-  exactly the epoch it recorded, with the submit's SQL so read keeping that
-  build's logic. A submit that reports no reads qualifies only when its SQL
-  reads no base relation (#264, ADR 0007 "Result copy over different
-  inputs"). It is then judged that way, with the equivalent's own build age.
-  A Result copy that is the Target relation's Reuse candidate is reused only
-  while it qualifies the same way. A stale one, or one that read other relations, is
+  exactly the epoch it recorded, with the submit's SQL and view definitions
+  so read keeping that build's logic. On Snowflake every base relation the
+  SQL reads must be reported, and a read of the submit's own Target relation
+  is never copied (#264, ADR 0007 "Result copy over different inputs"). It
+  is then judged that way, with the equivalent's own build age, and the copy
+  records the inputs of the build it holds. A Result copy that is the Target
+  relation's Reuse candidate is reused only while it qualifies the same way
+  and recorded those inputs. A stale one, or one that read other relations, is
   passed over and the next equivalent is tried, newest build first, up to
   `COPY_CANDIDATE_LIMIT` (`submit_decision/mod.rs`). Hosted builds over an
   independently built dev upstream (`explain_upstream_origin_*.jsonl`) and

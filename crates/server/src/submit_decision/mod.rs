@@ -1229,9 +1229,13 @@ async fn held_build(
 }
 
 /// A Result copy on submit is reused only while the build it holds still
-/// qualifies as a copy source for the submit ([`copy_search::reads_as_recorded`]):
-/// a copy an earlier server granted over other inputs is refused at Reuse
-/// qualification and rebuilds (#264). A client-requested copy and a
+/// qualifies as a copy source for the submit ([`copy_search::reads_as_recorded`])
+/// and the copy recorded that build's inputs
+/// ([`copy_search::records_held_inputs`]), so its freshness and Lag
+/// tolerance are those of the rows it holds: a copy an earlier server
+/// granted over other inputs, or recorded at newer epochs than its rows
+/// were computed from, is refused at Reuse qualification and rebuilds
+/// (#264). A client-requested copy and a
 /// Databricks submit copy keep their own adoption rules.
 async fn revalidate_copy_candidate(
     store: &Store,
@@ -1252,7 +1256,11 @@ async fn revalidate_copy_candidate(
     let reads = crate::stand_in::input_reads(store, evidence).await?;
     let proven = held_build(store, org_id, candidate.clone())
         .await?
-        .is_some_and(|held| copy_search::reads_as_recorded(req, evidence, &reads, &held).is_some());
+        .is_some_and(|held| {
+            copy_search::reads_as_recorded(req, evidence, &reads, &held).is_some_and(|aligned| {
+                copy_search::records_held_inputs(evidence, candidate, &held, &aligned)
+            })
+        });
     if !proven {
         selection.refuse_unproven_copy();
     }
@@ -1314,7 +1322,15 @@ async fn result_copy_fallback(
         plan: SubmitCopyPlan,
         source_table: String,
         judged: copy_search::Judged,
-        publication_source: Option<ExecutionRow>,
+        /// The source of the plan, as the copy records it.
+        recorded: RecordedSource,
+    }
+    /// What a Result copy records about its source: Databricks keeps the
+    /// checked source's original inputs and execution evidence; Snowflake
+    /// and DuckDB the inputs of the build the source holds (#264).
+    enum RecordedSource {
+        Publication(Box<ExecutionRow>),
+        HeldInputs(Vec<crate::store::InputTable>),
     }
     let candidates = copy_candidates(store, org_id, req, &lookup).await?;
     let reads = if requires_checked_source || candidates.is_empty() {
@@ -1324,7 +1340,7 @@ async fn result_copy_fallback(
     };
     let mut chosen = None;
     for candidate in candidates {
-        let (equivalent, judged, publication_source) = if requires_checked_source {
+        let (equivalent, judged, recorded) = if requires_checked_source {
             // A pending write blocks this source. Once the current row proves
             // exact inputs, it supplies both the plan and publication evidence.
             let Some(source) = store
@@ -1347,9 +1363,13 @@ async fn result_copy_fallback(
                 .filter(|t| !copy_search::is_target_relation(evidence, t))
                 .cloned()
                 .collect();
-            let Some(judged) =
-                copy_search::judge_equivalent(evidence, freshness, &upstreams, source.clone())
-            else {
+            let Some(judged) = copy_search::judge_equivalent(
+                evidence,
+                freshness,
+                &upstreams,
+                source.clone(),
+                &source.target_table,
+            ) else {
                 continue;
             };
             let equivalent = CloneEquivalent {
@@ -1361,7 +1381,11 @@ async fn result_copy_fallback(
                 execution_runtime_ms: source.execution_runtime_ms,
                 copy_depth: 0,
             };
-            (equivalent, judged, Some(source))
+            (
+                equivalent,
+                judged,
+                RecordedSource::Publication(Box::new(source)),
+            )
         } else {
             let Some(equivalent) =
                 eligible_equivalent(store, org_id, req, &lookup, candidate).await?
@@ -1388,11 +1412,12 @@ async fn result_copy_fallback(
             let Some(held) = held_build(store, org_id, source.clone()).await? else {
                 continue;
             };
-            let judged = match copy_search::offer(req, evidence, freshness, &reads, source, &held) {
-                copy_search::Offer::Choose(judged) => judged,
-                copy_search::Offer::Next => continue,
-            };
-            (equivalent, judged, None)
+            let (judged, inputs) =
+                match copy_search::offer(req, evidence, freshness, &reads, source, &held) {
+                    copy_search::Offer::Choose { judged, inputs } => (judged, inputs),
+                    copy_search::Offer::Next => continue,
+                };
+            (equivalent, judged, RecordedSource::HeldInputs(inputs))
         };
         let source_table = equivalent.source_table.clone();
         let plan = result_copy::plan_submit(req, equivalent);
@@ -1405,7 +1430,7 @@ async fn result_copy_fallback(
             plan,
             source_table,
             judged,
-            publication_source,
+            recorded,
         });
         break;
     }
@@ -1413,7 +1438,7 @@ async fn result_copy_fallback(
         plan,
         source_table,
         judged,
-        publication_source,
+        recorded,
     }) = chosen
     else {
         return Ok(CopyFallback::Ordinary);
@@ -1441,10 +1466,18 @@ async fn result_copy_fallback(
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
             // Keep the checked source's original inputs and execution evidence
-            // for confirmation. Otherwise record the source named by the plan.
-            let pending = match publication_source.as_ref() {
-                Some(source) => evidence.submit_copied_from(source),
-                None => evidence.copied_from(&copy),
+            // for confirmation. Otherwise record the source named by the plan,
+            // over the inputs of the build it holds.
+            let (pending, publication_source) = match recorded {
+                RecordedSource::Publication(source) => {
+                    (evidence.submit_copied_from(&source), Some(*source))
+                }
+                RecordedSource::HeldInputs(inputs) => {
+                    let mut pending = evidence.copied_from(&copy);
+                    pending.input_tables = inputs;
+                    pending.raw_input_tables = None;
+                    (pending, None)
+                }
             };
             write_pending(store, &pending, &ids).await?;
             let record = DecisionRecord::result_copy_judged(

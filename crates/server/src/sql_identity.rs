@@ -266,7 +266,49 @@ pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> 
 /// LIVE 2026-11-11, explain_view_reads_no_relation.jsonl: no FROM, a CTE
 /// without FROM, VALUES and FLATTEN read none; a `ref` reads one; #117).
 pub fn reads_relation(sql: &str, dialect: &dyn Dialect) -> Option<bool> {
-    use sqlparser::ast::{Ident, Visit, Visitor};
+    let statements = Parser::parse_sql(dialect, sql).ok()?;
+    let [statement @ Statement::Query(_)] = statements.as_slice() else {
+        return None;
+    };
+    let relations = relations_read(statement);
+    if !relations.names.is_empty() {
+        Some(true)
+    } else if relations.ambiguous {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+/// The relations `sql`, one query or one view declaration (`CREATE VIEW …
+/// AS <query>`, whose declared name is its output, not a read), reads as
+/// [`reads_relation`] counts them: each named in FROM or JOIN other than a
+/// CTE in scope, as its canonical components (unquoted folds to upper case,
+/// quoted is exact), in the parts written. `None` when the SQL is not one
+/// such statement in `dialect`, or a one-part name's resolution differs
+/// across warehouses (a CTE naming itself or a later sibling without
+/// RECURSIVE).
+pub fn relations_in(sql: &str, dialect: &dyn Dialect) -> Option<Vec<Vec<String>>> {
+    let statements = Parser::parse_sql(dialect, sql).ok()?;
+    let relations = match statements.as_slice() {
+        [statement @ Statement::Query(_)] => relations_read(statement),
+        [Statement::CreateView(view)] => relations_read(&*view.query),
+        _ => return None,
+    };
+    (!relations.ambiguous).then_some(relations.names)
+}
+
+/// What [`relations_read`] found.
+#[derive(Default)]
+struct RelationsRead {
+    names: Vec<Vec<String>>,
+    ambiguous: bool,
+}
+
+/// The relations `node` reads in FROM or JOIN, CTE references in scope
+/// excluded ([`reads_relation`]).
+fn relations_read(node: &impl sqlparser::ast::Visit) -> RelationsRead {
+    use sqlparser::ast::{Ident, Visitor};
 
     // Snowflake identifier rules: unquoted folds to upper case, quoted is exact.
     fn key(ident: &Ident) -> String {
@@ -305,7 +347,7 @@ pub fn reads_relation(sql: &str, dialect: &dyn Dialect) -> Option<bool> {
     #[derive(Default)]
     struct Relations {
         frames: Vec<Frame>,
-        ambiguous: bool,
+        found: RelationsRead,
     }
     impl Visitor for Relations {
         type Break = ();
@@ -367,34 +409,35 @@ pub fn reads_relation(sql: &str, dialect: &dyn Dialect) -> Option<bool> {
             else {
                 return ControlFlow::Continue(());
             };
-            let [ObjectNamePart::Identifier(ident)] = name.0.as_slice() else {
-                return ControlFlow::Break(());
-            };
-            let name = key(ident);
-            let scope = self.frames.last().map(|frame| &frame.body);
-            if scope.is_some_and(|scope| scope.ctes.contains(&name)) {
-                ControlFlow::Continue(())
-            } else if scope.is_some_and(|scope| scope.ambiguous.contains(&name)) {
-                self.ambiguous = true;
-                ControlFlow::Continue(())
-            } else {
-                ControlFlow::Break(())
+            let parts: Option<Vec<String>> = name
+                .0
+                .iter()
+                .map(|part| match part {
+                    ObjectNamePart::Identifier(ident) => Some(key(ident)),
+                    _ => None,
+                })
+                .collect();
+            // A name this traversal cannot read is a relation nothing
+            // else is: no components.
+            let parts = parts.unwrap_or_default();
+            if let [name] = parts.as_slice() {
+                let scope = self.frames.last().map(|frame| &frame.body);
+                if scope.is_some_and(|scope| scope.ctes.contains(name)) {
+                    return ControlFlow::Continue(());
+                }
+                if scope.is_some_and(|scope| scope.ambiguous.contains(name)) {
+                    self.found.ambiguous = true;
+                    return ControlFlow::Continue(());
+                }
             }
+            self.found.names.push(parts);
+            ControlFlow::Continue(())
         }
     }
 
-    let statements = Parser::parse_sql(dialect, sql).ok()?;
-    let [statement @ Statement::Query(_)] = statements.as_slice() else {
-        return None;
-    };
     let mut relations = Relations::default();
-    if statement.visit(&mut relations).is_break() {
-        Some(true)
-    } else if relations.ambiguous {
-        None
-    } else {
-        Some(false)
-    }
+    let _ = node.visit(&mut relations);
+    relations.found
 }
 
 #[cfg(test)]

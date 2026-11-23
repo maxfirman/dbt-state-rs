@@ -133,7 +133,9 @@ fallback keeps the requested SQL identity and clears the copy provenance.
 
 Source validity is separate from upstream freshness. The shared SQL-submit
 fallback can copy a physically valid recorded source whose inputs have since
-advanced; tests accept that permitted older result.
+advanced, within the submit's Lag tolerance; tests accept that permitted
+older result. The copy records the inputs of the build it holds (#264), so
+it is reused stale only while a later submit's tolerance still covers it.
 
 ## Snowflake confirmation compatibility assessment
 

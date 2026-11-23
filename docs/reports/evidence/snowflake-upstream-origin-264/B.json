@@ -3,20 +3,20 @@
  "description": "B dev upstream copied from prod",
  "runs": [
   {
-   "label": "dbt-state-server after #264 review (table upstream)",
+   "label": "dbt-state-server after the second review of #266 (table upstream)",
    "service": "dbt-state-server",
    "fixture": null,
-   "run": "0954562b4355",
+   "run": "130336ee9432",
    "scenario": "upstream_origin_table",
    "names": {
-    "input": "ob_in_0954562b4355",
-    "upstream": "ob_up_0954562b4355",
-    "downstream": "ob_dn_0954562b4355"
+    "input": "ob_in_130336ee9432",
+    "upstream": "ob_up_130336ee9432",
+    "downstream": "ob_dn_130336ee9432"
    },
    "dev_upstream_origin": {
     "origin": "copied",
-    "copy_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
-    "granted_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
+    "copy_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
+    "granted_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
     "confirmed": true
    },
    "dev_downstream_decisions": [
@@ -34,7 +34,7 @@
      "confirm": {
       "success": true,
       "failed_to_clone": false,
-      "last_modified_epoch": 1795427755301
+      "last_modified_epoch": 1795439079144
      }
     },
     {
@@ -57,7 +57,7 @@
     {
      "phase": "prod",
      "step": 13,
-     "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.ob_dn_0954562b4355",
+     "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.ob_dn_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -68,7 +68,7 @@
     {
      "phase": "served",
      "step": 23,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -79,7 +79,7 @@
     {
      "phase": "after_next",
      "step": 45,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -90,7 +90,7 @@
     {
      "phase": "reference",
      "step": 59,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -103,7 +103,7 @@
     {
      "phase": "served",
      "step": 22,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -114,7 +114,7 @@
     {
      "phase": "after_next",
      "step": 44,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -125,7 +125,7 @@
     {
      "phase": "reference",
      "step": 58,
-     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_0954562b4355",
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_130336ee9432",
      "rows": [
       {
        "ID": 1,
@@ -137,18 +137,18 @@
    "rpcs": [
     {
      "service": "SQL",
-     "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:55:16.606602279+00:00",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-23T13:03:56.180829124+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_0954562B4355\"",
-        "last_modified_epoch": 1795427708182
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
+        "last_modified_epoch": null
        }
       ],
       "query_dependencies": [],
@@ -160,21 +160,92 @@
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_name": "ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355"
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
        "target_name": "prod_demo",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "1d6fb3c5b356639c583aa00bc34f6355",
-       "node_body_hash": "4e16fec829d6591a0c32756c9d1ac42c",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
+       "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-23T13:03:56.546137618+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
+        "last_modified_epoch": 1795439026880
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
        "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -194,7 +265,7 @@
      "response": {
       "response": {
        "ready_to_execute": {
-        "request_id": "01a207d4-cdfc-7155-8fb3-353eab2391ea",
+        "request_id": "01a20881-887a-72ba-8018-84796185bea6",
         "last_modified_query": "",
         "explained_decision": {
          "decision": 1,
@@ -205,7 +276,7 @@
         },
         "transformed_nodes_by_query": {},
         "query_hash_metadata_info": null,
-        "execution_decision_id": "01a207d4-cdfc-7155-8fb3-353f0e47f412"
+        "execution_decision_id": "01a20881-887a-72ba-8018-847ab8938df3"
        }
       }
      },
@@ -222,23 +293,23 @@
     {
      "service": "Execution",
      "method": "ConfirmExecution",
-     "recorded_at": "2026-11-23T09:55:18.130180986+00:00",
+     "recorded_at": "2026-11-23T13:03:58.249949750+00:00",
      "request": {
-      "request_id": "01a207d4-cdfc-7155-8fb3-353eab2391ea",
-      "last_modified_epoch": 1795427718455,
+      "request_id": "01a20881-887a-72ba-8018-84796185bea6",
+      "last_modified_epoch": 1795439038280,
       "failed_to_clone": false,
       "table_type": "TRANSIENT TABLE",
       "execution_results": null,
-      "execution_runtime_ms": 2981,
+      "execution_runtime_ms": 4420,
       "labels": {
-       "dbt_node_name": "ob_up_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355"
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432"
       }
      },
      "response": {
       "success": true,
-      "request_id": "01a207d4-cdfc-7155-8fb3-353eab2391ea"
+      "request_id": "01a20881-887a-72ba-8018-84796185bea6"
      },
      "status": {
       "code": 0,
@@ -253,43 +324,43 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQLSpeculative",
-     "recorded_at": "2026-11-23T09:55:22.575142456+00:00",
+     "recorded_at": "2026-11-23T13:04:03.100064057+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_DN_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_DN_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_up_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_up_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
         "last_modified_epoch": null
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "lookback": "1",
-       "on_schema_change": "\"ignore\""
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355"
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432",
        "target_name": "prod_demo",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "25fb4bc5cbc50e5ccf0ef0ba63b4ed04",
-       "node_body_hash": "199334220d09a719505df785643ed249",
+       "node_hash": "ef54a09ff34058b11f10c40b5e1f52cb",
+       "node_body_hash": "f23cd0fd51e8b3877992f53ff65325cc",
        "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -324,43 +395,43 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:55:22.694430640+00:00",
+     "recorded_at": "2026-11-23T13:04:03.651629937+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_DN_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_DN_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_up_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_up_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
-        "last_modified_epoch": 1795427717964
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
+        "last_modified_epoch": 1795439038037
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "on_schema_change": "\"ignore\"",
-       "lookback": "1"
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355"
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432",
        "target_name": "prod_demo",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "25fb4bc5cbc50e5ccf0ef0ba63b4ed04",
-       "node_body_hash": "199334220d09a719505df785643ed249",
+       "node_hash": "ef54a09ff34058b11f10c40b5e1f52cb",
+       "node_body_hash": "f23cd0fd51e8b3877992f53ff65325cc",
        "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -380,7 +451,7 @@
      "response": {
       "response": {
        "ready_to_execute": {
-        "request_id": "01a207d4-e5c4-7321-b257-9d76906803de",
+        "request_id": "01a20881-a43e-7169-a043-2f6587678022",
         "last_modified_query": "",
         "explained_decision": {
          "decision": 1,
@@ -391,7 +462,7 @@
         },
         "transformed_nodes_by_query": {},
         "query_hash_metadata_info": null,
-        "execution_decision_id": "01a207d4-e5c4-7321-b257-9d77e8cd6ded"
+        "execution_decision_id": "01a20881-a43e-7169-a043-2f663d811a2e"
        }
       }
      },
@@ -408,23 +479,23 @@
     {
      "service": "Execution",
      "method": "ConfirmExecution",
-     "recorded_at": "2026-11-23T09:55:24.120314710+00:00",
+     "recorded_at": "2026-11-23T13:04:05.139937185+00:00",
      "request": {
-      "request_id": "01a207d4-e5c4-7321-b257-9d76906803de",
-      "last_modified_epoch": 1795427724448,
+      "request_id": "01a20881-a43e-7169-a043-2f6587678022",
+      "last_modified_epoch": 1795439045170,
       "failed_to_clone": false,
       "table_type": "TRANSIENT TABLE",
       "execution_results": null,
-      "execution_runtime_ms": 2793,
+      "execution_runtime_ms": 3392,
       "labels": {
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355"
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       }
      },
      "response": {
       "success": true,
-      "request_id": "01a207d4-e5c4-7321-b257-9d76906803de"
+      "request_id": "01a20881-a43e-7169-a043-2f6587678022"
      },
      "status": {
       "code": 0,
@@ -439,16 +510,16 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQLSpeculative",
-     "recorded_at": "2026-11-23T09:55:48.079286796+00:00",
+     "recorded_at": "2026-11-23T13:04:31.880013471+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_0954562B4355\"",
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
         "last_modified_epoch": null
        }
       ],
@@ -461,21 +532,21 @@
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
-       "dbt_node_name": "ob_up_0954562b4355"
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "1d6fb3c5b356639c583aa00bc34f6355",
-       "node_body_hash": "4e16fec829d6591a0c32756c9d1ac42c",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
        "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -510,43 +581,43 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:55:49.804398224+00:00",
+     "recorded_at": "2026-11-23T13:04:33.848793100+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_0954562B4355\"",
-        "last_modified_epoch": 1795427708182
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
+        "last_modified_epoch": 1795439026880
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "lookback": "1",
-       "on_schema_change": "\"ignore\""
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
-       "dbt_node_name": "ob_up_0954562b4355"
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_name": "ob_up_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "1d6fb3c5b356639c583aa00bc34f6355",
-       "node_body_hash": "4e16fec829d6591a0c32756c9d1ac42c",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
        "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -566,13 +637,13 @@
      "response": {
       "response": {
        "ready_to_clone": {
-        "request_id": "01a207d5-4fa9-7745-abe2-47cc875a24b0",
+        "request_id": "01a20882-1a36-730e-a4a1-7e2aab6c0258",
         "last_modified_query": "",
         "clone_sqls": [
-         "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"\n            CLONE \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"\n            COPY GRANTS"
+         "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"\n            CLONE \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"\n            COPY GRANTS"
         ],
-        "clone_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_0954562B4355\"",
-        "clone_target": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
+        "clone_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_UP_130336EE9432\"",
+        "clone_target": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
         "explained_decision": {
          "decision": 3,
          "skip_rejection_reason": 1,
@@ -581,12 +652,12 @@
          "decision_description": "an equivalent model exists under another name so we cloned that one"
         },
         "transformed_nodes_by_query": {},
-        "clone_required_last_modified_epoch": 1795427718455,
+        "clone_required_last_modified_epoch": 1795439038280,
         "clone_execution_results": {
          "fields": {}
         },
-        "execution_runtime_ms": 2981,
-        "execution_decision_id": "01a207d5-4fa9-7745-abe2-47cd0dedbaac"
+        "execution_runtime_ms": 4420,
+        "execution_decision_id": "01a20882-1a36-730e-a4a1-7e2b46d986a9"
        }
       }
      },
@@ -603,25 +674,25 @@
     {
      "service": "Execution",
      "method": "ConfirmExecution",
-     "recorded_at": "2026-11-23T09:55:52.667812778+00:00",
+     "recorded_at": "2026-11-23T13:04:36.920463112+00:00",
      "request": {
-      "request_id": "01a207d5-4fa9-7745-abe2-47cc875a24b0",
-      "last_modified_epoch": 1795427752991,
+      "request_id": "01a20882-1a36-730e-a4a1-7e2aab6c0258",
+      "last_modified_epoch": 1795439077249,
       "failed_to_clone": false,
       "table_type": "TRANSIENT TABLE",
       "execution_results": {
        "fields": {}
       },
-      "execution_runtime_ms": 2981,
+      "execution_runtime_ms": 4420,
       "labels": {
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
-       "dbt_node_name": "ob_up_0954562b4355"
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432"
       }
      },
      "response": {
       "success": true,
-      "request_id": "01a207d5-4fa9-7745-abe2-47cc875a24b0"
+      "request_id": "01a20882-1a36-730e-a4a1-7e2aab6c0258"
      },
      "status": {
       "code": 0,
@@ -636,17 +707,17 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:55:53.924500969+00:00",
+     "recorded_at": "2026-11-23T13:04:37.670845581+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.dev_clone_demo.ob_up_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.dev_clone_demo.ob_up_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
-        "last_modified_epoch": 1795427752991
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
+        "last_modified_epoch": 1795439077249
        }
       ],
       "query_dependencies": [],
@@ -658,21 +729,21 @@
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355",
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355"
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "25fb4bc5cbc50e5ccf0ef0ba63b4ed04",
-       "node_body_hash": "199334220d09a719505df785643ed249",
+       "node_hash": "ef54a09ff34058b11f10c40b5e1f52cb",
+       "node_body_hash": "f23cd0fd51e8b3877992f53ff65325cc",
        "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -692,7 +763,7 @@
      "response": {
       "response": {
        "ready_to_execute": {
-        "request_id": "01a207d5-5fc2-77ef-8c5b-94a91e639b6e",
+        "request_id": "01a20882-2924-7716-bc8a-c25082d374f5",
         "last_modified_query": "",
         "explained_decision": {
          "decision": 1,
@@ -703,7 +774,7 @@
         },
         "transformed_nodes_by_query": {},
         "query_hash_metadata_info": null,
-        "execution_decision_id": "01a207d5-5fc2-77ef-8c5b-94aa50ec0da7"
+        "execution_decision_id": "01a20882-2924-7716-bc8a-c251b5e44ad2"
        }
       }
      },
@@ -720,23 +791,23 @@
     {
      "service": "Execution",
      "method": "ConfirmExecution",
-     "recorded_at": "2026-11-23T09:55:54.977142032+00:00",
+     "recorded_at": "2026-11-23T13:04:38.815205684+00:00",
      "request": {
-      "request_id": "01a207d5-5fc2-77ef-8c5b-94a91e639b6e",
-      "last_modified_epoch": 1795427755301,
+      "request_id": "01a20882-2924-7716-bc8a-c25082d374f5",
+      "last_modified_epoch": 1795439079144,
       "failed_to_clone": false,
       "table_type": "TRANSIENT TABLE",
       "execution_results": null,
-      "execution_runtime_ms": 2294,
+      "execution_runtime_ms": 1879,
       "labels": {
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355",
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355"
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       }
      },
      "response": {
       "success": true,
-      "request_id": "01a207d5-5fc2-77ef-8c5b-94a91e639b6e"
+      "request_id": "01a20882-2924-7716-bc8a-c25082d374f5"
      },
      "status": {
       "code": 0,
@@ -751,43 +822,43 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQLSpeculative",
-     "recorded_at": "2026-11-23T09:56:47.333489774+00:00",
+     "recorded_at": "2026-11-23T13:05:36.273296986+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_0954562B4355\"",
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
         "last_modified_epoch": null
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "on_schema_change": "\"ignore\"",
-       "lookback": "1"
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_name": "ob_up_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355"
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
+       "dbt_node_name": "ob_up_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "1d6fb3c5b356639c583aa00bc34f6355",
-       "node_body_hash": "4e16fec829d6591a0c32756c9d1ac42c",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
        "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -822,47 +893,47 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:56:48.961276915+00:00",
+     "recorded_at": "2026-11-23T13:05:39.049369431+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.ob_in_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
-        "last_modified_epoch": 1795427752516
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
+        "last_modified_epoch": 1795439076746
        },
        {
-        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_0954562B4355\"",
-        "last_modified_epoch": 1795427708182
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OB_IN_130336EE9432\"",
+        "last_modified_epoch": 1795439026880
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "on_schema_change": "\"ignore\"",
-       "lookback": "1"
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_up_0954562b4355",
-       "dbt_node_name": "ob_up_0954562b4355"
+       "dbt_node_name": "ob_up_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_up_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_up_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_up_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_up_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "1d6fb3c5b356639c583aa00bc34f6355",
-       "node_body_hash": "4e16fec829d6591a0c32756c9d1ac42c",
+       "node_hash": "ab47bc46892844e7f0e673396aa630ad",
+       "node_body_hash": "1fa8e9064c25999560bc57680aba2f9a",
        "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -893,8 +964,8 @@
         "execution_results": {
          "fields": {}
         },
-        "execution_runtime_ms": 2981,
-        "execution_decision_id": "01a207d6-36c0-7417-9dee-4de0e5f84637"
+        "execution_runtime_ms": 4420,
+        "execution_decision_id": "01a20883-18e8-74f9-a348-140690c9972f"
        }
       }
      },
@@ -911,47 +982,47 @@
     {
      "service": "SQL",
      "method": "SubmitEnrichedSQL",
-     "recorded_at": "2026-11-23T09:56:49.770565994+00:00",
+     "recorded_at": "2026-11-23T13:05:39.811206391+00:00",
      "request": {
-      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_0954562B4355\"",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_130336EE9432\"",
       "dialect": "snowflake",
       "default_catalog": "CDO_DEMO_DB",
       "execution_type": 1,
-      "sql": "\nselect id, v from CDO_DEMO_DB.dev_clone_demo.ob_up_0954562b4355",
+      "sql": "\nselect id, v from CDO_DEMO_DB.dev_clone_demo.ob_up_130336ee9432",
       "tables": [
        {
-        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_0954562B4355\"",
-        "last_modified_epoch": 1795427754813
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_DN_130336EE9432\"",
+        "last_modified_epoch": 1795439078638
        },
        {
-        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_0954562B4355\"",
-        "last_modified_epoch": 1795427752516
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OB_UP_130336EE9432\"",
+        "last_modified_epoch": 1795439076746
        }
       ],
       "query_dependencies": [],
       "semantic_extras": {
-       "on_schema_change": "\"ignore\"",
-       "lookback": "1"
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
       },
       "freshness_tolerance_seconds": 0,
       "lenient_dependencies": [],
       "tolerate_nondeterminism": true,
       "labels": {
-       "dbt_node_name": "ob_dn_0954562b4355",
-       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_0954562b4355",
-       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355"
+       "dbt_node_name": "ob_dn_130336ee9432",
+       "dbt_node_fqn": "jaffle_shop.marts.ob_dn_130336ee9432",
+       "dbt_node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432"
       },
       "clone_time_travel_limit": null,
       "clone_table_properties": null,
       "stale_upstream_policy": 0,
       "clone_chain_depth_limit": null,
       "dbt_node_state": {
-       "node_unique_id": "model.jaffle_shop.ob_dn_0954562b4355",
+       "node_unique_id": "model.jaffle_shop.ob_dn_130336ee9432",
        "target_name": "dev_clone",
        "project_name": "jaffle_shop",
        "resource_type": "model",
-       "node_hash": "25fb4bc5cbc50e5ccf0ef0ba63b4ed04",
-       "node_body_hash": "199334220d09a719505df785643ed249",
+       "node_hash": "ef54a09ff34058b11f10c40b5e1f52cb",
+       "node_body_hash": "f23cd0fd51e8b3877992f53ff65325cc",
        "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
        "node_persisted_descriptions_hash": null,
        "node_macros_hash": null,
@@ -982,8 +1053,8 @@
         "execution_results": {
          "fields": {}
         },
-        "execution_runtime_ms": 2294,
-        "execution_decision_id": "01a207d6-39e9-7133-8b94-5e0492abea1c"
+        "execution_runtime_ms": 1879,
+        "execution_decision_id": "01a20883-1be2-72c5-9be4-ba208cabc3ee"
        }
       }
      },
@@ -999,7 +1070,7 @@
     }
    ],
    "verified_reference": {
-    "run": "0954562b4355",
+    "run": "130336ee9432",
     "scenario": "upstream_origin_table_reference",
     "client": {
      "dbt_version": "2.0.11",
@@ -1013,13 +1084,13 @@
       "--target",
       "dev_clone",
       "--select",
-      "oa_dn_0954562b4355",
-      "ob_up_0954562b4355",
-      "ob_dn_0954562b4355",
-      "oc_up_0954562b4355",
-      "oc_dn_0954562b4355",
-      "od_up_0954562b4355",
-      "od_dn_0954562b4355",
+      "oa_dn_130336ee9432",
+      "ob_up_130336ee9432",
+      "ob_dn_130336ee9432",
+      "oc_up_130336ee9432",
+      "oc_dn_130336ee9432",
+      "od_up_130336ee9432",
+      "od_dn_130336ee9432",
       "--full-refresh",
       "--profiles-dir",
       "<profiles-dir>",
@@ -1036,7 +1107,7 @@
      {
       "phase": "input",
       "step": 10,
-      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.ob_in_0954562b4355",
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.ob_in_130336ee9432",
       "rows": [
        {
         "ID": 1,
@@ -1049,7 +1120,7 @@
      {
       "phase": "reference",
       "step": 18,
-      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_0954562b4355",
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_dn_130336ee9432",
       "rows": [
        {
         "ID": 1,
@@ -1062,7 +1133,7 @@
      {
       "phase": "reference",
       "step": 17,
-      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_0954562b4355",
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.ob_up_130336ee9432",
       "rows": [
        {
         "ID": 1,

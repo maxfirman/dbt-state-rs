@@ -132,10 +132,13 @@ Do not weaken these without new evidence.
   name, or as its Stand-in (an unchanged copy this server recorded) when the
   build recorded the Stand-in's relation at exactly its epoch, checked before
   Lag tolerance; with a Stand-in the submit's SQL so read must keep the
-  build's logic, so copies swapped between a join's references differ. The
-  build's own Target relation stays an input of a submit that reads it, and
-  a submit reporting no reads qualifies only when its SQL reads no base
-  relation. It is then judged for freshness like a Reuse candidate. Any
+  build's logic (root SQL and view definitions alike), so copies swapped
+  between a join's references differ. The build's own Target relation stays
+  an input of a submit that reads it, every base relation the Snowflake SQL
+  reads must be reported, and a read of the submit's own Target relation is
+  never copied. It is then judged for freshness like a Reuse candidate, and
+  the copy records the inputs of the build it holds, so its Lag tolerance
+  runs out as theirs would. Any
   other equivalent is passed over and the search goes on in its shared order
   (`submit_decision/copy_search.rs`,
   [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
@@ -150,7 +153,8 @@ Do not weaken these without new evidence.
   `snowflake_copy_over_a_copied_upstream_and_follow_up`,
   `snowflake_copied_upstream_at_another_recorded_epoch_builds`,
   `snowflake_continues_on_stale_and_passes_over_a_different_input`) and the
-  review regressions `clone_submit_fallback.rs::review266_*` and
+  review regressions `clone_submit_fallback.rs::review266_*`,
+  `rereview266.rs`, `clone_submit_fallback.rs::a_copy_of_a_copy_sets_aside_the_held_builds_own_target` and
   `copy_search.rs::review266_stand_in_epoch_is_a_qualification_before_lag`.
   **Open:** a RegisterClone copy adopted by its own Target relation (#93)
   keeps the clone-age anchor; whether hosted reuses a `dbt clone` copy of
@@ -745,7 +749,8 @@ and the verified State-disabled Reference held `v='dev'`
 This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
-(runs `232206b6851a` and, after the review of #266, `0954562b4355`) served
+(runs `232206b6851a` and, after the reviews of #266, `0954562b4355` and
+`130336ee9432`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
