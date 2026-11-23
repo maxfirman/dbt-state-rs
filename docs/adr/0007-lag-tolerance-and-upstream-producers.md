@@ -452,9 +452,10 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   namespace, or a session `SYS_CONTEXT` inside a view) leaves the build
   without a binding. So does any other Snowflake context function outside
   the clock family (the session, statement or transaction, the principal
-  and its roles, the warehouse, the client, the account, the search path,
-  a view's `INVOKER_ROLE()`, which is its owner's role) and a session
-  variable (`$name`, `GETVARIABLE`): the request identifies none of them,
+  and its roles or organization user groups, the warehouse, the client,
+  the account, the search path, a view's `INVOKER_ROLE()`, which is its
+  owner's role) and a session variable (`$name`, `GETVARIABLE`,
+  `SESSION_CONTEXT`): the request identifies none of them,
   so a matching database does not make the results equal. The clock
   functions stay with Volatile evaluation and `tolerate_nondeterminism`.
   A string constant may be single- or dollar-quoted (`$$DATABASE$$`). So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the

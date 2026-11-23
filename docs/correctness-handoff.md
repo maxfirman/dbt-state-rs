@@ -769,7 +769,7 @@ This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
 (runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
-`130336ee9432`, `15355882dd2e`, `18143533c882`, `193559af41fb`, `204310ef6ee3` and `2134512b204a`) served
+`130336ee9432`, `15355882dd2e`, `18143533c882`, `193559af41fb`, `204310ef6ee3`, `2134512b204a` and `2253060ae70d`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
@@ -811,7 +811,9 @@ schemas of one database (it copies). Hosted is not captured for these
 either, nor for the seventh review's (`review266_context_qualification.rs`):
 `CURRENT_SESSION()` and a view's `INVOKER_ROLE()` beside a matching
 `CURRENT_DATABASE()` (the server builds both) and a dollar-quoted
-`SYS_CONTEXT` property (it copies).
+`SYS_CONTEXT` property (it copies), nor for the eighth's:
+`SESSION_CONTEXT('MARKER')` and `IS_ORGANIZATION_USER_GROUP_IN_SESSION`
+(the server builds both).
 
 **Resolved 2026-11-22 — copy source choice among competing sources (#239,
 crafted; #264).** `copy_source_choice.jsonl` crafts thirteen Snowflake

@@ -50,3 +50,28 @@ async fn a_dollar_quoted_database_property_is_still_a_constant() {
     sc.build_with(model("PROD", sql), transient_at(500)).await;
     sc.expect_clone(model("DEV", sql)).await;
 }
+
+#[tokio::test]
+async fn organization_group_membership_is_session_context_for_a_result_copy() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let sql =
+        "select is_organization_user_group_in_session('ANALYST') as member from CDO_DEMO_DB.RAW.U";
+    sc.build_with(model("PROD", sql), transient_at(500)).await;
+    sc.expect_execute(model("DEV", sql)).await;
+}
+
+#[tokio::test]
+async fn both_spellings_of_a_session_variable_require_a_build() {
+    for expression in ["getvariable('MARKER')", "session_context('MARKER')"] {
+        let server = start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let sql = format!("select {expression} as marker from CDO_DEMO_DB.RAW.U");
+        sc.build_with(model("PROD", &sql), transient_at(500)).await;
+        assert_eq!(
+            sc.verdict(model("DEV", &sql)).await,
+            "ready_to_execute",
+            "{expression}"
+        );
+    }
+}

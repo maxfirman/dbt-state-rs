@@ -70,8 +70,8 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
 /// Snowflake context functions (`functions-context`) whose value the
 /// request does not identify: the session, statement and transaction, the
 /// principal and its roles, the warehouse, the client, the account and its
-/// region and version, session variables, and a view's invoker (its
-/// owner's role). Each leaves no binding. The clock functions are Volatile
+/// region and version, session variables (`GETVARIABLE`,
+/// `SESSION_CONTEXT`), and a view's invoker (its owner's role). Each leaves no binding. The clock functions are Volatile
 /// evaluation's (`sql_norm::VOLATILE_FUNCTIONS`), `CURRENT_DATABASE()` and
 /// `CURRENT_SCHEMA()` are bound ([`Context`]), and `SYS_CONTEXT` is judged
 /// by its property.
@@ -103,10 +103,12 @@ const UNKNOWN_CONTEXT_FUNCTIONS: &[&str] = &[
     "IS_DATABASE_ROLE_IN_SESSION",
     "IS_GRANTED_TO_INVOKER_ROLE",
     "IS_INSTANCE_ROLE_IN_SESSION",
+    "IS_ORGANIZATION_USER_GROUP_IN_SESSION",
     "IS_ROLE_IN_SESSION",
     "LAST_QUERY_ID",
     "LAST_TRANSACTION",
     "POLICY_CONTEXT",
+    "SESSION_CONTEXT",
     "SET_SYS_CONTEXT",
 ];
 
@@ -976,6 +978,8 @@ mod tests {
             "select current_warehouse() as v from db.raw.u",
             "select last_query_id() as v from db.raw.u",
             "select getvariable('X') as v from db.raw.u",
+            "select session_context('X') as v from db.raw.u",
+            "select is_organization_user_group_in_session('ANALYST') as v from db.raw.u",
             "select $x as v from db.raw.u",
         ] {
             assert_eq!(root(sql), None, "{sql}");

@@ -18,10 +18,11 @@ fix, and runs `0954562b4355` (2026-11-23 09:55–09:57 UTC),
 `130336ee9432`, `15355882dd2e` (Postgres `i264_native4`),
 `18143533c882` (2026-11-23 18:14–18:18 UTC, Postgres `i264_native6`),
 `193559af41fb` (2026-11-23 19:35–19:39 UTC, Postgres `i264_native7`),
-`204310ef6ee3` (2026-11-23 20:43–20:46 UTC, Postgres `i264_native8`) and
-`2134512b204a` (2026-11-23 21:34–21:38 UTC, Postgres `i264_native9`) after
-the first through seventh reviews of #266, all with dbt 2.0.11 of the
-SHA-256 above. All eight decided and served the same:
+`204310ef6ee3` (2026-11-23 20:43–20:46 UTC, Postgres `i264_native8`),
+`2134512b204a` (2026-11-23 21:34–21:38 UTC, Postgres `i264_native9`) and
+`2253060ae70d` (2026-11-23 22:53–22:56 UTC, Postgres `i264_native10`) after
+the first through eighth reviews of #266, all with dbt 2.0.11 of the
+SHA-256 above. All nine decided and served the same:
 
 | Case | Dev downstream, first | Next | Rows: prod / served / after next / verified Reference |
 |---|---|---|---|
@@ -34,7 +35,7 @@ C and D's dev upstream, built on `dev_noclone`, got 6 / 6 as on hosted (it
 got 1 / 10 before). The verified Reference ran `dbt build --no-manage-state
 --target dev_clone --select <the run's dev nodes> --full-refresh` with the
 State URL pointing at the run's own proxy; its capture holds zero RPCs and
-all 14 invocations exited 0. Sanitized per-case records of run `2134512b204a`
+all 14 invocations exited 0. Sanitized per-case records of run `2253060ae70d`
 with its verified Reference are in
 [`evidence/snowflake-upstream-origin-264/`](evidence/snowflake-upstream-origin-264/).
 
