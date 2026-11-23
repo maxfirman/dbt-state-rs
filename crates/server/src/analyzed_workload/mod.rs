@@ -5,6 +5,7 @@
 pub(crate) mod binding;
 pub mod identity;
 pub(crate) mod inputs;
+pub(crate) mod physical_binding;
 pub(crate) mod query;
 use crate::query_cache as qc;
 use crate::warehouse::Warehouse;
@@ -33,6 +34,9 @@ pub(crate) struct AnalyzedWorkload {
     pub template_hash: Option<String>,
     /// The schema-abstracted Logical copy identity, only when copy-eligible.
     pub copy_hash: Option<String>,
+    /// The physical binding identity, only for a copy-eligible Snowflake
+    /// workload whose references all resolve ([`physical_binding`]).
+    pub binding_hash: Option<String>,
     /// The complete copy binding proof, only for a copy-eligible rendered workload.
     pub copy_proof: Option<query::CopyProof>,
     /// Direct copy provenance, only for a copy-eligible rendered workload.
@@ -69,6 +73,10 @@ pub(crate) fn analyze(req: &qc::SqlExecution, purpose: Purpose) -> AnalyzedWorkl
             }
         })
         .flatten();
+    let binding_hash = (copy_hash.is_some() && warehouse == Warehouse::Snowflake)
+        .then(|| physical_binding::physical_binding(req, &|_| None))
+        .flatten()
+        .map(|binding| binding.hash);
     let direct_provenance = rendered_copy
         .then(|| crate::copy_lifecycle::direct_provenance(req, copy_proof.as_ref()))
         .flatten();
@@ -76,6 +84,7 @@ pub(crate) fn analyze(req: &qc::SqlExecution, purpose: Purpose) -> AnalyzedWorkl
         rendered_hash: identity::sql_logic_hash(req, None),
         template_hash: template.map(|body| identity::sql_logic_hash(req, Some(body))),
         copy_hash,
+        binding_hash,
         copy_proof: rendered_copy.then_some(copy_proof).flatten(),
         direct_provenance,
         inputs: inputs::sql_inputs(req),

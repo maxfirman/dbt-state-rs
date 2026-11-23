@@ -294,7 +294,7 @@ async fn databricks_pending_newest_preserves_the_older_build_through_confirmatio
 
 /// Public gRPC counterparts of the two Snowflake cases in submit_decision.rs.
 #[tokio::test]
-async fn snowflake_continues_on_stale_and_stops_at_a_different_input() {
+async fn snowflake_continues_on_stale_and_passes_over_a_different_input() {
     let server = support::start_server().await;
     let up = environment_upstream("prod");
     let named =
@@ -326,7 +326,10 @@ async fn snowflake_continues_on_stale_and_stops_at_a_different_input() {
     );
     history.assert_baseline();
 
-    let mut history = History::new(&server, "snowflake-stops").await;
+    let mut history = History::new(&server, "snowflake-passes-over").await;
+    history
+        .build("stale source", named("STALE"), built_at(9_000))
+        .await;
     history
         .build(
             "other-input source",
@@ -334,41 +337,42 @@ async fn snowflake_continues_on_stale_and_stops_at_a_different_input() {
             built_at(5_000),
         )
         .await;
-    let stale = into_clone(history.submit("same-input source", named("STALE")).await);
     history
-        .confirm(
-            "publish same-input source",
-            &stale.request_id,
-            built_at(9_000),
+        .build(
+            "fresh source",
+            named("FRESH").upstream(&up, 2_000),
+            built_at(3_000),
         )
         .await;
-    let control = into_clone(
-        history
-            .submit("unchanged input control", environment_model("prod"))
-            .await,
-    );
-    assert_eq!(control.clone_source, "\"DB\".\"PROD\".\"STALE\"");
-    into_execute(history.submit("changed input", current()).await);
+    let grant = into_clone(history.submit("destination", current()).await);
+    assert_eq!(grant.clone_source, "\"DB\".\"PROD\".\"FRESH\"");
     history.assert_baseline();
 }
 
-/// The local #237 differing-input lifecycle tracked for policy review in #264.
+/// A dev upstream table read by the downstream histories below.
+fn snowflake_upstream(schema: &str, sql: &str) -> Submit {
+    environment_model(schema)
+        .target(&environment_upstream(schema))
+        .unique_id("model.p.up")
+        .no_tables()
+        .sql(sql)
+}
+
+/// The downstream of [`snowflake_upstream`] in `schema`, reading it at `epoch`.
+fn snowflake_downstream(schema: &str, epoch: i64) -> Submit {
+    environment_model(schema)
+        .sql(&format!("select v from DB.{schema}.up"))
+        .upstream(&environment_upstream(schema), epoch)
+}
+
+/// #237 case D: the dev upstream is an independent dev build, so prod's
+/// downstream read another input. The dev downstream builds (#264); its
+/// next unchanged submit reuses that build.
 #[tokio::test]
-async fn snowflake_differing_input_copy_and_follow_up() {
+async fn snowflake_differing_input_builds_and_follow_up_reuses() {
     let server = support::start_server().await;
     let mut history = History::new(&server, "snowflake-differing-input").await;
-    let upstream = |schema| {
-        environment_model(schema)
-            .target(&environment_upstream(schema))
-            .unique_id("model.p.up")
-            .no_tables()
-            .sql(&format!("select '{schema}' as v"))
-    };
-    let downstream = |schema, epoch| {
-        environment_model(schema)
-            .sql(&format!("select v from DB.{schema}.up"))
-            .upstream(&environment_upstream(schema), epoch)
-    };
+    let upstream = |schema| snowflake_upstream(schema, &format!("select '{schema}' as v"));
     history
         .build("prod upstream", upstream("prod"), built_at(500))
         .await;
@@ -376,20 +380,87 @@ async fn snowflake_differing_input_copy_and_follow_up() {
         .build("dev upstream", upstream("dev"), built_at(600))
         .await;
     history
-        .build("prod downstream", downstream("prod", 500), built_at(2_000))
+        .build(
+            "prod downstream",
+            snowflake_downstream("prod", 500),
+            built_at(2_000),
+        )
         .await;
 
-    let dev = downstream("dev", 600);
-    let grant = into_clone(history.submit("dev downstream", dev.clone()).await);
-    assert_eq!(grant.clone_source, "\"DB\".\"PROD\".\"M\"");
+    let dev = snowflake_downstream("dev", 600);
     history
-        .confirm("confirm dev copy", &grant.request_id, built_at(3_000))
+        .build("dev downstream", dev.clone(), built_at(3_000))
         .await;
     into_skip(
         history
             .submit("unchanged dev downstream", dev.own_epoch(Some(3_000)))
             .await,
     );
+    history.assert_baseline();
+}
+
+/// The dev upstream is a confirmed Result copy of prod's upstream build, and
+/// prod's downstream recorded that build at `recorded` (the copied build's
+/// epoch is 500). Returns the dev downstream's first decision.
+async fn snowflake_over_copied_upstream(
+    history: &mut History<'_>,
+    recorded: i64,
+) -> qc::SubmitSqlResponse {
+    let upstream = |schema| snowflake_upstream(schema, "select 'same' as v");
+    history
+        .build("prod upstream", upstream("prod"), built_at(500))
+        .await;
+    let copy = into_clone(history.submit("dev upstream", upstream("dev")).await);
+    assert_eq!(copy.clone_source, "\"DB\".\"PROD\".\"UP\"");
+    history
+        .confirm("confirm dev upstream copy", &copy.request_id, built_at(600))
+        .await;
+    history
+        .build(
+            "prod downstream",
+            snowflake_downstream("prod", recorded),
+            built_at(2_000),
+        )
+        .await;
+    history
+        .submit("dev downstream", snowflake_downstream("dev", 600))
+        .await
+}
+
+/// A dev upstream copied from exactly the build prod's downstream read is
+/// that build (a Stand-in, ADR 0007): prod's downstream is copied, and the
+/// next unchanged submit reuses the copy. Hosted copied this shape when the
+/// downstream recorded the copied build's epoch
+/// (`explain_clone_history.jsonl` entry 12).
+#[tokio::test]
+async fn snowflake_copy_over_a_copied_upstream_and_follow_up() {
+    let server = support::start_server().await;
+    let mut history = History::new(&server, "snowflake-copied-upstream").await;
+    let grant = into_clone(snowflake_over_copied_upstream(&mut history, 500).await);
+    assert_eq!(grant.clone_source, "\"DB\".\"PROD\".\"M\"");
+    history
+        .confirm("confirm dev copy", &grant.request_id, built_at(3_000))
+        .await;
+    into_skip(
+        history
+            .submit(
+                "unchanged dev downstream",
+                snowflake_downstream("dev", 600).own_epoch(Some(3_000)),
+            )
+            .await,
+    );
+    history.assert_baseline();
+}
+
+/// A Stand-in proves freshness only at the copied build's epoch: prod's
+/// downstream recorded the upstream at an earlier metadata epoch, so the dev
+/// downstream builds. Hosted built this shape (#237 case B,
+/// `explain_upstream_origin_table.jsonl` T34).
+#[tokio::test]
+async fn snowflake_copied_upstream_at_another_recorded_epoch_builds() {
+    let server = support::start_server().await;
+    let mut history = History::new(&server, "snowflake-copied-upstream-earlier").await;
+    into_execute(snowflake_over_copied_upstream(&mut history, 480).await);
     history.assert_baseline();
 }
 

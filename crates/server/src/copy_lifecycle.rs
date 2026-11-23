@@ -323,6 +323,9 @@ impl ExecutionEvidence {
     /// The same evidence for `copy`, a Result copy into this target, made
     /// from its source's confirmed build (#200).
     pub(crate) fn copied_from(&self, copy: &crate::result_copy::ResultCopy) -> Self {
+        // The copy keeps the submit's physical binding: it is unused while
+        // the row is a copy (a copy is judged by the build it holds), and
+        // describes the fallback build when the copy fails.
         let mut evidence = self.clone();
         evidence.clone_source_table = Some(copy.source_table.clone());
         evidence.clone_source_execution_id = Some(copy.source_execution_id);

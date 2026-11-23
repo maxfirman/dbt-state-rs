@@ -120,11 +120,19 @@ connection namespace. Only the latest confirmed run under a key is reused.
 _Avoid_: Test identity, test UID scope
 
 **Stand-in**:
-A relation a data test reads that is a Result copy this server recorded,
-unchanged since the copy, read as the build it was copied from: the test is
-keyed and judged for freshness as if it read that build. Such an input is
-said to be read through a copy.
+A relation a workload reads that is a Result copy this server recorded,
+unchanged since the copy, read as the build it was copied from: a data test
+is keyed and judged for freshness as if it read that build, and an
+equivalent that read that build may be copied for the workload. Such an
+input is said to be read through a copy.
 _Avoid_: Alias, equivalent relation
+
+**Physical binding**:
+Which physical relation each relation reference of a workload reads, each
+resolved in the context of the SQL that names it and a view through its
+definition. Two workloads with the same Logical copy identity can bind
+their references differently.
+_Avoid_: Input set, reported tables
 
 **Decision reason**:
 The one cause a decision records for building, reusing or copying a workload's

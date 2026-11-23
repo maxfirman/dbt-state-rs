@@ -148,6 +148,16 @@ impl Selection {
         }
     }
 
+    /// The reuse candidate is a Result copy whose held build no longer
+    /// qualifies for the submit (#264): refused at Reuse qualification and
+    /// kept as the rebuild's Explain anchor, never reused.
+    pub(crate) fn refuse_unproven_copy(&mut self) {
+        if let Some(row) = self.candidate.take() {
+            self.why_no_candidate = Some(NoCandidate::FailedReuseQualification);
+            self.unqualified = Some(row);
+        }
+    }
+
     fn with_rerun_evidence(mut self, rerun: RerunEvidence) -> Selection {
         if self.why_no_candidate == Some(NoCandidate::FailedReuseQualification) {
             self.rerun_evidence = rerun;

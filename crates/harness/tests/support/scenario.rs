@@ -176,8 +176,9 @@ pub fn environment_upstream(schema: &str) -> String {
 /// [`ENVIRONMENT_UPSTREAM_EPOCH`]) with default schema and dbt target name
 /// `schema`, under [`ENVIRONMENT_NAMESPACE`]. Its own target is absent. The
 /// SQL follows the schema, so the model in two environments shares one
-/// schema-abstracted logic identity (a Result copy equivalent) but not its
-/// rendered SQL.
+/// schema-abstracted logic identity but not its rendered SQL or its input:
+/// it is an equivalent that read another relation, never copied (#264; see
+/// [`environment_model_over_prod`]).
 pub fn environment_model(schema: &str) -> Submit {
     Submit {
         req: qc::SubmitEnrichedSqlRequest {
@@ -204,6 +205,22 @@ pub fn environment_model(schema: &str) -> Submit {
         },
         sql_follows_body: false,
     }
+}
+
+/// [`environment_model`] in environment `schema` over prod's upstream: its
+/// SQL reads [`environment_upstream`]`("prod")` in the fixed prod schema, as a
+/// dev target reading a prod source does. In prod it is
+/// [`environment_model`]; in another environment it is a Result copy
+/// equivalent of the prod build that read the same physical input (#237
+/// case A). [`environment_model`] in two environments reads two inputs, so
+/// one is never copied for the other (#264).
+pub fn environment_model_over_prod(schema: &str) -> Submit {
+    let mut submit = environment_model(schema).sql("select id from DB.prod.up");
+    submit.req.tables = vec![table(
+        &environment_upstream("prod"),
+        Some(ENVIRONMENT_UPSTREAM_EPOCH),
+    )];
+    submit
 }
 
 /// A submission carrying only `dialect`: no target, SQL, tables or node state.

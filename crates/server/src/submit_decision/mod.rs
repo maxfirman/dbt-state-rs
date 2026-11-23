@@ -429,6 +429,7 @@ async fn decide_sql(
     resolve_producers(store, &mut evidence).await?;
     crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
     let mut selection = select_sql(store, org_id, req, &evidence).await?;
+    revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
     judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
     let outcome =
@@ -1196,6 +1197,76 @@ async fn latest_data_test_of_unique_id(
     }
 }
 
+/// The most copies [`held_build`] follows back to the build they hold.
+const HELD_BUILD_HOPS: usize = 16;
+
+/// The ordinary build whose result `row` holds: `row` itself when it is a
+/// build, else, for a copy this server recorded (a Result copy on submit or a
+/// RegisterClone), the build it was copied from, through any copies between
+/// (`clone_source_execution_id`, each a confirmed row of the organization).
+/// A copy holds exactly its source's result, so what that build recorded at
+/// build time is what the copy was computed from (#264). `None` when the
+/// chain is broken or longer than [`HELD_BUILD_HOPS`].
+async fn held_build(
+    store: &Store,
+    org_id: &str,
+    row: ExecutionRow,
+) -> sqlx::Result<Option<ExecutionRow>> {
+    let mut row = row;
+    for _ in 0..=HELD_BUILD_HOPS {
+        if row.clone_source_table.is_none() {
+            return Ok(Some(row));
+        }
+        let Some(source_id) = row.clone_source_execution_id else {
+            return Ok(None);
+        };
+        match store.execution_by_id(org_id, source_id).await? {
+            Some(source) if source.status == "confirmed" => row = source,
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// A Result copy on submit is reused only while the build it holds still
+/// qualifies as a copy source for the submit ([`copy_search::reads_as_recorded`])
+/// and the copy recorded that build's inputs
+/// ([`copy_search::records_held_inputs`]), so its freshness and Lag
+/// tolerance are those of the rows it holds: a copy an earlier server
+/// granted over other inputs, or recorded at newer epochs than its rows
+/// were computed from, is refused at Reuse qualification and rebuilds
+/// (#264). A client-requested copy and a
+/// Databricks submit copy keep their own adoption rules.
+async fn revalidate_copy_candidate(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    selection: &mut reuse_candidate::Selection,
+) -> sqlx::Result<()> {
+    let Some(candidate) = selection.candidate.as_ref() else {
+        return Ok(());
+    };
+    let submit_copy = candidate.clone_source_table.is_some()
+        && !crate::copy_lifecycle::is_copy_registration(candidate)
+        && Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks;
+    if !submit_copy {
+        return Ok(());
+    }
+    let reads = crate::stand_in::input_reads(store, evidence).await?;
+    let proven = held_build(store, org_id, candidate.clone())
+        .await?
+        .is_some_and(|held| {
+            copy_search::reads_as_recorded(req, evidence, &reads, &held).is_some_and(|aligned| {
+                copy_search::records_held_inputs(evidence, candidate, &held, &aligned)
+            })
+        });
+    if !proven {
+        selection.refuse_unproven_copy();
+    }
+    Ok(())
+}
+
 /// What the Result copy fallback decided ([`result_copy_fallback`]).
 enum CopyFallback {
     /// The submit is answered by the fallback (a copy, or the chain-limit
@@ -1204,8 +1275,8 @@ enum CopyFallback {
     /// An equivalent exists, but this submit's execution type is not copied
     /// (see [`SubmitCopyPlan::Refused`]): the ordinary decision applies, with
     /// TARGET_TABLE_MISMATCH and this clone rejection.
-    /// `equivalent_build_age_ms` is the equivalent's build age when it was
-    /// judged for freshness (it read the same upstream relations).
+    /// `equivalent_build_age_ms` is the equivalent's build age as judged
+    /// for freshness.
     Refused {
         clone_rejection_reason: i32,
         equivalent_build_age_ms: Option<i64>,
@@ -1224,13 +1295,13 @@ enum CopyFallback {
 /// is chosen the same way (of any execution type) and reported as
 /// [`CopyFallback::Refused`].
 ///
-/// An equivalent that read the same upstream relations as this submit is
-/// judged exactly as if it were the reuse candidate, for an existing or a
-/// dropped target (see `lag_copy_candidates` and `lag_dropped_targets`
-/// `dset0`/`dset600`).
-/// Snowflake and DuckDB may choose a source with different inputs under the
-/// conditions in [`copy_search`]. Databricks requires exact current inputs
-/// and the source build's evidence for publication.
+/// An equivalent is chosen only when it recorded the physical inputs this
+/// submit reads, and is judged exactly as if it were the reuse candidate, for
+/// an existing or a dropped target (see `lag_copy_candidates` and
+/// `lag_dropped_targets` `dset0`/`dset600`). On Snowflake and DuckDB an
+/// input read through a copy this server recorded may stand for the build it
+/// was copied from ([`copy_search::offer`], #264). Databricks requires exact
+/// current inputs and the source build's evidence for publication.
 async fn result_copy_fallback(
     store: &Store,
     org_id: &str,
@@ -1251,12 +1322,25 @@ async fn result_copy_fallback(
         plan: SubmitCopyPlan,
         source_table: String,
         judged: copy_search::Judged,
-        publication_source: Option<ExecutionRow>,
+        /// The source of the plan, as the copy records it.
+        recorded: RecordedSource,
     }
-    let mut search = copy_search::CopySearch::new(own);
+    /// What a Result copy records about its source: Databricks keeps the
+    /// checked source's original inputs and execution evidence; Snowflake
+    /// and DuckDB the inputs of the build the source holds (#264).
+    enum RecordedSource {
+        Publication(Box<ExecutionRow>),
+        HeldInputs(Vec<crate::store::InputTable>),
+    }
+    let candidates = copy_candidates(store, org_id, req, &lookup).await?;
+    let reads = if requires_checked_source || candidates.is_empty() {
+        Vec::new()
+    } else {
+        crate::stand_in::input_reads(store, evidence).await?
+    };
     let mut chosen = None;
-    for candidate in copy_candidates(store, org_id, req, &lookup).await? {
-        let (equivalent, judged, publication_source) = if requires_checked_source {
+    for candidate in candidates {
+        let (equivalent, judged, recorded) = if requires_checked_source {
             // A pending write blocks this source. Once the current row proves
             // exact inputs, it supplies both the plan and publication evidence.
             let Some(source) = store
@@ -1273,8 +1357,19 @@ async fn result_copy_fallback(
             if !crate::copy_lifecycle::source_admits(evidence, &source) {
                 continue;
             }
-            let Some(judged) = copy_search::judge_equivalent(evidence, freshness, source.clone())
-            else {
+            let upstreams: Vec<_> = evidence
+                .input_tables
+                .iter()
+                .filter(|t| !copy_search::is_target_relation(evidence, t))
+                .cloned()
+                .collect();
+            let Some(judged) = copy_search::judge_equivalent(
+                evidence,
+                freshness,
+                &upstreams,
+                source.clone(),
+                &source.target_table,
+            ) else {
                 continue;
             };
             let equivalent = CloneEquivalent {
@@ -1286,7 +1381,11 @@ async fn result_copy_fallback(
                 execution_runtime_ms: source.execution_runtime_ms,
                 copy_depth: 0,
             };
-            (equivalent, Some(judged), Some(source))
+            (
+                equivalent,
+                judged,
+                RecordedSource::Publication(Box::new(source)),
+            )
         } else {
             let Some(equivalent) =
                 eligible_equivalent(store, org_id, req, &lookup, candidate).await?
@@ -1303,12 +1402,22 @@ async fn result_copy_fallback(
                     &req.dialect,
                 )
                 .await?;
-            let judged = match search.offer(evidence, freshness, source) {
-                copy_search::Offer::Choose(judged) => judged,
-                copy_search::Offer::Next => continue,
-                copy_search::Offer::Stop => break,
+            // The current state vanished between the two reads: the ordinary
+            // decision applies.
+            let Some(source) = source else {
+                break;
             };
-            (equivalent, judged, None)
+            // A copy is judged by the build it holds; one whose build cannot
+            // be established is passed over.
+            let Some(held) = held_build(store, org_id, source.clone()).await? else {
+                continue;
+            };
+            let (judged, inputs) =
+                match copy_search::offer(req, evidence, freshness, &reads, source, &held) {
+                    copy_search::Offer::Choose { judged, inputs } => (judged, inputs),
+                    copy_search::Offer::Next => continue,
+                };
+            (equivalent, judged, RecordedSource::HeldInputs(inputs))
         };
         let source_table = equivalent.source_table.clone();
         let plan = result_copy::plan_submit(req, equivalent);
@@ -1321,7 +1430,7 @@ async fn result_copy_fallback(
             plan,
             source_table,
             judged,
-            publication_source,
+            recorded,
         });
         break;
     }
@@ -1329,7 +1438,7 @@ async fn result_copy_fallback(
         plan,
         source_table,
         judged,
-        publication_source,
+        recorded,
     }) = chosen
     else {
         return Ok(CopyFallback::Ordinary);
@@ -1357,22 +1466,33 @@ async fn result_copy_fallback(
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
             // Keep the checked source's original inputs and execution evidence
-            // for confirmation. Otherwise record the source named by the plan.
-            let pending = match publication_source.as_ref() {
-                Some(source) => evidence.submit_copied_from(source),
-                None => evidence.copied_from(&copy),
+            // for confirmation. Otherwise record the source named by the plan,
+            // over the inputs of the build it holds.
+            let (pending, publication_source) = match recorded {
+                RecordedSource::Publication(source) => {
+                    (evidence.submit_copied_from(&source), Some(*source))
+                }
+                RecordedSource::HeldInputs(inputs) => {
+                    let mut pending = evidence.copied_from(&copy);
+                    pending.fallback_input_tables = Some(
+                        evidence
+                            .raw_input_tables
+                            .clone()
+                            .unwrap_or_else(|| evidence.input_tables.clone()),
+                    );
+                    pending.input_tables = inputs;
+                    pending.raw_input_tables = None;
+                    (pending, None)
+                }
             };
             write_pending(store, &pending, &ids).await?;
-            let record = match judged {
-                Some((reuse, build_age_ms)) => DecisionRecord::result_copy_judged(
-                    anchor.or(publication_source.as_ref()),
-                    reuse,
-                    freshness.tolerance_ms,
-                    build_age_ms,
-                    &evidence.input_tables,
-                ),
-                None => DecisionRecord::result_copy(),
-            };
+            let record = DecisionRecord::result_copy_judged(
+                anchor.or(publication_source.as_ref()),
+                judged.reuse,
+                freshness.tolerance_ms,
+                judged.build_age_ms,
+                &evidence.input_tables,
+            );
             Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
                 ids,
                 copy,
@@ -1386,7 +1506,7 @@ async fn result_copy_fallback(
             clone_rejection_reason,
         } => Ok(CopyFallback::Refused {
             clone_rejection_reason,
-            equivalent_build_age_ms: judged.and_then(|(_, build_age_ms)| build_age_ms),
+            equivalent_build_age_ms: judged.build_age_ms,
         }),
         SubmitCopyPlan::Unavailable { reason } => {
             tracing::warn!(

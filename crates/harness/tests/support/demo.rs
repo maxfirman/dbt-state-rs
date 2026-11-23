@@ -41,6 +41,20 @@ pub fn model(target: &str, schema: &str, unique_id: &str) -> Submit {
         .label("dbt_node_name", name)
 }
 
+/// The source every [`shared_probe`] reads, whatever its schema.
+pub const SHARED_UP: &str = "\"CDO_DEMO_DB\".\"RAW\".\"LP_UP_A\"";
+
+/// A [`CLONE_PROBE`] model building `target` in `schema` over
+/// [`SHARED_UP`], reported as its input, in namespace [`NS`]: a copy of it
+/// qualifies only over the input its source recorded (#264), so a copy test
+/// reads one physical relation in every schema.
+pub fn shared_probe(target: &str, schema: &str) -> Submit {
+    model(target, schema, CLONE_PROBE)
+        .sql("select id from CDO_DEMO_DB.raw.lp_up_a")
+        .namespace(NS)
+        .upstream(SHARED_UP, 1_791_747_000_000)
+}
+
 /// The SQL of [`clone_probe`] in `schema`; `extra_col` (e.g.
 /// `", upper(customer_id) as c"`) is a genuine projection change.
 pub fn clone_probe_sql(schema: &str, extra_col: &str) -> String {
@@ -51,17 +65,18 @@ pub fn clone_probe_sql(schema: &str, extra_col: &str) -> String {
 
 /// The captured [`CLONE_PROBE`] model building `target` in `schema`: a
 /// `FULL` model reading the `STG_ORDERS` view of `schema` (a query dependency
-/// over `raw_orders`), in namespace [`NS`], labelled with its unique id. It
-/// reports no tables; add its own target and [`RAW_ORDERS`] with `own_epoch`
-/// and `upstream`.
+/// over [`RAW_ORDERS`], as captured in `clone_submit_equivalent_fallback.jsonl`),
+/// in namespace [`NS`], labelled with its unique id. It reports no tables;
+/// add its own target and [`RAW_ORDERS`] with `own_epoch` and `upstream`.
 pub fn clone_probe(target: &str, schema: &str) -> Submit {
     model(target, schema, CLONE_PROBE)
         .sql(&clone_probe_sql(schema, ""))
         .dependency_in(
-            &format!("\"CDO_DEMO_DB\".\"{}\".\"STG_ORDERS\"", schema.to_uppercase()),
             &format!(
-                "create or replace view STG_ORDERS as (select * from CDO_DEMO_DB.{schema}.raw_orders)"
+                "\"CDO_DEMO_DB\".\"{}\".\"STG_ORDERS\"",
+                schema.to_uppercase()
             ),
+            "create or replace view STG_ORDERS as (select * from CDO_DEMO_DB.raw.raw_orders)",
             CATALOG,
             schema,
         )

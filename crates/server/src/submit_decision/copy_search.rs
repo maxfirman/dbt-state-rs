@@ -1,131 +1,331 @@
 //! Which equivalent under another name a SQL submit's Result copy fallback
 //! copies. The fallback offers each eligible equivalent, in the store's
 //! preference order (newest build first), with the equivalent's current
-//! physical state; [`CopySearch::offer`] decides, without reading.
+//! physical state; [`offer`] decides, without reading.
 
 use super::{context, Freshness};
 use crate::decision;
 use crate::execution::ExecutionEvidence;
+use crate::query_cache as qc;
 use crate::reuse_candidate::Selection;
-use crate::store::ExecutionRow;
+use crate::sql_norm::canonical_identifiers;
+use crate::stand_in::InputRead;
+use crate::store::{ExecutionRow, InputTable};
+use crate::warehouse::Warehouse;
 
-/// How a chosen equivalent would be reused for this submit, and its build
-/// age: `None` when it was copied unjudged (another environment).
-pub(super) type Judged = Option<(decision::Reuse, Option<i64>)>;
-
-/// The search over the equivalents of one submit.
-///
-/// The first equivalent, in preference order, that qualifies for this
-/// submit is chosen. Only a same-upstream equivalent rejected on freshness
-/// lets the search go on to the next one (VERIFIED LIVE 2026-11-10,
-/// lag_copy_candidates `sne`: the newest equivalent was stale and hosted
-/// copied an older, current one). After such a rejection the search accepts
-/// only another same-upstream equivalent: copying an unjudged one from
-/// another environment instead is uncharacterized.
-pub(super) struct CopySearch {
-    own_target_has_candidate: bool,
-    rejected_on_freshness: bool,
+/// How a chosen equivalent would be reused for this submit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Judged {
+    pub reuse: decision::Reuse,
+    /// The equivalent's build age, when its build time is known.
+    pub build_age_ms: Option<i64>,
 }
 
 /// What the search does with one offered equivalent.
 #[derive(Debug, PartialEq)]
 pub(super) enum Offer {
-    /// Copy this equivalent.
-    Choose(Judged),
+    /// Copy this equivalent. `inputs` are what the copy records: the
+    /// inputs of the build it holds ([`held_inputs`]).
+    Choose {
+        judged: Judged,
+        inputs: Vec<InputTable>,
+    },
     /// Pass over it and offer the next one.
     Next,
-    /// End the search without a copy; the ordinary decision applies.
-    Stop,
 }
 
-impl CopySearch {
-    /// `own`: the target's reuse candidate when it had one but must rebuild
-    /// for freshness (the copy then goes over the existing target).
-    pub(super) fn new(own: Option<&ExecutionRow>) -> Self {
-        Self {
-            own_target_has_candidate: own.is_some(),
-            rejected_on_freshness: false,
-        }
-    }
-
-    /// Offer an eligible equivalent with its current physical state, `None`
-    /// when that state vanished since the candidates were read.
-    pub(super) fn offer(
-        &mut self,
-        evidence: &ExecutionEvidence,
-        freshness: &Freshness<'_>,
-        source: Option<ExecutionRow>,
-    ) -> Offer {
-        match source {
-            Some(source) if reads_same_upstreams(evidence, &source) => {
-                match judge_equivalent(evidence, freshness, source) {
-                    Some(judged) => Offer::Choose(Some(judged)),
-                    None => {
-                        self.rejected_on_freshness = true;
-                        Offer::Next
-                    }
-                }
-            }
-            // An equivalent in another environment is copied unjudged, but
-            // only as the first choice for an absent target: a copy over an
-            // existing target is only characterized for an equivalent in the
-            // same environment.
-            Some(_) if !self.own_target_has_candidate && !self.rejected_on_freshness => {
-                Offer::Choose(None)
-            }
-            // Otherwise, or if the equivalent's current state vanished between
-            // the two reads, the ordinary decision applies.
-            Some(_) | None => Offer::Stop,
-        }
+/// Offer an eligible equivalent, `candidate` (its current physical state),
+/// with `held`, the build whose result it holds (itself, or for a copy the
+/// build it was copied from, resolved by the caller). `reads` are the
+/// submit's inputs with their Stand-ins ([`crate::stand_in::input_reads`]).
+///
+/// An equivalent qualifies only when the build it holds was computed from
+/// the physical inputs this submit reads ([`reads_as_recorded`]). It is then
+/// judged exactly as if it were the reuse candidate, over the input epochs
+/// that build recorded, with that build's Target relation (not the
+/// candidate's) set aside, and with the candidate's own build age (a copy's
+/// age is its copy time: hosted copied a copy within Lag tolerance whose
+/// source build was older, lag_copy_candidates `wba`). The first one fresh
+/// enough is chosen; a stale one passes the search on to the next
+/// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `sne`: the newest
+/// equivalent was stale and hosted copied an older, current one). An
+/// equivalent computed from other inputs is passed over (#264). Hosted
+/// builds a dev downstream over an independently built dev upstream
+/// (`explain_upstream_origin_*.jsonl`, cases C and D) and copies a source
+/// that read the destination's upstream over one that read another relation
+/// of the same name (`copy_source_choice.jsonl`, #239).
+pub(super) fn offer(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    freshness: &Freshness<'_>,
+    reads: &[InputRead],
+    candidate: ExecutionRow,
+    held: &ExecutionRow,
+) -> Offer {
+    let Some(aligned) = reads_as_recorded(req, evidence, reads, held) else {
+        return Offer::Next;
+    };
+    let upstreams: Vec<InputTable> = aligned.iter().map(|a| a.as_recorded.clone()).collect();
+    let judged = ExecutionRow {
+        input_tables: held.input_tables.clone(),
+        ..candidate
+    };
+    match judge_equivalent(evidence, freshness, &upstreams, judged, &held.target_table) {
+        Some(judged) => Offer::Choose {
+            judged,
+            inputs: held_inputs(evidence, held, &aligned),
+        },
+        None => Offer::Next,
     }
 }
 
-/// How fresh a same-upstream equivalent would be if reused for this submit,
-/// with its build age, judged exactly as if it were the reuse candidate; or
-/// `None` when this submit would rebuild it.
+/// How fresh an equivalent would be if reused for this submit, judged
+/// exactly as if it were the reuse candidate over `upstreams`, the submit's
+/// upstream reads as the equivalent recorded them, with `recorded_target`
+/// (the Target relation of the build that recorded its inputs) set aside;
+/// or `None` when this submit would rebuild it.
 pub(super) fn judge_equivalent(
     evidence: &ExecutionEvidence,
     freshness: &Freshness<'_>,
+    upstreams: &[InputTable],
     mut source: ExecutionRow,
-) -> Option<(decision::Reuse, Option<i64>)> {
-    // The submit's upstream evidence, as read by the equivalent.
-    let upstreams: Vec<_> = evidence
-        .input_tables
-        .iter()
-        .filter(|t| t.name != evidence.target_table)
-        .cloned()
-        .collect();
-    crate::copy_lifecycle::adopt_current_inputs(&mut source, &upstreams);
+    recorded_target: &str,
+) -> Option<Judged> {
+    crate::copy_lifecycle::adopt_current_inputs(&mut source, upstreams);
     let selection = Selection::of_candidate(source.clone());
     let mut ctx = context(evidence, &selection, freshness, Some(&source));
-    ctx.input_tables = &upstreams;
-    ctx.target_table = Some(source.target_table.as_str());
-    decision::reusable(&ctx, &source).map(|reuse| (reuse, ctx.build_age_ms))
+    ctx.input_tables = upstreams;
+    ctx.target_table = Some(recorded_target);
+    decision::reusable(&ctx, &source).map(|reuse| Judged {
+        reuse,
+        build_age_ms: ctx.build_age_ms,
+    })
 }
 
-/// Whether `source` recorded exactly the genuine upstream relations this
-/// submit reads, however each is spelled
-/// ([`crate::copy_lifecycle::canonical_reads`]): a relation it shares with
-/// the submit is then judged for drift, never copied unjudged as if it were
-/// another environment's (PR #127 review).
-fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
+/// Whether `input` is the submit's Target relation, however it is spelled.
+pub(super) fn is_target_relation(evidence: &ExecutionEvidence, input: &InputTable) -> bool {
+    canonical_identifiers(&input.name) == canonical_identifiers(&evidence.target_table)
+}
+
+/// One of the submit's upstream reads, with the relation the held build
+/// recorded it as: itself, or its Stand-in.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct AlignedRead {
+    pub read: InputTable,
+    pub as_recorded: InputTable,
+}
+
+impl AlignedRead {
+    fn stood_in(&self) -> bool {
+        self.read != self.as_recorded
+    }
+}
+
+/// The submit's upstream reads (every input but its own Target relation),
+/// each aligned with the relation `held`, a build, recorded at build time,
+/// when the submit is proven to read what `held` read; `None` otherwise:
+///
+/// - Each input is itself, and a relation `held` shares with the submit is
+///   judged for drift (PR #127 review). `held`'s own Target relation is a
+///   genuine input of the submit when the submit reads it, never filtered.
+/// - An input read through a copy this server recorded is given as its
+///   Stand-in when `held` did not record the input but recorded the
+///   Stand-in's relation, once, at exactly the Stand-in's epoch: it then
+///   holds the build `held` read. A copy of a relation the submit also reads
+///   directly stands for itself.
+/// - `held` recorded each of its upstreams once: a relation recorded twice
+///   has no one epoch to judge (`docs/protocol.md`, Identity).
+/// - The physical relations agree, however each is spelled
+///   ([`crate::copy_lifecycle::canonical_reads`]).
+/// - On Snowflake, each reference binds as `held`'s did
+///   ([`binds_as_held`]): the submit, each Stand-in read as its source, has
+///   `held`'s physical binding identity; every base relation it reads is
+///   reported, none is its own Target relation, and `held` recorded each.
+///   DuckDB's checked copy graph already binds each physical input exactly.
+pub(super) fn reads_as_recorded(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    reads: &[InputRead],
+    held: &ExecutionRow,
+) -> Option<Vec<AlignedRead>> {
     use crate::copy_lifecycle::canonical_reads;
-    // A client-requested copy records none; it reads what its submit reads.
-    source.input_tables.is_empty() && source.clone_source_table.is_some()
-        || canonical_reads(&source.input_tables, &source.target_table, None)
-            == canonical_reads(&evidence.input_tables, &evidence.target_table, None)
+    let held_target = canonical_identifiers(&held.target_table);
+    let held_reads: Vec<(Vec<String>, Option<i64>)> = held
+        .input_tables
+        .iter()
+        .map(|t| (canonical_identifiers(&t.name), t.last_modified_epoch))
+        .filter(|(name, _)| *name != held_target)
+        .collect();
+    let recorded = canonical_reads(&held.input_tables, &held.target_table, None);
+    if recorded.len() != held_reads.len() {
+        return None;
+    }
+    let recorded_at = |input: &InputTable| {
+        let name = canonical_identifiers(&input.name);
+        held_reads
+            .iter()
+            .find(|(read, _)| *read == name)
+            .map(|(_, epoch)| *epoch)
+    };
+    let upstreams: Vec<&InputRead> = reads
+        .iter()
+        .filter(|read| !is_target_relation(evidence, &read.input))
+        .collect();
+    let read_directly = |stand_in: &InputTable| {
+        let name = canonical_identifiers(&stand_in.name);
+        upstreams
+            .iter()
+            .any(|read| canonical_identifiers(&read.input.name) == name)
+    };
+    let aligned: Vec<AlignedRead> = upstreams
+        .iter()
+        .map(|read| AlignedRead {
+            read: read.input.clone(),
+            as_recorded: match &read.stand_in {
+                Some(stand_in)
+                    if recorded_at(&read.input).is_none()
+                        && recorded_at(stand_in) == Some(stand_in.last_modified_epoch)
+                        && !read_directly(stand_in) =>
+                {
+                    stand_in.clone()
+                }
+                _ => read.input.clone(),
+            },
+        })
+        .collect();
+    let as_recorded: Vec<InputTable> = aligned.iter().map(|a| a.as_recorded.clone()).collect();
+    let same_reads = canonical_reads(&as_recorded, &evidence.target_table, None) == recorded;
+    (same_reads && binds_as_held(req, evidence, &aligned, held, &recorded)).then_some(aligned)
+}
+
+/// Whether the submit binds each relation reference as `held` did
+/// (Snowflake; always on other Warehouses, and for a kind the Warehouse
+/// rules do not copy, which only reports its equivalent in its codes):
+/// with each copy in `aligned` read as its Stand-in's source, its physical
+/// binding identity ([`crate::analyzed_workload::physical_binding`]) is
+/// `held`'s, so two inputs swapped between references, or an unqualified
+/// reference that resolves in another schema, differ. Every base relation
+/// it reads must be reported, so a read nothing reports proves nothing, and
+/// none may be its own Target relation, whose prior contents differ
+/// between the two Target relations. `held`'s base reads, the same
+/// relations once the copies are read as their sources, must each be among
+/// what it recorded (`recorded`): a build that under-reported its reads
+/// proves nothing either. A build without a binding (recorded before
+/// migration 0034, or with references that do not resolve) qualifies no
+/// copy.
+fn binds_as_held(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    aligned: &[AlignedRead],
+    held: &ExecutionRow,
+    recorded: &[Vec<String>],
+) -> bool {
+    use crate::analyzed_workload::physical_binding::physical_binding;
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if warehouse != Warehouse::Snowflake
+        || !warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras)
+    {
+        return true;
+    }
+    let Some(held_binding) = held.node_binding_hash.as_deref() else {
+        return false;
+    };
+    let substitute = |relation: &[String]| {
+        aligned
+            .iter()
+            .filter(|a| a.stood_in())
+            .find(|a| canonical_identifiers(&a.read.name) == relation)
+            .map(|a| canonical_identifiers(&a.as_recorded.name))
+    };
+    let Some(binding) = physical_binding(&crate::execution::sql_execution(req), &substitute) else {
+        return false;
+    };
+    let target = canonical_identifiers(&evidence.target_table);
+    let reported = |relation: &Vec<String>| {
+        aligned
+            .iter()
+            .any(|a| canonical_identifiers(&a.read.name) == *relation)
+    };
+    binding.hash == held_binding
+        && binding.base_reads.iter().all(|relation| {
+            *relation != target
+                && reported(relation)
+                && recorded.contains(&substitute(relation).unwrap_or_else(|| relation.clone()))
+        })
+}
+
+/// The inputs a Result copy of `held` into the submit's Target relation
+/// records (#264): the submit's own Target relation entries as reported,
+/// then each upstream in the submit's spelling, at the epoch and with the
+/// Upstream producer `held` recorded for it, or as currently read when it is
+/// read through a copy of the build `held` read (`aligned`). The copy holds
+/// `held`'s rows, so its next submit is judged for drift against what those
+/// rows were computed from, and its Lag tolerance runs out as theirs would.
+pub(super) fn held_inputs(
+    evidence: &ExecutionEvidence,
+    held: &ExecutionRow,
+    aligned: &[AlignedRead],
+) -> Vec<InputTable> {
+    let own = evidence
+        .input_tables
+        .iter()
+        .filter(|t| is_target_relation(evidence, t))
+        .cloned();
+    let upstreams = aligned.iter().map(|a| {
+        if a.stood_in() {
+            return a.read.clone();
+        }
+        let name = canonical_identifiers(&a.read.name);
+        held.input_tables
+            .iter()
+            .find(|t| canonical_identifiers(&t.name) == name)
+            .map(|t| InputTable {
+                name: a.read.name.clone(),
+                ..t.clone()
+            })
+            .unwrap_or_else(|| a.read.clone())
+    });
+    own.chain(upstreams).collect()
+}
+
+/// Whether `copy`, a Result copy that is the submit's Reuse candidate,
+/// recorded for each upstream exactly what [`held_inputs`] gives for the
+/// build it holds: no copy claims fresher inputs than its rows were
+/// computed from. A copy an earlier server recorded at the epochs its
+/// submit read, when the build it holds read older ones, does not.
+pub(super) fn records_held_inputs(
+    evidence: &ExecutionEvidence,
+    copy: &ExecutionRow,
+    held: &ExecutionRow,
+    aligned: &[AlignedRead],
+) -> bool {
+    use std::collections::BTreeMap;
+    let key = |inputs: &mut dyn Iterator<Item = &InputTable>| {
+        inputs
+            .filter(|t| canonical_identifiers(&t.name) != canonical_identifiers(&copy.target_table))
+            .map(|t| {
+                (
+                    canonical_identifiers(&t.name),
+                    (t.last_modified_epoch, t.producer.clone()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let derived = held_inputs(evidence, held, aligned);
+    key(&mut copy.input_tables.iter()) == key(&mut derived.iter())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_cache as qc;
-    use crate::store::{InputTable, Producer};
+    use crate::store::Producer;
 
     const DEV: &str = "cdo.dev.orders";
     const PROD: &str = "cdo.prod.orders";
     const RAW: &str = "cdo.raw.orders";
     const OTHER_RAW: &str = "cdo.raw_ci.orders";
+    const DEV_UP: &str = "cdo.dev.up";
+    const PROD_UP: &str = "cdo.prod.up";
     const NOW_MS: i64 = 10_000_000;
 
     fn read(name: &str, epoch: i64) -> InputTable {
@@ -135,28 +335,92 @@ mod tests {
         }
     }
 
-    /// A dev submit reading `RAW` at epoch 200, its own target absent.
-    fn evidence() -> ExecutionEvidence {
-        let mut evidence = ExecutionEvidence::sql_submit(
-            "o",
-            &qc::SubmitEnrichedSqlRequest {
-                sql: format!("select * from {RAW}"),
-                dialect: "snowflake".into(),
-                default_catalog: "cdo".into(),
-                target_table: Some(DEV.into()),
-                table_namespace: Some("ns".into()),
-                execution_type: qc::ModelExecutionType::Full as i32,
-                tables: vec![qc::TableModifiedInfo {
-                    name: RAW.into(),
-                    last_modified_epoch: Some(200),
-                }],
-                ..Default::default()
-            },
-        );
-        for input in &mut evidence.input_tables {
-            input.producer = Producer::NoBuild;
+    fn built(name: &str, epoch: i64, producer: &str) -> InputTable {
+        InputTable {
+            producer: Producer::Build(producer.into()),
+            ..InputTable::at(name, Some(epoch))
         }
-        evidence
+    }
+
+    /// `name`, read through a copy as the build of `PROD_UP` at `epoch`.
+    fn stand_in(name: &str, epoch: i64) -> InputTable {
+        InputTable {
+            read_copy: Some(name.into()),
+            ..built(PROD_UP, epoch, "prod-up")
+        }
+    }
+
+    /// A FULL Snowflake submit into `target` of `sql` over `inputs`.
+    fn request(target: &str, sql: &str, inputs: &[InputTable]) -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            sql: sql.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "cdo".into(),
+            target_table: Some(target.into()),
+            table_namespace: Some("ns".into()),
+            execution_type: qc::ModelExecutionType::Full as i32,
+            tables: inputs
+                .iter()
+                .map(|t| qc::TableModifiedInfo {
+                    name: t.name.clone(),
+                    last_modified_epoch: t.last_modified_epoch,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A dev submit selecting from each of `inputs`, its own target absent.
+    struct Submit {
+        req: qc::SubmitEnrichedSqlRequest,
+        evidence: ExecutionEvidence,
+    }
+
+    fn submit(inputs: Vec<InputTable>) -> Submit {
+        submit_sql(&join_sql(&inputs), inputs)
+    }
+
+    fn submit_sql(sql: &str, inputs: Vec<InputTable>) -> Submit {
+        let req = request(DEV, sql, &inputs);
+        let mut evidence = ExecutionEvidence::sql_submit("o", &req);
+        evidence.input_tables = inputs;
+        Submit { req, evidence }
+    }
+
+    fn join_sql(inputs: &[InputTable]) -> String {
+        let names: Vec<&str> = inputs.iter().map(|t| t.name.as_str()).collect();
+        format!("select * from {}", names.join(" cross join "))
+    }
+
+    impl Submit {
+        /// The submit's inputs, the first read through a copy as `stand_in`.
+        fn reads(&self, stand_in: Option<InputTable>) -> Vec<InputRead> {
+            let mut stand_in = stand_in;
+            self.evidence
+                .input_tables
+                .iter()
+                .map(|input| InputRead {
+                    input: input.clone(),
+                    stand_in: stand_in.take(),
+                })
+                .collect()
+        }
+
+        fn offer(
+            &self,
+            freshness: &Freshness<'_>,
+            reads: &[InputRead],
+            held: ExecutionRow,
+        ) -> Offer {
+            offer(
+                &self.req,
+                &self.evidence,
+                freshness,
+                reads,
+                held.clone(),
+                &held,
+            )
+        }
     }
 
     fn freshness() -> Freshness<'static> {
@@ -170,71 +434,305 @@ mod tests {
         }
     }
 
-    /// The current build of an equivalent under `PROD` that read `input`.
-    fn equivalent(input: InputTable) -> ExecutionRow {
+    /// The current build under `PROD` of `sql` over `inputs`.
+    fn build_of(sql: &str, inputs: Vec<InputTable>) -> ExecutionRow {
+        let req = request(PROD, sql, &inputs);
         ExecutionRow {
             id: 7,
             target_table: PROD.into(),
             execution_type: qc::ModelExecutionType::Full as i32,
             table_namespace: Some("ns".into()),
+            node_namespace_logic_hash: Some(
+                crate::analyzed_workload::identity::namespace_logic_hash(
+                    &crate::execution::sql_execution(&req),
+                ),
+            ),
+            node_binding_hash: binding_hash(&req),
             last_modified_epoch: Some(NOW_MS - 1_000),
-            input_tables: vec![input],
+            input_tables: inputs,
             status: "confirmed".into(),
             ..ExecutionRow::default()
         }
     }
 
+    fn binding_hash(req: &qc::SubmitEnrichedSqlRequest) -> Option<String> {
+        crate::analyzed_workload::physical_binding::physical_binding(
+            &crate::execution::sql_execution(req),
+            &|_| None,
+        )
+        .map(|b| b.hash)
+    }
+
+    /// The current build under `PROD` that read `input`.
+    fn equivalent(input: InputTable) -> ExecutionRow {
+        build_of(&join_sql(std::slice::from_ref(&input)), vec![input])
+    }
+
     #[test]
     fn a_same_upstream_equivalent_is_judged_as_the_reuse_candidate() {
-        let mut search = CopySearch::new(None);
-        let offer = search.offer(&evidence(), &freshness(), Some(equivalent(read(RAW, 200))));
-        assert!(matches!(offer, Offer::Choose(Some(_))), "{offer:?}");
+        let dev = submit(vec![read(RAW, 200)]);
+        let offer = dev.offer(&freshness(), &dev.reads(None), equivalent(read(RAW, 200)));
+        assert!(matches!(offer, Offer::Choose { .. }), "{offer:?}");
     }
 
     #[test]
-    fn a_stale_same_upstream_equivalent_passes_to_the_next_same_upstream_one() {
-        let mut search = CopySearch::new(None);
-        let (evidence, freshness) = (evidence(), freshness());
-        let stale = search.offer(&evidence, &freshness, Some(equivalent(read(RAW, 100))));
+    fn a_stale_same_upstream_equivalent_passes_to_the_next_one() {
+        let dev = submit(vec![read(RAW, 200)]);
+        let stale = dev.offer(&freshness(), &dev.reads(None), equivalent(read(RAW, 100)));
         assert_eq!(stale, Offer::Next);
-        let current = search.offer(&evidence, &freshness, Some(equivalent(read(RAW, 200))));
-        assert!(matches!(current, Offer::Choose(Some(_))), "{current:?}");
     }
 
     #[test]
-    fn after_a_freshness_rejection_another_environment_is_never_copied() {
-        let mut search = CopySearch::new(None);
-        let (evidence, freshness) = (evidence(), freshness());
+    fn an_equivalent_that_read_another_relation_is_passed_over() {
+        let dev = submit(vec![read(RAW, 200)]);
         assert_eq!(
-            search.offer(&evidence, &freshness, Some(equivalent(read(RAW, 100)))),
+            dev.offer(
+                &freshness(),
+                &dev.reads(None),
+                equivalent(read(OTHER_RAW, 200))
+            ),
             Offer::Next
         );
+    }
+
+    #[test]
+    fn an_independently_built_upstream_is_another_input() {
+        // Case D of #237: the dev upstream was built in dev, not copied.
+        let dev = submit(vec![built(DEV_UP, 600, "dev-up")]);
+        let prod = equivalent(built(PROD_UP, 500, "prod-up"));
+        assert_eq!(dev.offer(&freshness(), &dev.reads(None), prod), Offer::Next);
+    }
+
+    #[test]
+    fn an_upstream_copied_from_the_build_the_equivalent_read_is_judged_as_that_build() {
+        let dev = submit(vec![built(DEV_UP, 600, "dev-copy")]);
+        let prod = equivalent(built(PROD_UP, 500, "prod-up"));
+        let offer = dev.offer(&freshness(), &dev.reads(Some(stand_in(DEV_UP, 500))), prod);
+        assert!(matches!(offer, Offer::Choose { .. }), "{offer:?}");
+    }
+
+    #[test]
+    fn review266_stand_in_epoch_is_a_qualification_before_lag() {
+        let dev = submit(vec![built(DEV_UP, 600, "dev-copy")]);
+        let reads = dev.reads(Some(stand_in(DEV_UP, 500)));
+        let mut freshness = freshness();
+        // Lag tolerance does not stand in for the exact epoch (review of #266).
+        freshness.tolerance_ms = 60_000;
+        for recorded in [499, 501] {
+            let prod = equivalent(built(PROD_UP, recorded, "prod-up"));
+            assert_eq!(
+                dev.offer(&freshness, &reads, prod),
+                Offer::Next,
+                "recorded at {recorded}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_equivalent_that_read_the_copy_itself_is_judged_on_the_copy() {
+        let dev = submit(vec![built(DEV_UP, 600, "dev-copy")]);
+        let dev_reader = equivalent(built(DEV_UP, 600, "dev-copy"));
+        let offer = dev.offer(
+            &freshness(),
+            &dev.reads(Some(stand_in(DEV_UP, 500))),
+            dev_reader,
+        );
+        assert!(matches!(offer, Offer::Choose { .. }), "{offer:?}");
+    }
+
+    #[test]
+    fn a_stand_in_for_a_relation_the_submit_also_reads_stands_for_itself() {
+        let dev = submit(vec![
+            built(DEV_UP, 600, "dev-copy"),
+            built(PROD_UP, 500, "prod-up"),
+        ]);
+        let prod = equivalent(built(PROD_UP, 500, "prod-up"));
         assert_eq!(
-            search.offer(&evidence, &freshness, Some(equivalent(read(OTHER_RAW, 50)))),
-            Offer::Stop
+            dev.offer(&freshness(), &dev.reads(Some(stand_in(DEV_UP, 500))), prod),
+            Offer::Next
         );
     }
 
     #[test]
-    fn another_environment_is_copied_unjudged_only_into_an_absent_target() {
-        let (evidence, freshness) = (evidence(), freshness());
-        let other = || Some(equivalent(read(OTHER_RAW, 50)));
-        assert_eq!(
-            CopySearch::new(None).offer(&evidence, &freshness, other()),
-            Offer::Choose(None)
+    fn copies_swapped_between_references_keep_their_bindings() {
+        // Prod projects P from `P cross join Q`; dev reads A (a copy of Q)
+        // then B (a copy of P): the same relations, bound the other way.
+        let (p, q, a, b) = ("cdo.p.u", "cdo.q.u", "cdo.a.u", "cdo.b.u");
+        let sql =
+            |left: &str, right: &str| format!("select l.v from {left} l cross join {right} r");
+        let prod = build_of(&sql(p, q), vec![built(p, 100, "p"), built(q, 200, "q")]);
+        let stood = |copy: &str, source: &str, epoch, producer: &str| InputRead {
+            input: built(copy, epoch + 1_000, "copy"),
+            stand_in: Some(InputTable {
+                read_copy: Some(copy.into()),
+                ..built(source, epoch, producer)
+            }),
+        };
+        let swapped = submit_sql(
+            &sql(a, b),
+            vec![built(a, 1_200, "copy"), built(b, 1_100, "copy")],
         );
-        let own = equivalent(read(RAW, 100));
+        let reads = [stood(a, q, 200, "q"), stood(b, p, 100, "p")];
         assert_eq!(
-            CopySearch::new(Some(&own)).offer(&evidence, &freshness, other()),
-            Offer::Stop
+            swapped.offer(&freshness(), &reads, prod.clone()),
+            Offer::Next
+        );
+        // Control: bound as prod's were, the copies are prod's inputs.
+        let aligned = submit_sql(
+            &sql(b, a),
+            vec![built(b, 1_100, "copy"), built(a, 1_200, "copy")],
+        );
+        let reads = [stood(b, p, 100, "p"), stood(a, q, 200, "q")];
+        let offer = aligned.offer(&freshness(), &reads, prod);
+        assert!(matches!(offer, Offer::Choose { .. }), "{offer:?}");
+    }
+
+    #[test]
+    fn copies_swapped_inside_a_view_definition_keep_their_bindings() {
+        let (p, q, a, b) = ("cdo.p.u", "cdo.q.u", "cdo.a.u", "cdo.b.u");
+        let view = "cdo.zzz.v";
+        let with_view = |mut req: qc::SubmitEnrichedSqlRequest, left: &str, right: &str| {
+            req.sql = format!("select * from {view}");
+            req.query_dependencies = vec![qc::QueryDependency {
+                name: view.into(),
+                query: format!(
+                    "create or replace view v as select l.v from {left} l cross join {right} r"
+                ),
+                default_catalog: "cdo".into(),
+                default_schema: "zzz".into(),
+            }];
+            req
+        };
+        let prod_inputs = vec![built(p, 100, "p"), built(q, 200, "q")];
+        let mut prod = build_of("", prod_inputs.clone());
+        let prod_req = with_view(request(PROD, "", &prod_inputs), p, q);
+        prod.node_namespace_logic_hash =
+            Some(crate::analyzed_workload::identity::namespace_logic_hash(
+                &crate::execution::sql_execution(&prod_req),
+            ));
+        prod.node_binding_hash = binding_hash(&prod_req);
+        let stood = |copy: &str, source: &str, epoch, producer: &str| InputRead {
+            input: built(copy, epoch + 1_000, "copy"),
+            stand_in: Some(InputTable {
+                read_copy: Some(copy.into()),
+                ..built(source, epoch, producer)
+            }),
+        };
+        let reads = [stood(a, q, 200, "q"), stood(b, p, 100, "p")];
+        for (left, right, copied) in [(a, b, false), (b, a, true)] {
+            let mut dev = submit(vec![built(a, 1_200, "copy"), built(b, 1_100, "copy")]);
+            dev.req = with_view(dev.req, left, right);
+            let offer = dev.offer(&freshness(), &reads, prod.clone());
+            assert_eq!(
+                matches!(offer, Offer::Choose { .. }),
+                copied,
+                "{left} {right}: {offer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_base_relation_the_sql_reads_must_be_reported() {
+        let (local, fixed) = ("cdo.dev.u", "cdo.aaa.fixed");
+        let sql = format!("select l.v from {local} l cross join {fixed} f");
+        let partial = submit_sql(&sql, vec![read(fixed, 100)]);
+        let prod = build_of(&sql.replace("dev", "prod"), vec![read(fixed, 100)]);
+        assert_eq!(
+            partial.offer(&freshness(), &partial.reads(None), prod),
+            Offer::Next
         );
     }
 
     #[test]
-    fn an_equivalent_whose_state_vanished_ends_the_search() {
-        assert_eq!(
-            CopySearch::new(None).offer(&evidence(), &freshness(), None),
-            Offer::Stop
+    fn a_read_of_its_own_target_relation_is_never_copied() {
+        let sql = format!("select m.id + s.v as id from {DEV} m cross join {RAW} s");
+        let dev = submit_sql(&sql, vec![read(DEV, 10), read(RAW, 50)]);
+        let prod = build_of(
+            &sql.replace("dev", "prod"),
+            vec![read(PROD, 5), read(RAW, 50)],
         );
+        assert_eq!(dev.offer(&freshness(), &dev.reads(None), prod), Offer::Next);
+    }
+
+    #[test]
+    fn a_build_that_recorded_an_input_twice_has_no_epoch_to_judge() {
+        let dev = submit(vec![read(RAW, 100)]);
+        let sql = join_sql(&[read(RAW, 100)]);
+        let twice = build_of(&sql, vec![read(RAW, 100), read(RAW, 90)]);
+        assert_eq!(
+            dev.offer(&freshness(), &dev.reads(None), twice),
+            Offer::Next
+        );
+    }
+
+    #[test]
+    fn a_build_without_a_physical_binding_is_no_copy_source() {
+        let dev = submit(vec![read(RAW, 200)]);
+        let legacy = ExecutionRow {
+            node_binding_hash: None,
+            ..equivalent(read(RAW, 200))
+        };
+        assert_eq!(
+            dev.offer(&freshness(), &dev.reads(None), legacy),
+            Offer::Next
+        );
+    }
+
+    #[test]
+    fn a_copy_records_the_inputs_of_the_build_it_holds() {
+        // Copied within Lag tolerance after the input moved on: the copy
+        // records the epoch its rows were computed from.
+        let dev = submit(vec![read(RAW, 2_500)]);
+        let mut freshness = freshness();
+        freshness.tolerance_ms = 60_000;
+        let prod = equivalent(read(RAW, 100));
+        let Offer::Choose { inputs, .. } = dev.offer(&freshness, &dev.reads(None), prod.clone())
+        else {
+            panic!("copied within tolerance");
+        };
+        assert_eq!(inputs, vec![read(RAW, 100)]);
+        let aligned = reads_as_recorded(&dev.req, &dev.evidence, &dev.reads(None), &prod).unwrap();
+        let recorded = |inputs| ExecutionRow {
+            target_table: DEV.into(),
+            input_tables: inputs,
+            ..prod.clone()
+        };
+        assert!(records_held_inputs(
+            &dev.evidence,
+            &recorded(inputs),
+            &prod,
+            &aligned
+        ));
+        // A copy recorded at the epoch its submit read claims fresher rows.
+        assert!(!records_held_inputs(
+            &dev.evidence,
+            &recorded(vec![read(RAW, 2_500)]),
+            &prod,
+            &aligned
+        ));
+    }
+
+    #[test]
+    fn the_equivalents_own_target_is_a_genuine_input_of_the_submit() {
+        let sql = format!("select id + 1 as id from {PROD}");
+        let dev = submit_sql(&sql, vec![built(PROD, 200, "prod-m")]);
+        let prod = build_of(&sql, vec![built(PROD, 100, "prod-m-0")]);
+        assert_eq!(dev.offer(&freshness(), &dev.reads(None), prod), Offer::Next);
+    }
+
+    #[test]
+    fn no_reported_reads_prove_nothing_for_sql_that_reads_a_relation() {
+        let sql = format!("select * from {RAW}");
+        let mut dev = submit_sql(&sql, Vec::new());
+        dev.evidence.sql_reads_relation = Some(true);
+        let prod = build_of(&sql, Vec::new());
+        assert_eq!(dev.offer(&freshness(), &[], prod.clone()), Offer::Next);
+        dev.evidence.sql_reads_relation = None;
+        assert_eq!(dev.offer(&freshness(), &[], prod), Offer::Next);
+        // Control: SQL that reads no relation has no upstreams to prove.
+        let mut constant = submit_sql("select 1 as id", Vec::new());
+        constant.evidence.sql_reads_relation = Some(false);
+        let offer = constant.offer(&freshness(), &[], build_of("select 1 as id", Vec::new()));
+        assert!(matches!(offer, Offer::Choose { .. }), "{offer:?}");
     }
 }

@@ -113,17 +113,30 @@ async fn namespace_alone_cannot_prove_cross_target_reuse() {
         .upstream("\"DB\".\"PROD\".\"SRC\"", 100);
     sc.build(prod, 100).await;
 
-    // Submit under a DIFFERENT physical target (DEV), same namespace+logic+type.
-    // The equivalent exists under another name → the hosted service CLONES it in
-    // (ready_to_clone), it never SKIPs (which would reuse data that isn't there).
+    // Submit under a DIFFERENT physical target (DEV), same namespace+logic+type
+    // over the same source. The equivalent exists under another name → the
+    // hosted service CLONES it in (ready_to_clone), it never SKIPs (which would
+    // reuse data that isn't there).
     let dev = model("\"DB\".\"DEV\".\"T\"")
         .body("h-ns")
         .namespace(ns)
-        .upstream("\"DB\".\"DEV\".\"SRC\"", 100);
+        .upstream("\"DB\".\"PROD\".\"SRC\"", 100);
     assert_eq!(
         sc.verdict(dev).await,
         "ready_to_clone",
         "cross-name equivalent is cloned in, never skipped",
+    );
+
+    // Over another source, the equivalent's result was computed from other
+    // inputs: it is neither reused nor copied (#264).
+    let ci = model("\"DB\".\"CI\".\"T\"")
+        .body("h-ns")
+        .namespace(ns)
+        .upstream("\"DB\".\"CI\".\"SRC\"", 100);
+    assert_eq!(
+        sc.verdict(ci).await,
+        "ready_to_execute",
+        "an equivalent over other inputs is built, never skipped or copied",
     );
 }
 

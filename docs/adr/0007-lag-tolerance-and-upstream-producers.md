@@ -11,6 +11,8 @@ execution type changed ([below](#execution-type-change)), and by #116
 #158 (2026-11-14): physical completion ordering and unknown-epoch safety.
 Amended by #200 (2026-11-21, maintainer decision option A): a Snowflake data
 test's State history is its history key ([below](#data-test-history-key)).
+Amended by #264 (2026-11-22): a Result copy on submit requires the physical
+inputs the equivalent recorded ([below](#result-copy-over-different-inputs)).
 
 ## Decision
 
@@ -373,6 +375,205 @@ by #200"). Two blind spots of copies carry over as accepted risks:
   (`data_test_history.rs::a_source_modified_before_a_submit_time_copy_is_not_visible`).
 - *A source rewritten between the copy decision and the client's clone DDL*
   is not detected (the accepted unpinned source race, ADR 0004).
+
+## Result copy over different inputs
+
+Amendment (#264). It amends reuse invariant 4 (AGENTS.md) for the SQL
+submit's Result copy fallback on Snowflake and DuckDB. Databricks already
+requires exact current inputs (`copy_lifecycle::source_admits`).
+
+**Evidence.** A native Snowflake run of #237 case D against this server
+(dbt 2.0.11, run `002752a5958d`) copied a prod downstream for a dev
+downstream whose dev upstream had been built independently from a dev
+input. The dev downstream then served the prod rows `(1, 'prod')` where
+the State-disabled Reference execution served `(1, 'dev')`. The schema-
+abstracted logic identity held, and nothing tied the equivalent's recorded
+upstream read to the relation the submit reads. Hosted built that
+downstream in both runs, and in cases B and C
+(`explain_upstream_origin_*.jsonl`,
+[report](../reports/snowflake-upstream-origin-2026-11-22.md)). In #239's
+crafted histories it never copied a source that read another relation of
+the same name, and copied an older source that read the destination's
+upstream past it (`copy_source_choice.jsonl`,
+[report](../reports/snowflake-copy-source-choice-2026-11-21.md)). Hosted
+copied case A, where both downstreams read the one physical prod upstream.
+
+**Rule.** An equivalent under another name qualifies for a submit's Result
+copy only when the build whose result it holds was computed from the
+physical inputs the submit reads (`submit_decision::copy_search`):
+
+- *A copy is judged by the build it holds.* An ordinary build holds its own
+  result. A copy this server recorded (a Result copy on submit or a
+  RegisterClone) holds the result of the build it was copied from, followed
+  through any copies between (`clone_source_execution_id`,
+  `submit_decision::held_build`). Its inputs are the input epochs that build
+  recorded, with that build's own Target relation set aside (not the
+  copy's). A copy whose build cannot be established is passed over. Before
+  this, a CI copy registered after its upstream changed was judged by its
+  later confirmation and looked fresh.
+- *Each input is itself, or its Stand-in.* An input that build recorded by
+  the same canonical name is itself. An input it did not record, but that is
+  an unchanged copy this server recorded, is read as its Stand-in (that
+  source build, at its epoch and with its Upstream producer;
+  `stand_in::input_reads`, the rule of
+  [Data-test history key](#data-test-history-key)) when the build recorded
+  the Stand-in's relation at exactly the Stand-in's epoch. This is a
+  qualification, checked before any freshness policy, so Lag tolerance
+  never admits a Stand-in of another build. A copy of a copy stands for
+  itself, and so does a copy of a relation the submit also reads directly.
+- *Each reference reads what the build's did* (Snowflake, for a kind the
+  Warehouse rules copy; `copy_search::binds_as_held`). Every build records
+  its *physical binding* (`analyzed_workload::physical_binding`,
+  `executions.node_binding_hash`, migration 0034): its SQL and the query
+  dependency definitions it reads, with every relation reference resolved
+  as Snowflake resolves it and replaced by the physical relation, a view by
+  its definition so bound, with its declared column names (they rename its
+  output). In the root SQL a partly qualified name is completed with the
+  request's default catalog and schema, and a one-part name resolves
+  through the session's `SEARCH_PATH`, which no request carries: it is
+  bound only when the one relation the workload reports or defines under
+  that last component is the one in the default schema. Inside a view
+  Snowflake does not use the search path: its names resolve in the view's
+  own database and schema, whatever context the request declares for it.
+  SQL that reads the database or schema it runs in is bound with each
+  value it reads, the session's for the root SQL and the view's own inside
+  a view: `CURRENT_DATABASE()` the database, `CURRENT_SCHEMA()` the
+  schema, and in the root SQL `SYS_CONTEXT('SNOWFLAKE$SESSION',
+  'DATABASE' | 'SCHEMA')` the session's. So two views of one definition in
+  two schemas that return their schema differ, and a query returning only
+  its database still copies across schemas of that database. A value the
+  request omits (an optional `default_schema`, an empty
+  `default_catalog`) leaves no binding. CTE references are no reads (a CTE is
+  in scope in its own definition: `RECURSIVE` is optional on Snowflake), a
+  table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one, and anything
+  else that could read a relation or a context without being resolved (a
+  table function outside a pure set, a one-part name of a later sibling
+  CTE, an unsupported FROM construct, any other `SYS_CONTEXT` property or
+  namespace, or a session `SYS_CONTEXT` inside a view) leaves the build
+  without a binding. So does any other Snowflake context function outside
+  the clock family (the session, statement or transaction, the principal
+  and its roles or organization user groups, the warehouse, the client,
+  the account, the search path, a view's `INVOKER_ROLE()`, which is its
+  owner's role) and a session variable (`$name`, `GETVARIABLE`,
+  `SESSION_CONTEXT`): the request identifies none of them,
+  so a matching database does not make the results equal. The clock
+  functions stay with Volatile evaluation and `tolerate_nondeterminism`.
+  A string constant may be single- or dollar-quoted (`$$DATABASE$$`). So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the
+  recorded epochs do not identify the version it reads, and an `OFFSET`
+  is relative to each query's own time. A workload also has no binding
+  when a query dependency is not named in three parts, when two
+  dependencies have one canonical name (`v` and `"V"`: no one definition
+  is read), when a view declares a column with a type or options, or when
+  a definition lies more than 32 levels deep on any path or the workload
+  has more than 1024 references (each definition bound once, with the
+  levels below it, so the limit does not depend on traversal order). The
+  bound SQL is normalized as the Snowflake identity is, so an unquoted
+  identifier's case does not matter. The submit, each Stand-in read as its
+  source, must have the build's binding, so two inputs swapped between
+  references, inside a view too, a view's columns renamed, or an
+  unqualified reference that resolves in another schema, differ, even with
+  the same reported inputs.
+- *Every read is evidenced on both sides.* Each base relation the submit's
+  binding reads must be among its reported inputs and must not be its own
+  Target relation, whose prior contents differ between the two Target
+  relations; the same relation, read as its source, must be among what the
+  build recorded, so a build that under-reported its own reads proves
+  nothing. The build must have recorded each upstream once: a relation
+  recorded twice has no one epoch to judge.
+- *Other Warehouses.* DuckDB's checked copy graph already binds each
+  physical input exactly and keeps its rule; Databricks requires exact
+  current inputs.
+- *Then it is judged as the reuse candidate,* over the build's recorded
+  epochs and with the equivalent's own build age (a copy's is its copy
+  time; hosted copied a copy within Lag tolerance whose source build was
+  older, `lag_copy_candidates` `wba`).
+- *A copy records the inputs of the build it holds*
+  (`copy_search::held_inputs`): each upstream at the epoch and with the
+  Upstream producer that build recorded, or as read through a Stand-in.
+  Its next submit is then judged against what its rows were computed from,
+  so a copy made within Lag tolerance is reused only while the tolerance
+  still holds, and a stricter resubmit rebuilds it.
+- *Any other equivalent is passed over.* The search goes on to the next one
+  in the shared order (newest build first, `COPY_CANDIDATE_LIMIT`). Before
+  #264 the first equivalent that read other relations was copied without a
+  freshness judgment.
+- *A copy already granted is revalidated before reuse.* A Result copy on
+  submit that is the Target relation's Reuse candidate is reused only while
+  the build it holds qualifies for the submit by the rules above and the
+  copy recorded that build's inputs
+  (`submit_decision::revalidate_copy_candidate`,
+  `copy_search::records_held_inputs`). One granted by an earlier server over
+  another input, or recorded at the newer epochs its submit read, is refused
+  at Reuse qualification and rebuilds (6 / 6, the generic rebuild
+  description, no Explain tree). A
+  RegisterClone copy keeps its adoption rule (#93), and Databricks its
+  publication checks.
+
+A copy that fails to clone is built by the client from the submit's own
+inputs, so the pending copy also keeps those (`fallback_input_tables`,
+migration 0035), and a `failed_to_clone` confirmation records them as the
+build's inputs. Before, the fallback build kept the epochs of the build it
+would have copied: a copy granted within Lag tolerance that failed was then
+rebuilt by a zero-tolerance resubmit, though the fallback had read the
+current input (fourth review of #266).
+
+**Considered.**
+
+- *Keep copying the first equivalent that read other relations, unjudged.*
+  Rejected: it serves rows computed from another input (case D).
+- *Match inputs by schema-abstracted name.* Rejected: it is the rule that
+  served the wrong rows; hosted builds over an independently built dev
+  upstream with the same row (case C).
+- *Compare the set of inputs only.* Rejected: two copies swapped between a
+  join's references have the same set and epochs but project the other
+  input's values (review of #266), and an unqualified reference resolving in
+  each default schema reads another input under identical reported sets
+  (third review of #266).
+- *Infer the build's bindings from the schema-abstracted identity.*
+  Rejected: that identity abstracts exactly the schemas that decide what an
+  unqualified or schema-relative reference reads.
+- *Resolve a one-part name in the default schema.* Rejected: Snowflake
+  resolves it through `SEARCH_PATH`, which can find a relation of that name
+  in another schema first (fourth review of #266).
+- *Apply the search-path check inside views too.* Rejected: Snowflake
+  resolves a view's unqualified names in the view's schema only, so a
+  shared view reading `U` and `OTHER.U` reads one known `U` (fifth review
+  of #266).
+- *Admit Time Travel at an absolute timestamp or statement.* Not taken:
+  uncaptured, and the binding would have to show both sides select one
+  version.
+- *Judge a copy's resubmit over the epochs it recorded at copy time.*
+  Rejected: a copy made within Lag tolerance then looked fresh forever
+  (second review of #266).
+- *Invalidate every copy recorded before #264.* Not taken: revalidating
+  each copy against the build it holds keeps the ones that qualify and
+  needs no migration.
+- *Admit a copied upstream at the copied build's identity, whatever epoch
+  the equivalent recorded.* Not taken: the exact-epoch rule is the one
+  Stand-ins already follow, and hosted built case B, where the equivalent
+  recorded the copied upstream at its metadata epoch, earlier than the
+  build's confirmation (T34, I28). It copied the same shape when the
+  equivalent recorded the build's epoch (`explain_clone_history.jsonl` entry
+  12). Whether hosted's deciding condition is this epoch is open
+  ([correctness-handoff.md](../correctness-handoff.md#open-hosted-questions)).
+
+**Consequences.** Captures from 2026-10 in which hosted copied a source over
+a dev input no recorded build or copy produced
+(`clone_fallback_stale_source.jsonl` and `clone_fallback_zero_tolerance.jsonl`,
+entry 2 each) are keyed replay gaps: the server builds there. A copy over an
+existing Target relation follows the same rule, since every copy is now
+judged. A Snowflake build recorded before migration 0034 has no physical
+binding, and a Result copy recorded before migration 0029 no recorded source
+build (`clone_source_execution_id`): neither qualifies, so after the upgrade
+each Snowflake build is copied from only once rebuilt, and a copy whose
+build it cannot establish rebuilds once as its own Target relation's Reuse
+candidate. A binding hashed under an earlier binding version
+(`dbt-state-physical-binding-v1` before the fourth review of #266, `v2`
+before the fifth, `v3` before the sixth, `v4` before the seventh) never
+equals a current one, so those builds too are copied from only once
+rebuilt, and a copy holding one rebuilds once. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
+with the submit's inputs as read; the replayed tree of
+`explain_clone_history.jsonl` entry 14 matches hosted.
 
 Open questions are in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

@@ -668,22 +668,48 @@ async fn frozen_unknown_source_cannot_supply_an_automatic_result_copy() {
     .unwrap();
     let request: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(snapshot["copy_request"].clone()).unwrap();
-    let server = support::start_server().await;
-    let scenario = Scenario::connect(&server).await;
-    replace_with_frozen_execution(
-        &server,
-        &frozen_execution(&snapshot, "confirmed", Some(1000)),
+    // The Physical binding a build of the frozen row's request records since
+    // migration 0034 (#264); a row frozen before it has none.
+    let build: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(snapshot["request"].clone()).unwrap();
+    let binding = dbt_state_server::analyzed_workload::identity::physical_binding_hash(
+        &dbt_state_server::services::sql_execution(&build),
     )
-    .await;
-    let positive = support::scenario::into_clone(scenario.submit(request.clone()).await);
+    .expect("a Snowflake build binds its references");
+    let target = snapshot["rows"][0]["target_table"].as_str().unwrap();
+    let frozen = |epoch, bound: bool| {
+        let binding = binding.clone();
+        let snapshot = &snapshot;
+        async move {
+            let server = support::start_server().await;
+            replace_with_frozen_execution(&server, &frozen_execution(snapshot, "confirmed", epoch))
+                .await;
+            if bound {
+                support::legacy::stamp_physical_binding(&server, target, &binding).await;
+            }
+            server
+        }
+    };
+    // Each case on its own server, so no copy control leaks into another.
+    let server = frozen(Some(1000), true).await;
+    let positive = support::scenario::into_clone(
+        Scenario::connect(&server)
+            .await
+            .submit(request.clone())
+            .await,
+    );
     assert_eq!(positive.clone_required_last_modified_epoch, Some(1000));
-    // Keep the independent copy control out of the unknown-epoch fixture.
-    drop(scenario);
-    drop(server);
-    let server = support::start_server().await;
-    let scenario = Scenario::connect(&server).await;
-    replace_with_frozen_execution(&server, &frozen_execution(&snapshot, "confirmed", None)).await;
-    scenario.expect_execute(request).await;
+    let server = frozen(None, true).await;
+    Scenario::connect(&server)
+        .await
+        .expect_execute(request.clone())
+        .await;
+    // Frozen before migration 0034, the known-epoch row is no source either.
+    let server = frozen(Some(1000), false).await;
+    Scenario::connect(&server)
+        .await
+        .expect_execute(request)
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

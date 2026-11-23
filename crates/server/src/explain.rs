@@ -753,7 +753,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Build, R::UpstreamOutdated)
             if (has_provably_outdated_upstream(node) || has_missing_current_display(node))
                 // The equivalent's age words the Lag tolerance line; an
-                // unjudged equivalent (another environment) has none.
+                // equivalent with no known build age has none.
                 && !(reports_equivalent(node) && node.build_age_ms.is_none())
                 && matches!(
                     kind,

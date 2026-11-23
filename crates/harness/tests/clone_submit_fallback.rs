@@ -25,7 +25,10 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use support::demo::{self, transient_at, CLONE_PROBE, DEV_SCHEMA, NS, PROD_SCHEMA};
-use support::scenario::{outcome, ExecutionType, Scenario};
+use support::scenario::{
+    built_at, clone_request, environment_model, environment_target, environment_upstream, outcome,
+    ExecutionType, Scenario, ENVIRONMENT_NAMESPACE,
+};
 use support::{legacy, rows, start_server};
 
 /// The captured probe's SQL in `schema` (the base most tests below override).
@@ -75,11 +78,7 @@ async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
     let a_epoch = 1_791_747_221_679i64;
-    let probe = |target: &str, schema: &str| {
-        demo::model(target, schema, CLONE_PROBE)
-            .sql(&probe_sql(schema))
-            .namespace(NS)
-    };
+    let probe = demo::shared_probe;
 
     // Build the equivalent under name A (prod) and confirm it (records logic +
     // table_type + build epoch).
@@ -163,7 +162,9 @@ async fn a_view_with_an_equivalent_builds_with_execution_type_not_full() {
 /// copies the prod build, which hosted finds as its equivalent although the
 /// fixed schema is the prod default schema and not the dev one. A dev view
 /// definition that differs from the prod one is still not equivalent
-/// (AGENTS.md invariant 4): that submit builds as a first build.
+/// (AGENTS.md invariant 4): that submit builds as a first build. A dev view
+/// with the prod view's definition is another relation than the one the prod
+/// build read, so that submit builds too (#264, uncaptured).
 #[tokio::test]
 async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build() {
     let server = start_server().await;
@@ -193,7 +194,6 @@ async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_buil
     };
     let definition = format!("select id from CDO_DEMO_DB.{PROD_SCHEMA}.src");
     let prod = fixed_schema_reader(PROD_SCHEMA, "M", &definition);
-    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"";
     sc.build_with(prod, transient_at(1_791_747_221_679).runtime(15))
         .await;
 
@@ -210,9 +210,38 @@ async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_buil
         "a different dev dependency definition has no equivalent"
     );
 
-    let c = sc
-        .expect_clone(fixed_schema_reader(DEV_SCHEMA, "M", &definition))
+    let x = sc
+        .expect_execute(fixed_schema_reader(DEV_SCHEMA, "M", &definition))
         .await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "the dev view is another input than the prod build read"
+    );
+
+    // The captured shape: the dev submit reads only the fixed prod source.
+    let fixed_source_reader = |env: &str| {
+        let upper = env.to_uppercase();
+        demo::model(
+            &format!("\"CDO_DEMO_DB\".\"{upper}\".\"S\""),
+            env,
+            CLONE_PROBE,
+        )
+        .sql(&format!("select s.id from CDO_DEMO_DB.{PROD_SCHEMA}.src s"))
+        .namespace(NS)
+        .upstream(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SRC\"",
+            1_791_747_000_000,
+        )
+    };
+    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"S\"";
+    sc.build_with(
+        fixed_source_reader(PROD_SCHEMA),
+        transient_at(1_791_747_221_679).runtime(15),
+    )
+    .await;
+    let c = sc.expect_clone(fixed_source_reader(DEV_SCHEMA)).await;
     assert_eq!(c.clone_source, source, "copies the prod build");
 }
 
@@ -233,6 +262,7 @@ async fn a_submit_read_in_another_schema_is_not_matched_by_a_build_elsewhere() {
         )
         .sql("select id from CDO_DEMO_DB.ci.src")
         .namespace(NS)
+        .upstream(CI_SRC, 1_791_747_000_000)
     };
     sc.build_with(ci("M"), transient_at(1_791_747_221_679).runtime(15))
         .await;
@@ -245,6 +275,10 @@ async fn a_submit_read_in_another_schema_is_not_matched_by_a_build_elsewhere() {
         )
         .sql(&format!("select id from CDO_DEMO_DB.{schema}.src"))
         .namespace(NS)
+        .upstream(
+            &format!("\"CDO_DEMO_DB\".\"{}\".\"SRC\"", schema.to_uppercase()),
+            1_791_747_000_000,
+        )
     };
     let x = sc.expect_execute(dev("M", PROD_SCHEMA)).await;
     let ed = x.explained_decision.expect("explained_decision");
@@ -253,11 +287,24 @@ async fn a_submit_read_in_another_schema_is_not_matched_by_a_build_elsewhere() {
         (Some(6), Some(6)),
         "the ci build read other relations"
     );
-    // Control: the dev submit reading its own schema is the ci build's
-    // environment-relative equivalent.
-    let c = sc.expect_clone(dev("M_OWN", DEV_SCHEMA)).await;
+    // Its own schema's relation is another input too (#264).
+    let x = sc.expect_execute(dev("M_OWN", DEV_SCHEMA)).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "the ci build read ci.src, not dev's"
+    );
+    // Control: the dev submit reading the ci relation the build read, in the
+    // fixed ci schema, is its equivalent.
+    let c = sc.expect_clone(dev("M_CI", "ci")).await;
     assert_eq!(c.clone_source, "\"CDO_DEMO_DB\".\"CI\".\"M\"");
 }
+
+/// The relation the ci build of
+/// [`a_submit_read_in_another_schema_is_not_matched_by_a_build_elsewhere`]
+/// reads.
+const CI_SRC: &str = "\"CDO_DEMO_DB\".\"CI\".\"SRC\"";
 
 /// #107, PR #127 review: a build whose Target relation is in the prod schema
 /// but which resolved its references in another schema (default schema `ci`,
@@ -320,7 +367,7 @@ async fn a_build_into_the_prod_schema_that_read_another_schema_is_not_copied() {
 /// PR #127 review: a prod build and a dev submit that read the same fixed
 /// prod source, spelled differently, read the same relation. A changed
 /// source is then judged as for any same-upstream equivalent, and the prod
-/// build is not copied unjudged as if it read another environment.
+/// build is not passed over as if it read another relation.
 #[tokio::test]
 async fn a_differently_spelled_shared_source_is_judged_before_a_copy() {
     let server = start_server().await;
@@ -533,11 +580,7 @@ async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
-    let probe = |target: &str, schema: &str| {
-        demo::model(target, schema, CLONE_PROBE)
-            .sql(&probe_sql(schema))
-            .namespace(NS)
-    };
+    let probe = demo::shared_probe;
 
     // Build + confirm the equivalent under name A.
     sc.build_with(
@@ -841,6 +884,9 @@ async fn dep_binding_swap_gated_against_present_baseline_with_control() {
         demo::model(target, schema, CLONE_PROBE)
             .namespace(NS)
             .sql("select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b")
+            // The base relations the two views read (#264).
+            .upstream("\"CDO_DEMO_DB\".\"X\".\"RAW\"", 1_791_747_000_000)
+            .upstream("\"CDO_DEMO_DB\".\"Y\".\"RAW\"", 1_791_747_000_000)
             .dependency_in(
                 "\"CDO_DEMO_DB\".\"X\".\"INPUT\"",
                 &view("x", x),
@@ -1006,16 +1052,20 @@ async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
     let det_sql = "select id from CDO_DEMO_DB.prod_state_demo.vd_up";
 
     // Build + confirm the equivalent under A (deterministic SQL).
+    let vd_up = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VD_UP\"";
     let base = demo::model(a, PROD_SCHEMA, CLONE_PROBE)
         .namespace(NS)
-        .sql(det_sql);
+        .sql(det_sql)
+        .upstream(vd_up, 1_791_747_000_000);
     sc.build_with(base, transient_at(1_791_747_221_679).runtime(100))
         .await;
 
-    // Submit B: SAME deterministic SQL but tolerate_nondeterminism=false.
+    // Submit B: SAME deterministic SQL over the same upstream, but
+    // tolerate_nondeterminism=false.
     let dev = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
         .namespace(NS)
-        .sql("select id from CDO_DEMO_DB.dev_clone_demo.vd_up")
+        .sql(det_sql)
+        .upstream(vd_up, 1_791_747_000_000)
         .tolerate_nondeterminism(false);
     assert_eq!(
         sc.verdict(dev).await,
@@ -1183,11 +1233,13 @@ async fn bare_random_column_is_deterministic_and_clones() {
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RNDCONS\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RNDCONS\"";
-    // Root selects a COLUMN named `random` — not the function.
+    // Root selects a COLUMN named `random` — not the function — of one
+    // upstream both read.
     let consumer = |target: &str, schema: &str| {
         demo::model(target, schema, CLONE_PROBE)
             .namespace(NS)
-            .sql(&format!("select random from CDO_DEMO_DB.{schema}.rnd_up"))
+            .sql("select random from CDO_DEMO_DB.raw.rnd_up")
+            .upstream("\"CDO_DEMO_DB\".\"RAW\".\"RND_UP\"", 1_791_747_000_000)
     };
 
     sc.build_with(
@@ -1941,4 +1993,244 @@ async fn captured_clone_rows(server: &support::TestServer, targets: &[&str]) -> 
             })
         })
         .collect()
+}
+
+/// #264: a client-requested copy holds the build it was copied from, so it
+/// is a Result copy source only for a submit over the inputs that build
+/// recorded, each by name or as its Stand-in. A CI copy of prod's
+/// downstream, registered after the build, is not copied for a dev
+/// downstream over an independently built dev upstream (#237 case D with a
+/// `dbt clone` step), and neither is prod's downstream. Over a QA upstream
+/// copied from prod's, the CI copy is copied.
+#[tokio::test]
+async fn a_registered_copy_is_copied_only_over_the_inputs_of_its_build() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let upstream = |schema: &str, marker: &str| {
+        environment_model(schema)
+            .target(&environment_upstream(schema))
+            .unique_id("model.p.up")
+            .no_tables()
+            .sql(&format!("select '{marker}' as v"))
+    };
+    let downstream = |schema: &str, epoch| {
+        environment_model(schema)
+            .sql(&format!("select v from DB.{schema}.up"))
+            .upstream(&environment_upstream(schema), epoch)
+    };
+    sc.build_with(upstream("prod", "prod"), built_at(500)).await;
+    sc.build_with(upstream("dev", "dev"), built_at(600)).await;
+    sc.build_with(downstream("prod", 500), built_at(2_000))
+        .await;
+    let ci = environment_target("ci");
+    let copy = sc
+        .register_clone(
+            clone_request(&environment_target("prod"), &ci)
+                .catalog("DB")
+                .namespace(ENVIRONMENT_NAMESPACE)
+                .source_epoch(2_000)
+                .label("dbt_node_unique_id", "model.p.m"),
+        )
+        .await
+        .expect("RegisterClone")
+        .ready_to_clone
+        .expect("ready_to_clone");
+    assert!(sc.confirm(&copy.request_id, built_at(2_500)).await);
+
+    let x = sc.expect_execute(downstream("dev", 600)).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "neither the CI copy nor prod's build read the dev upstream"
+    );
+
+    let qa_up = sc.expect_clone(upstream("qa", "prod")).await;
+    assert_eq!(qa_up.clone_source, environment_upstream("prod"));
+    assert!(sc.confirm(&qa_up.request_id, built_at(700)).await);
+    let c = sc.expect_clone(downstream("qa", 700)).await;
+    assert_eq!(
+        c.clone_source, ci,
+        "the newest equivalent over prod's upstream"
+    );
+}
+
+#[tokio::test]
+async fn review266_registered_result_is_as_old_as_the_original_upstream_read() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let upstream = |schema: &str, marker: &str| {
+        environment_model(schema)
+            .target(&environment_upstream(schema))
+            .unique_id("model.p.up")
+            .no_tables()
+            .sql(&format!("select '{marker}' as v"))
+    };
+    let downstream = |schema: &str, epoch| {
+        environment_model(schema)
+            .sql(&format!("select v from DB.{schema}.up"))
+            .upstream(&environment_upstream(schema), epoch)
+    };
+    sc.build_with(upstream("prod", "prod"), built_at(500)).await;
+    sc.build_with(upstream("dev", "dev"), built_at(600)).await;
+    sc.build_with(downstream("prod", 500), built_at(2_000))
+        .await;
+    sc.build_with(upstream("prod", "changed"), built_at(2_100))
+        .await;
+    let ci = environment_target("ci");
+    let copy = sc
+        .register_clone(
+            clone_request(&environment_target("prod"), &ci)
+                .catalog("DB")
+                .namespace(ENVIRONMENT_NAMESPACE)
+                .source_epoch(2_000)
+                .label("dbt_node_unique_id", "model.p.m"),
+        )
+        .await
+        .expect("RegisterClone")
+        .ready_to_clone
+        .expect("ready_to_clone");
+    assert!(sc.confirm(&copy.request_id, built_at(2_500)).await);
+
+    let qa_up = sc.expect_clone(upstream("qa", "changed")).await;
+    assert_eq!(qa_up.clone_source, environment_upstream("prod"));
+    assert!(sc.confirm(&qa_up.request_id, built_at(2_600)).await);
+    sc.expect_execute(downstream("qa", 2_600)).await;
+}
+
+#[tokio::test]
+async fn review266_copied_upstreams_must_keep_their_query_bindings() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let upstream = |schema: &str, value: &str| {
+        demo::model(&demo::relation(schema, "U"), "ZZZ", "model.p.u")
+            .sql(&format!("select '{value}' as v"))
+            .namespace(NS)
+            .tolerance_seconds(0)
+    };
+
+    sc.build_with(upstream("P", "p"), transient_at(100)).await;
+    sc.build_with(upstream("Q", "q"), transient_at(200)).await;
+    for (schema, value, source, epoch) in [("A", "q", "Q", 300), ("B", "p", "P", 400)] {
+        let grant = sc.expect_clone(upstream(schema, value)).await;
+        assert_eq!(grant.clone_source, demo::relation(source, "U"));
+        assert!(sc.confirm(&grant.request_id, transient_at(epoch)).await);
+    }
+
+    let downstream = |target: &str, left: &str, left_epoch: i64, right: &str, right_epoch: i64| {
+        let left = demo::relation(left, "U");
+        let right = demo::relation(right, "U");
+        demo::model(&demo::relation("ZZZ", target), "ZZZ", "model.p.m")
+            .sql(&format!("select l.v from {left} l cross join {right} r"))
+            .namespace(NS)
+            .tolerance_seconds(0)
+            .upstream(&left, left_epoch)
+            .upstream(&right, right_epoch)
+    };
+    sc.build_with(downstream("PROD_M", "P", 100, "Q", 200), transient_at(500))
+        .await;
+    // The candidate projects P's 'p'. A holds Q's 'q', so projecting A's
+    // value over the same two underlying relations requires a new execution.
+    sc.expect_execute(downstream("DEV_M", "A", 300, "B", 400))
+        .await;
+}
+
+#[tokio::test]
+async fn review266_source_target_is_a_genuine_input_of_another_model() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let prod = environment_target("prod");
+    let source = |schema| {
+        environment_model(schema)
+            .no_tables()
+            .schema("fixed")
+            .sql("select id + 1 as id from DB.PROD.M")
+    };
+    sc.build_with(
+        environment_model("prod")
+            .no_tables()
+            .schema("fixed")
+            .sql("select 0 as id"),
+        built_at(100),
+    )
+    .await;
+    sc.build_with(source("prod").own_epoch(Some(100)), built_at(200))
+        .await;
+    sc.expect_execute(source("dev").upstream(&prod, 200)).await;
+}
+
+#[tokio::test]
+async fn review266_missing_upstream_metadata_does_not_prove_equal_inputs() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let probe = |schema| {
+        demo::model(&demo::relation(schema, "CLONE_PROBE"), schema, CLONE_PROBE)
+            .sql(&probe_sql(schema))
+            .namespace(NS)
+            .tolerance_seconds(0)
+            .no_tables()
+    };
+    sc.build_with(probe(PROD_SCHEMA), transient_at(2000)).await;
+    sc.expect_execute(probe(DEV_SCHEMA)).await;
+}
+
+/// Four complete rows generated by the public submit/confirm flow on 7270338.
+/// Prod and dev built independent upstreams. The old server then confirmed
+/// a downstream copy from prod to dev.
+#[tokio::test]
+async fn review266_upgrade_rebuilds_an_unsafe_legacy_copy() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let history: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("fixtures/review266_legacy_d.json")).unwrap();
+    for row in history {
+        let (before, after) = legacy::import_complete_execution(&server, &row).await;
+        assert_eq!(before, after, "preserve source execution IDs");
+    }
+    let dev = environment_model("dev")
+        .sql("select v from DB.dev.up")
+        .upstream(&environment_upstream("dev"), 600)
+        .own_epoch(Some(3000));
+    let x = sc.expect_execute(dev).await;
+    // Refused at Reuse qualification: the generic rebuild answer.
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6))
+    );
+    assert_eq!(
+        ed.decision_description,
+        "model was executed because either its query didn't match or its upstream data is out of date"
+    );
+    let id = x.execution_decision_id.expect("execution_decision_id");
+    // No capture backs a tree for it, so Explain renders none.
+    let explained = sc.explain(&[&id]).await;
+    assert_eq!(explained.messages.len(), 1);
+    assert!(explained.messages[0].explain_lines.is_empty());
+}
+
+/// A copy of a copy is judged over the build it holds with that build's own
+/// Target relation set aside, as the build recorded it: a client that
+/// reports each node's own relation (with no epoch before it exists) still
+/// copies the newest copy (`graph_copy.py`, DuckDB CI on #266).
+#[tokio::test]
+async fn a_copy_of_a_copy_sets_aside_the_held_builds_own_target() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let probe = |schema: &str, name: &str| {
+        let target = demo::relation(schema, name);
+        demo::shared_probe(&target, schema).table(&target, None)
+    };
+    sc.build_with(
+        probe(PROD_SCHEMA, "FIRST"),
+        transient_at(1_791_747_221_679).runtime(15),
+    )
+    .await;
+    let second = sc.expect_clone(probe(DEV_SCHEMA, "SECOND")).await;
+    assert!(
+        sc.confirm(&second.request_id, transient_at(1_791_747_300_000))
+            .await
+    );
+    let third = sc.expect_clone(probe(PROD_SCHEMA, "THIRD")).await;
+    assert_eq!(third.clone_source, demo::relation(DEV_SCHEMA, "SECOND"));
 }

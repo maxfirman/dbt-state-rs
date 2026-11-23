@@ -294,11 +294,13 @@ async fn explain_clone_tree_renders_actual_clone_source() {
     use qc::explain_client::ExplainClient;
 
     // A cross-name CLONE submit: same `table_namespace` + schema-abstracted
-    // logic as an already-built equivalent under a DIFFERENT physical name.
+    // logic as an already-built equivalent under a DIFFERENT physical name,
+    // over the one input both read (#264).
     let submit = |target: &str, schema: &str| {
         demo::model(target, schema, "model.jaffle_shop.f2_clone_probe")
-            .sql(&format!("select id from CDO_DEMO_DB.{schema}.lp_up_a"))
+            .sql("select id from CDO_DEMO_DB.raw.lp_up_a")
             .namespace(NS)
+            .upstream("\"CDO_DEMO_DB\".\"RAW\".\"LP_UP_A\"", 1_791_747_000_000)
     };
 
     let server = start_server().await;
