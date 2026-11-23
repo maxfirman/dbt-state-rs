@@ -399,33 +399,58 @@ upstream past it (`copy_source_choice.jsonl`,
 copied case A, where both downstreams read the one physical prod upstream.
 
 **Rule.** An equivalent under another name qualifies for a submit's Result
-copy only when the physical relations it recorded reading at build time
-are the ones the submit reads (`submit_decision::copy_search::offer`):
+copy only when the build whose result it holds was computed from the
+physical inputs the submit reads (`submit_decision::copy_search`):
 
-- *Each input is itself, or its Stand-in.* An input the equivalent recorded
-  by the same canonical name is itself. An input the equivalent did not
-  record, but that is an unchanged copy this server recorded of a build of a
-  relation the equivalent did record, is read as its Stand-in: that source
-  build, at its epoch and with its Upstream producer (`stand_in::input_reads`,
-  the rule of [Data-test history key](#data-test-history-key)). A copy of a
-  copy stands for itself, and so does a copy of a relation the submit also
-  reads directly.
-- *A client-requested copy has the reads of its build.* A RegisterClone copy
-  records no reads of its own; it qualifies with the reads the build it was
-  copied from recorded (`clone_source_inputs`), and not at all when that
-  build was not recorded. Before this, a CI copy of prod's downstream could
-  be copied for a dev downstream over another dev input.
-- *Then the equivalent is judged as the reuse candidate.* Drift is measured
-  against the epoch the equivalent recorded for each input (invariant 2). A
-  Stand-in proves freshness only at exactly the epoch recorded for its
-  source, so an equivalent that recorded the source at an earlier metadata
-  epoch is stale and the search goes on to the next one.
-- *Any other equivalent is passed over.* Its result was computed from inputs
-  nothing shows the submit reads: an independent build of the same logic,
-  a relation no recorded build produced, or a view of the same definition
-  in another schema. The search goes on to the next equivalent in the shared
-  order (newest build first, `COPY_CANDIDATE_LIMIT`). Before #264 the first
-  such equivalent was copied without a freshness judgment.
+- *A copy is judged by the build it holds.* An ordinary build holds its own
+  result. A copy this server recorded (a Result copy on submit or a
+  RegisterClone) holds the result of the build it was copied from, followed
+  through any copies between (`clone_source_execution_id`,
+  `submit_decision::held_build`). Its inputs are the input epochs that build
+  recorded. A copy whose build cannot be established is passed over. Before
+  this, a CI copy registered after its upstream changed was judged by its
+  later confirmation and looked fresh.
+- *Each input is itself, or its Stand-in.* An input that build recorded by
+  the same canonical name is itself. An input it did not record, but that is
+  an unchanged copy this server recorded, is read as its Stand-in (that
+  source build, at its epoch and with its Upstream producer;
+  `stand_in::input_reads`, the rule of
+  [Data-test history key](#data-test-history-key)) when the build recorded
+  the Stand-in's relation at exactly the Stand-in's epoch. This is a
+  qualification, checked before any freshness policy, so Lag tolerance
+  never admits a Stand-in of another build. A copy of a copy stands for
+  itself, and so does a copy of a relation the submit also reads directly.
+- *Each reference keeps its binding.* With a Stand-in, the submit's SQL with
+  each copy read as its source (and its Target relation's schema read as the
+  build's) must have the build's copy logic identity. Two copies swapped
+  between the references of a join read the same relations but bind them the
+  other way, so they differ. Only Snowflake's schema-abstracted identity
+  supports the check; elsewhere no Stand-in is used.
+- *The submit's own Target relation is the only read set aside.* The
+  build's Target relation is a genuine input of a submit that reads it.
+- *No reported reads prove nothing for SQL that reads a relation.* A submit
+  the Warehouse rules copy, reporting no upstream reads, qualifies only when
+  its SQL reads no base relation: no relation at all, or only query
+  dependencies whose definitions (bound in the copy logic identity) read no
+  relation but other query dependencies. A kind that only reports its
+  equivalent in its codes keeps reporting it (client 2.0.11 reports no reads
+  for a view).
+- *Then it is judged as the reuse candidate,* over the build's recorded
+  epochs and with the equivalent's own build age (a copy's is its copy
+  time; hosted copied a copy within Lag tolerance whose source build was
+  older, `lag_copy_candidates` `wba`).
+- *Any other equivalent is passed over.* The search goes on to the next one
+  in the shared order (newest build first, `COPY_CANDIDATE_LIMIT`). Before
+  #264 the first equivalent that read other relations was copied without a
+  freshness judgment.
+- *A copy already granted is revalidated before reuse.* A Result copy on
+  submit that is the Target relation's Reuse candidate is reused only while
+  the build it holds qualifies for the submit by the rules above
+  (`submit_decision::revalidate_copy_candidate`). One granted by an earlier
+  server over another input is refused at Reuse qualification and rebuilds
+  (6 / 6, the generic rebuild description, no Explain tree). A
+  RegisterClone copy keeps its adoption rule (#93), and Databricks its
+  publication checks.
 
 The copy's pending row records the submit's own inputs as read, so its next
 unchanged submit is judged over them.
@@ -437,6 +462,12 @@ unchanged submit is judged over them.
 - *Match inputs by schema-abstracted name.* Rejected: it is the rule that
   served the wrong rows; hosted builds over an independently built dev
   upstream with the same row (case C).
+- *Compare the set of inputs only.* Rejected: two copies swapped between a
+  join's references have the same set and epochs but project the other
+  input's values (review of #266).
+- *Invalidate every copy recorded before #264.* Not taken: revalidating
+  each copy against the build it holds keeps the ones that qualify and
+  needs no migration.
 - *Admit a copied upstream at the copied build's identity, whatever epoch
   the equivalent recorded.* Not taken: the exact-epoch rule is the one
   Stand-ins already follow, and hosted built case B, where the equivalent
@@ -451,7 +482,9 @@ a dev input no recorded build or copy produced
 (`clone_fallback_stale_source.jsonl` and `clone_fallback_zero_tolerance.jsonl`,
 entry 2 each) are keyed replay gaps: the server builds there. A copy over an
 existing Target relation follows the same rule, since every copy is now
-judged. A copy over a Stand-in is recorded and explained as a judged copy,
+judged. A Result copy recorded before migration 0029 has no recorded source
+build (`clone_source_execution_id`): it is passed over as a copy source and,
+as its own Target relation's Reuse candidate, rebuilds once. A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.
 

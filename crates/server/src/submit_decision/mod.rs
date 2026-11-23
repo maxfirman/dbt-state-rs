@@ -429,6 +429,7 @@ async fn decide_sql(
     resolve_producers(store, &mut evidence).await?;
     crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
     let mut selection = select_sql(store, org_id, req, &evidence).await?;
+    revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
     judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
     let outcome =
@@ -1196,6 +1197,68 @@ async fn latest_data_test_of_unique_id(
     }
 }
 
+/// The most copies [`held_build`] follows back to the build they hold.
+const HELD_BUILD_HOPS: usize = 16;
+
+/// The ordinary build whose result `row` holds: `row` itself when it is a
+/// build, else, for a copy this server recorded (a Result copy on submit or a
+/// RegisterClone), the build it was copied from, through any copies between
+/// (`clone_source_execution_id`, each a confirmed row of the organization).
+/// A copy holds exactly its source's result, so what that build recorded at
+/// build time is what the copy was computed from (#264). `None` when the
+/// chain is broken or longer than [`HELD_BUILD_HOPS`].
+async fn held_build(
+    store: &Store,
+    org_id: &str,
+    row: ExecutionRow,
+) -> sqlx::Result<Option<ExecutionRow>> {
+    let mut row = row;
+    for _ in 0..=HELD_BUILD_HOPS {
+        if row.clone_source_table.is_none() {
+            return Ok(Some(row));
+        }
+        let Some(source_id) = row.clone_source_execution_id else {
+            return Ok(None);
+        };
+        match store.execution_by_id(org_id, source_id).await? {
+            Some(source) if source.status == "confirmed" => row = source,
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// A Result copy on submit is reused only while the build it holds still
+/// qualifies as a copy source for the submit ([`copy_search::reads_as_recorded`]):
+/// a copy an earlier server granted over other inputs is refused at Reuse
+/// qualification and rebuilds (#264). A client-requested copy and a
+/// Databricks submit copy keep their own adoption rules.
+async fn revalidate_copy_candidate(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    selection: &mut reuse_candidate::Selection,
+) -> sqlx::Result<()> {
+    let Some(candidate) = selection.candidate.as_ref() else {
+        return Ok(());
+    };
+    let submit_copy = candidate.clone_source_table.is_some()
+        && !crate::copy_lifecycle::is_copy_registration(candidate)
+        && Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks;
+    if !submit_copy {
+        return Ok(());
+    }
+    let reads = crate::stand_in::input_reads(store, evidence).await?;
+    let proven = held_build(store, org_id, candidate.clone())
+        .await?
+        .is_some_and(|held| copy_search::reads_as_recorded(req, evidence, &reads, &held).is_some());
+    if !proven {
+        selection.refuse_unproven_copy();
+    }
+    Ok(())
+}
+
 /// What the Result copy fallback decided ([`result_copy_fallback`]).
 enum CopyFallback {
     /// The submit is answered by the fallback (a copy, or the chain-limit
@@ -1315,10 +1378,19 @@ async fn result_copy_fallback(
                     &req.dialect,
                 )
                 .await?;
-            let judged = match copy_search::offer(evidence, freshness, &reads, source) {
+            // The current state vanished between the two reads: the ordinary
+            // decision applies.
+            let Some(source) = source else {
+                break;
+            };
+            // A copy is judged by the build it holds; one whose build cannot
+            // be established is passed over.
+            let Some(held) = held_build(store, org_id, source.clone()).await? else {
+                continue;
+            };
+            let judged = match copy_search::offer(req, evidence, freshness, &reads, source, &held) {
                 copy_search::Offer::Choose(judged) => judged,
                 copy_search::Offer::Next => continue,
-                copy_search::Offer::Stop => break,
             };
             (equivalent, judged, None)
         };

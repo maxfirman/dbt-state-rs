@@ -789,6 +789,84 @@ pub(crate) fn keyed_relations_sql(
     })
 }
 
+/// `sql` with each three-part relation whose canonical components
+/// (`canonical_identifier`) `substitute` maps replaced by the mapped
+/// components (quoted), and nothing else changed; `None` when it does not
+/// parse. A Result copy source's bindings are checked over it
+/// (`submit_decision::copy_search`, #264).
+pub(crate) fn substitute_relations(
+    sql: &str,
+    substitute: &dyn Fn(&[String]) -> Option<Vec<String>>,
+) -> Option<String> {
+    struct Substitution<'a> {
+        substitute: &'a dyn Fn(&[String]) -> Option<Vec<String>>,
+    }
+    impl VisitorMut for Substitution<'_> {
+        type Break = ();
+        fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
+            let parts: Option<Vec<String>> = name
+                .0
+                .iter()
+                .map(|part| match part {
+                    ObjectNamePart::Identifier(id) if id.quote_style.is_some() => Some(
+                        canonical_identifier(&format!("\"{}\"", id.value.replace('"', "\"\""))),
+                    ),
+                    ObjectNamePart::Identifier(id) => Some(canonical_identifier(&id.value)),
+                    _ => None,
+                })
+                .collect();
+            if let Some(replacement) = parts
+                .filter(|p| p.len() == 3)
+                .and_then(|p| (self.substitute)(&p))
+            {
+                name.0 = replacement
+                    .into_iter()
+                    .map(|c| ObjectNamePart::Identifier(Ident::with_quote('"', c)))
+                    .collect();
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut statements = Parser::parse_sql(&SnowflakeDialect {}, sql).ok()?;
+    let mut substitution = Substitution { substitute };
+    for statement in &mut statements {
+        if statement.visit(&mut substitution).is_break() {
+            return None;
+        }
+    }
+    Some(
+        statements
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
+/// The canonical components (`canonical_identifier`) of every relation `sql`
+/// names, in any position, a CTE reference included; `None` when it does not
+/// parse.
+pub(crate) fn relation_names(sql: &str) -> Option<Vec<Vec<String>>> {
+    let statements = Parser::parse_sql(&SnowflakeDialect {}, sql).ok()?;
+    let mut names = Vec::new();
+    let _ = sqlparser::ast::visit_relations(&statements, |name| {
+        let parts: Option<Vec<String>> = name
+            .0
+            .iter()
+            .map(|part| match part {
+                ObjectNamePart::Identifier(id) if id.quote_style.is_some() => Some(
+                    canonical_identifier(&format!("\"{}\"", id.value.replace('"', "\"\""))),
+                ),
+                ObjectNamePart::Identifier(id) => Some(canonical_identifier(&id.value)),
+                _ => None,
+            })
+            .collect();
+        names.push(parts);
+        ControlFlow::<()>::Continue(())
+    });
+    names.into_iter().collect()
+}
+
 /// Legacy lexical helper; not used for persisted fingerprints.
 /// Strips comments, collapses inter-token whitespace, case-folds keywords and
 /// unquoted identifiers (preserving string literals and quoted identifiers),

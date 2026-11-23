@@ -126,21 +126,36 @@ Do not weaken these without new evidence.
   same blind spot for its source's own table: the submit reports no epoch
   for it.
 - **Result copy over different inputs (#264).** A FULL equivalent is copied
-  on submit only when the physical inputs it recorded at build time are the
-  ones the submit reads, each by its own name or as its Stand-in (an
-  unchanged copy this server recorded of the build the equivalent read),
-  and it is then judged for freshness like a Reuse candidate. Any other
-  equivalent is passed over and the search goes on in its shared order
+  on submit only when the build whose result it holds (for a copy, the
+  build it was copied from, through its copy chain) recorded at build time
+  the physical inputs the submit reads. Each input is matched by its own
+  name, or as its Stand-in (an unchanged copy this server recorded) when the
+  build recorded the Stand-in's relation at exactly its epoch, checked before
+  Lag tolerance; with a Stand-in the submit's SQL so read must keep the
+  build's logic, so copies swapped between a join's references differ. The
+  build's own Target relation stays an input of a submit that reads it, and
+  a submit reporting no reads qualifies only when its SQL reads no base
+  relation. It is then judged for freshness like a Reuse candidate. Any
+  other equivalent is passed over and the search goes on in its shared order
   (`submit_decision/copy_search.rs`,
   [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
-  Before #264 the first equivalent that read other relations was copied
-  unjudged, which served prod rows over a dev input in a native run
+  A Result copy that is its Target relation's Reuse candidate is revalidated
+  the same way before reuse, so a copy an earlier server granted over another
+  input rebuilds (`submit_decision::revalidate_copy_candidate`). Before #264
+  the first equivalent that read other relations was copied unjudged, which
+  served prod rows over a dev input in a native run
   ([report](reports/snowflake-upstream-origin-2026-11-22.md), case D).
   Regressions: `result_copy_baseline.rs`
   (`snowflake_differing_input_builds_and_follow_up_reuses`,
   `snowflake_copy_over_a_copied_upstream_and_follow_up`,
   `snowflake_copied_upstream_at_another_recorded_epoch_builds`,
-  `snowflake_continues_on_stale_and_passes_over_a_different_input`).
+  `snowflake_continues_on_stale_and_passes_over_a_different_input`) and the
+  review regressions `clone_submit_fallback.rs::review266_*` and
+  `copy_search.rs::review266_stand_in_epoch_is_a_qualification_before_lag`.
+  **Open:** a RegisterClone copy adopted by its own Target relation (#93)
+  keeps the clone-age anchor; whether hosted reuses a `dbt clone` copy of
+  prod's downstream over an independently built dev upstream is not
+  captured.
 - **Copy adoption needs the copy's logic.** A later submit reuses a
   RegisterClone copy only when its schema-abstracted logic equals the logic
   the copy inherited from its source build, directly or with the submit's
@@ -730,7 +745,8 @@ and the verified State-disabled Reference held `v='dev'`
 This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
-(run `232206b6851a`) served `(1, 'dev')` in D after the build and after the
+(runs `232206b6851a` and, after the review of #266, `0954562b4355`) served
+`(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
 ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
