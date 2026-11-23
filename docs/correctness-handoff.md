@@ -137,10 +137,14 @@ Do not weaken these without new evidence.
   definitions it reads, resolved to the physical relation it reads, so
   inputs swapped between references or an unqualified reference resolving
   in another schema differ under identical reported inputs. A one-part
-  name is bound only when the one reported or defined relation of that name
-  is in the default schema (no request carries `SEARCH_PATH`); conflicting
-  definitions of one view, typed view columns and traversals past 32
-  levels or 1024 references leave no binding. Every base
+  name in the root SQL is bound only when the one reported or defined
+  relation of that name is in the default schema (no request carries
+  `SEARCH_PATH`); inside a view names resolve in the view's own schema.
+  `CURRENT_DATABASE()` and `CURRENT_SCHEMA()` are bound with the database
+  and schema they return (a view's own inside a view). Time Travel,
+  `CURRENT_SCHEMAS()`, conflicting definitions of one view, typed view
+  columns and traversals past 32 levels on any path or 1024 references
+  leave no binding. Every base
   relation it reads must be reported by the submit and recorded by the
   build, and a read of the submit's own Target relation is never copied. It is then judged for freshness like a Reuse candidate, and
   the copy records the inputs of the build it holds, so its Lag tolerance
@@ -762,7 +766,7 @@ This server now builds all three and SKIPs each next unchanged submit, and
 reports no equivalent for C and D's dev upstream; those decision gaps and
 their Explains are closed. A native rerun against the patched server
 (runs `232206b6851a` and, after the reviews of #266, `0954562b4355`,
-`130336ee9432`, `15355882dd2e` and `18143533c882`) served
+`130336ee9432`, `15355882dd2e`, `18143533c882` and `193559af41fb`) served
 `(1, 'dev')` in D after the build and after the
 SKIP, as the verified Reference did, and still copied A
 ([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
@@ -787,6 +791,16 @@ of that shape builds on hosted: #239 `mid` (entries 10, 78) and #237 cases C
 and D. Hosted's behavior may have changed since; the server keeps the rule
 that cannot serve another input's rows
 (`clone_eligibility.rs::server_builds_where_hosted_copied_over_another_dev_input`).
+
+**Open — hosted copies over a view's context or Time Travel (#264,
+uncaptured).** The fifth review of #266 crafted three Snowflake shapes
+against this server only (`review266_view_context.rs`): two views of one
+definition returning `CURRENT_SCHEMA()` in their own schemas, a read `AT
+(OFFSET => -60)` whose two builds select versions on either side of an
+upstream change at one reported epoch, and a shared view whose `U` and
+`OTHER.U` are both reported. The server builds the first two and copies the
+third, following Snowflake's documented resolution. Whether hosted copies
+any of them is not captured.
 
 **Resolved 2026-11-22 — copy source choice among competing sources (#239,
 crafted; #264).** `copy_source_choice.jsonl` crafts thirteen Snowflake

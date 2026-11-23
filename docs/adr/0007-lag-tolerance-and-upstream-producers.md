@@ -426,27 +426,39 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   its *physical binding* (`analyzed_workload::physical_binding`,
   `executions.node_binding_hash`, migration 0034): its SQL and the query
   dependency definitions it reads, with every relation reference resolved
-  in the default catalog and schema of the SQL that names it and replaced by
-  the physical relation, a view by its definition so bound, with its
-  declared column names (they rename its output). CTE references are no
-  reads (a CTE is in scope in its own definition: `RECURSIVE` is optional
-  on Snowflake), a table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one,
-  and anything else that could read a relation without being resolved (a
+  as Snowflake resolves it and replaced by the physical relation, a view by
+  its definition so bound, with its declared column names (they rename its
+  output). In the root SQL a partly qualified name is completed with the
+  request's default catalog and schema, and a one-part name resolves
+  through the session's `SEARCH_PATH`, which no request carries: it is
+  bound only when the one relation the workload reports or defines under
+  that last component is the one in the default schema. Inside a view
+  Snowflake does not use the search path: its names resolve in the view's
+  own database and schema, whatever context the request declares for it.
+  SQL calling `CURRENT_DATABASE()` or `CURRENT_SCHEMA()` is bound with the
+  database and schema it runs in (the session's for the root SQL, the
+  view's own inside a view), so two views of one definition in two schemas
+  that return their schema differ. CTE references are no reads (a CTE is
+  in scope in its own definition: `RECURSIVE` is optional on Snowflake), a
+  table literal (`TABLE('…')`, `IDENTIFIER('…')`) is one, and anything
+  else that could read a relation or a context without being resolved (a
   table function outside a pure set, a one-part name of a later sibling
-  CTE, an unsupported FROM construct) leaves the build without a binding.
-  A one-part name resolves through the session's `SEARCH_PATH`, which no
-  request carries: it is bound only when the one relation the workload
-  reports or defines under that last component is the one in the default
-  schema. A workload also has no binding when a query dependency is not
-  named in three parts, when two dependencies have one canonical name
-  (`v` and `"V"`: no one definition is read), when a view declares a column
-  with a type or options, or past 32 definition levels or 1024 references
-  (each definition bound once). The bound SQL is normalized as the
-  Snowflake identity is, so an unquoted identifier's case does not matter.
-  The submit, each Stand-in read as its source, must have the build's
-  binding, so two inputs swapped between references, inside a view too, a
-  view's columns renamed, or an unqualified reference that resolves in
-  another schema, differ, even with the same reported inputs.
+  CTE, an unsupported FROM construct, `CURRENT_SCHEMAS()`) leaves the build
+  without a binding. So does Time Travel (`AT`, `BEFORE`, `CHANGES`): the
+  recorded epochs do not identify the version it reads, and an `OFFSET`
+  is relative to each query's own time. A workload also has no binding
+  when a query dependency is not named in three parts, when two
+  dependencies have one canonical name (`v` and `"V"`: no one definition
+  is read), when a view declares a column with a type or options, or when
+  a definition lies more than 32 levels deep on any path or the workload
+  has more than 1024 references (each definition bound once, with the
+  levels below it, so the limit does not depend on traversal order). The
+  bound SQL is normalized as the Snowflake identity is, so an unquoted
+  identifier's case does not matter. The submit, each Stand-in read as its
+  source, must have the build's binding, so two inputs swapped between
+  references, inside a view too, a view's columns renamed, or an
+  unqualified reference that resolves in another schema, differ, even with
+  the same reported inputs.
 - *Every read is evidenced on both sides.* Each base relation the submit's
   binding reads must be among its reported inputs and must not be its own
   Target relation, whose prior contents differ between the two Target
@@ -509,6 +521,13 @@ current input (fourth review of #266).
 - *Resolve a one-part name in the default schema.* Rejected: Snowflake
   resolves it through `SEARCH_PATH`, which can find a relation of that name
   in another schema first (fourth review of #266).
+- *Apply the search-path check inside views too.* Rejected: Snowflake
+  resolves a view's unqualified names in the view's schema only, so a
+  shared view reading `U` and `OTHER.U` reads one known `U` (fifth review
+  of #266).
+- *Admit Time Travel at an absolute timestamp or statement.* Not taken:
+  uncaptured, and the binding would have to show both sides select one
+  version.
 - *Judge a copy's resubmit over the epochs it recorded at copy time.*
   Rejected: a copy made within Lag tolerance then looked fresh forever
   (second review of #266).
@@ -535,8 +554,8 @@ build (`clone_source_execution_id`): neither qualifies, so after the upgrade
 each Snowflake build is copied from only once rebuilt, and a copy whose
 build it cannot establish rebuilds once as its own Target relation's Reuse
 candidate. A binding hashed under an earlier binding version
-(`dbt-state-physical-binding-v1`, before the fourth review of #266) never
-equals a current one, so those builds too are copied from only once
+(`dbt-state-physical-binding-v1` before the fourth review of #266, `v2`
+before the fifth) never equals a current one, so those builds too are copied from only once
 rebuilt, and a copy holding one rebuilds once. No fingerprint is rehashed (ADR 0004). A copy over a Stand-in is recorded and explained as a judged copy,
 with the submit's inputs as read; the replayed tree of
 `explain_clone_history.jsonl` entry 14 matches hosted.

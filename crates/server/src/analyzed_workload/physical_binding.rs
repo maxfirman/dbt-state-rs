@@ -6,28 +6,34 @@
 //! it abstracts the schemas that decide what an unqualified or
 //! schema-relative reference reads.
 //!
-//! Each relation reference in FROM or JOIN is resolved in the default
-//! catalog and schema of the SQL that names it: the root SQL, or a query
-//! dependency's definition. A one-part name resolves through the session's
-//! `SEARCH_PATH`, which no request carries, so it is resolved only when the
-//! one relation the workload reports or defines under that name is the one
-//! in the default schema. A CTE reference stays a CTE: a CTE is in scope
-//! in its query's body and nested queries, in its later siblings and in its
-//! own definition (`RECURSIVE` is optional on Snowflake). A table literal
-//! (`TABLE('<name>')`, `IDENTIFIER('<name>')`) is resolved like a name. A
-//! reference to a query dependency is bound to its definition, itself so
-//! resolved, so two views of one definition bind alike and swapping
-//! definitions between references does not. Anything else that could read
-//! a relation (a one-part name of a later sibling CTE, a table function
-//! outside the pure set, an unsupported FROM construct, a cycle of
-//! dependencies, SQL that does not parse) leaves the workload without a
-//! physical binding. So do two definitions of one view (however its name is
-//! spelled), a view's declared columns with a type or options, and a
-//! traversal deeper than [`MAX_DEPTH`] definitions or wider than
-//! [`MAX_VISITS`] references. A view's declared column names are bound with
-//! its query: they rename its output. The bound SQL is normalized as
-//! Snowflake identity is (`sql_norm::normalize_sql`), so an unquoted
-//! identifier's case does not matter.
+//! Each relation reference in FROM or JOIN is resolved as Snowflake
+//! resolves it. In the root SQL, a partly qualified name is completed with
+//! the request's default catalog and schema, and a one-part name goes
+//! through the session's `SEARCH_PATH`, which no request carries, so it is
+//! resolved only when the one relation the workload reports or defines
+//! under that name is the one in the default schema. Inside a view the
+//! search path is not used: its names resolve in the view's own database
+//! and schema, whatever context the request declares for it. A CTE
+//! reference stays a CTE: a CTE is in scope in its query's body and nested
+//! queries, in its later siblings and in its own definition (`RECURSIVE` is
+//! optional on Snowflake). A table literal (`TABLE('<name>')`,
+//! `IDENTIFIER('<name>')`) is resolved like a name. A reference to a query
+//! dependency is bound to its definition, itself so resolved, so two views
+//! of one definition in one schema bind alike and swapping definitions
+//! between references does not. SQL calling `CURRENT_DATABASE()` or
+//! `CURRENT_SCHEMA()` is bound with the database and schema it runs in (the
+//! session's for the root SQL, the view's own inside a view). Anything else
+//! that could read a relation or a context the request does not identify (a
+//! one-part name of a later sibling CTE, a table function outside the pure
+//! set, an unsupported FROM construct, Time Travel, `CURRENT_SCHEMAS()`, a
+//! cycle of dependencies, SQL that does not parse) leaves the workload
+//! without a physical binding. So do two definitions of one view (however
+//! its name is spelled), a view's declared columns with a type or options,
+//! and a traversal with a definition deeper than [`MAX_DEPTH`] on any path
+//! or wider than [`MAX_VISITS`] references. A view's declared column names
+//! are bound with its query: they rename its output. The bound SQL is
+//! normalized as Snowflake identity is (`sql_norm::normalize_sql`), so an
+//! unquoted identifier's case does not matter.
 //!
 //! Function and sequence names, which also resolve through the session's
 //! schema, are not bound (uncaptured).
@@ -46,7 +52,7 @@ use std::ops::ControlFlow;
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
 /// frames.
-const VERSION: &[u8] = b"dbt-state-physical-binding-v2";
+const VERSION: &[u8] = b"dbt-state-physical-binding-v3";
 
 /// Table functions that read no relation.
 const PURE_TABLE_FUNCTIONS: &[&str] = &[
@@ -55,6 +61,10 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
 ];
+
+/// Functions returning the database or schema the SQL runs in: the
+/// session's in the root SQL, the view's own inside a view.
+const CONTEXT_FUNCTIONS: &[&str] = &["CURRENT_DATABASE", "CURRENT_SCHEMA"];
 
 /// The most nested query dependency definitions bound
 /// (`docs/architecture.md`, dependency traversal).
@@ -117,10 +127,12 @@ pub(crate) fn physical_binding(
         base_reads: Vec::new(),
         stack: Vec::new(),
         definitions: vec![None; dependencies.len()],
+        deepest: 0,
         visits: 0,
     };
-    let schema = req.default_schema.as_deref().unwrap_or("");
-    let root = binder.bind(&req.sql, &req.default_catalog, schema, false)?;
+    let catalog = canonical_identifier(&req.default_catalog);
+    let schema = canonical_identifier(req.default_schema.as_deref().unwrap_or(""));
+    let root = binder.bind(&req.sql, catalog, schema, false)?;
     let mut h = Sha256::new();
     field(&mut h, VERSION);
     field(&mut h, root.as_bytes());
@@ -160,24 +172,35 @@ struct Binder<'a> {
     base_reads: Vec<Relation>,
     /// The query dependencies being bound, to refuse a cycle.
     stack: Vec<usize>,
-    /// Each query dependency's bound definition, once bound.
-    definitions: Vec<Option<String>>,
+    /// Each query dependency's bound definition, once bound, with the
+    /// definition levels it spans (itself and the deepest below it).
+    definitions: Vec<Option<(String, usize)>>,
+    /// The deepest definition level reached so far ([`MAX_DEPTH`]).
+    deepest: usize,
     /// The relation references bound so far ([`MAX_VISITS`]).
     visits: usize,
 }
 
 impl Binder<'_> {
-    /// `sql`, one query (with `definition`, also a view declaration, whose
-    /// query is bound and whose declared name is not), rendered with every
-    /// reference resolved in `catalog`.`schema` and bound; `None` when one
-    /// cannot be.
-    fn bind(&mut self, sql: &str, catalog: &str, schema: &str, definition: bool) -> Option<String> {
+    /// `sql`, one query, rendered with every reference resolved in
+    /// `catalog`.`schema` (canonical components) and bound; `None` when one
+    /// cannot be. `in_view` when `sql` defines a view (also a view
+    /// declaration, whose query is bound and whose declared name is not);
+    /// otherwise it is the root SQL, the only SQL whose one-part names
+    /// resolve through the session's `SEARCH_PATH`.
+    fn bind(
+        &mut self,
+        sql: &str,
+        catalog: String,
+        schema: String,
+        in_view: bool,
+    ) -> Option<String> {
         let mut statements = Parser::parse_sql(&SnowflakeDialect {}, sql).ok()?;
         let (query, columns): (&mut Query, String) = match statements.as_mut_slice() {
             [Statement::Query(query)] => (query, String::new()),
-            [Statement::CreateView(view)] if definition => {
+            [Statement::CreateView(declared)] if in_view => {
                 // The declared column names rename the view's output.
-                let columns: Option<Vec<String>> = view
+                let columns: Option<Vec<String>> = declared
                     .columns
                     .iter()
                     .map(|c| {
@@ -185,16 +208,17 @@ impl Binder<'_> {
                     })
                     .collect();
                 let columns = columns?;
-                (&mut view.query, format!("({}) ", quoted(&columns)))
+                (&mut declared.query, format!("({}) ", quoted(&columns)))
             }
             _ => return None,
         };
         let mut references = References {
-            catalog: canonical_identifier(catalog),
-            schema: canonical_identifier(schema),
-            known: self.known,
+            catalog,
+            schema,
+            known: (!in_view).then_some(self.known),
             frames: Vec::new(),
             resolved: Vec::new(),
+            context: false,
             unbound: false,
         };
         let _ = query.visit(&mut references);
@@ -226,35 +250,53 @@ impl Binder<'_> {
         for (i, bound) in bound.iter().enumerate().rev() {
             rendered = rendered.replace(&format!("\"{PLACEHOLDER}{i}\""), bound);
         }
+        // `CURRENT_DATABASE()` and `CURRENT_SCHEMA()` return the session's
+        // in the root SQL and the view's own inside a view.
+        let context = if references.context {
+            format!(
+                "context {} ",
+                quoted(&[references.catalog, references.schema])
+            )
+        } else {
+            String::new()
+        };
         Some(format!(
-            "{columns}{}",
+            "{context}{columns}{}",
             crate::sql_norm::normalize_sql(&rendered)
         ))
     }
 
-    /// Query dependency `d` bound: its definition, bound once in its own
-    /// context, as an opaque relation; `None` on a cycle, beyond
-    /// [`MAX_DEPTH`], or when the definition cannot be bound.
+    /// Query dependency `d` bound: its definition, bound once in the
+    /// view's own schema, as an opaque relation; `None` on a cycle, when
+    /// any of its definitions would lie deeper than [`MAX_DEPTH`] on this
+    /// path, or when the definition cannot be bound.
     fn definition(&mut self, d: usize) -> Option<String> {
-        if let Some(bound) = &self.definitions[d] {
+        // The definition levels above `d` on this path.
+        let above = self.stack.len();
+        if let Some((bound, levels)) = &self.definitions[d] {
+            if above + levels > MAX_DEPTH {
+                return None;
+            }
+            self.deepest = self.deepest.max(above + levels);
             return Some(bound.clone());
         }
-        if self.stack.contains(&d) || self.stack.len() >= MAX_DEPTH {
+        if self.stack.contains(&d) || above >= MAX_DEPTH {
             return None;
         }
+        // Snowflake resolves a view's names in the view's own schema,
+        // whatever context the request declares for it.
+        let dependencies = self.dependencies;
+        let (name, dependency) = &dependencies[d];
+        let outer = std::mem::replace(&mut self.deepest, above + 1);
         self.stack.push(d);
-        let dependency = self.dependencies[d].1;
-        let definition = self.bind(
-            &dependency.query,
-            &dependency.default_catalog,
-            &dependency.default_schema,
-            true,
-        );
+        let definition = self.bind(&dependency.query, name[0].clone(), name[1].clone(), true);
         self.stack.pop();
+        let levels = self.deepest - above;
+        self.deepest = self.deepest.max(outer);
         let mut h = Sha256::new();
         field(&mut h, definition?.as_bytes());
         let bound = format!("\"__dbt_state_view__\".\"{}\"", hex::encode(h.finalize()));
-        self.definitions[d] = Some(bound.clone());
+        self.definitions[d] = Some((bound.clone(), levels));
         Some(bound)
     }
 }
@@ -271,10 +313,14 @@ struct Frame {
 struct References<'a> {
     catalog: String,
     schema: String,
-    /// Every relation reported or defined.
-    known: &'a [Relation],
+    /// Every relation reported or defined, for the root SQL's one-part
+    /// names; `None` inside a view.
+    known: Option<&'a [Relation]>,
     frames: Vec<Frame>,
     resolved: Vec<Relation>,
+    /// Whether the SQL returns its database or schema
+    /// ([`CONTEXT_FUNCTIONS`]).
+    context: bool,
     unbound: bool,
 }
 
@@ -282,16 +328,15 @@ impl References<'_> {
     fn resolve(&self, parts: Vec<String>) -> Option<Relation> {
         let resolved = match parts.len() {
             1 if !self.catalog.is_empty() && !self.schema.is_empty() => {
-                // Through `SEARCH_PATH`: only when the one relation of that
-                // name the workload reports or defines is the default
-                // schema's.
                 let resolved = vec![self.catalog.clone(), self.schema.clone(), parts[0].clone()];
-                let mut named = self
-                    .known
-                    .iter()
-                    .filter(|known| known.last() == parts.last());
-                if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
-                    return None;
+                // In the root SQL, through `SEARCH_PATH`: only when the one
+                // relation of that name the workload reports or defines is
+                // the default schema's. A view's are its schema's only.
+                if let Some(known) = self.known {
+                    let mut named = known.iter().filter(|known| known.last() == parts.last());
+                    if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
+                        return None;
+                    }
                 }
                 resolved
             }
@@ -424,9 +469,36 @@ impl VisitorMut for References<'_> {
         ControlFlow::Continue(())
     }
 
+    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+        if let Expr::Function(f) = expr {
+            if let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() {
+                let name = id.value.to_ascii_uppercase();
+                if CONTEXT_FUNCTIONS.contains(&name.as_str()) {
+                    self.context = true;
+                } else if name == "CURRENT_SCHEMAS" {
+                    // The search path, which no request carries.
+                    self.unbound = true;
+                }
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
     fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<()> {
         let relation = match factor {
-            TableFactor::Table { name, args, .. } => {
+            TableFactor::Table {
+                name,
+                args,
+                version,
+                ..
+            } => {
+                // Time Travel (`AT`, `BEFORE`, `CHANGES`) reads a version
+                // the recorded epochs do not identify: an `OFFSET` is
+                // relative to the query's own time.
+                if version.is_some() {
+                    self.unbound = true;
+                    return ControlFlow::Continue(());
+                }
                 if args.is_some() {
                     if !is_pure(name) {
                         self.unbound = true;
@@ -695,6 +767,79 @@ mod tests {
     }
 
     #[test]
+    fn a_views_names_resolve_in_its_own_schema_only() {
+        // Inside a view the search path is not used: `u` is the view
+        // schema's even with another `U` reported (fifth review of #266).
+        let mut req = request(
+            "select v from db.shared.v",
+            "zzz",
+            &["DB.SHARED.U", "DB.OTHER.U"],
+        );
+        req.query_dependencies = vec![view(
+            "DB.SHARED.V",
+            "create view V as select l.v from u l cross join other.u o",
+            "SHARED",
+        )];
+        assert_eq!(
+            reads(&req),
+            Some(vec!["DB.SHARED.U".into(), "DB.OTHER.U".into()])
+        );
+        // The context the request declares for a view does not change it.
+        let declared = binding(&req).unwrap().hash;
+        req.query_dependencies[0].default_schema = "OTHER".into();
+        assert_eq!(binding(&req).unwrap().hash, declared);
+    }
+
+    #[test]
+    fn the_database_and_schema_a_query_returns_are_bound() {
+        let in_view = |schema: &str, body: &str| {
+            let mut req = request(
+                &format!("select v from db.{schema}.v"),
+                schema,
+                &["DB.RAW.U"],
+            );
+            req.query_dependencies = vec![view(&format!("DB.{schema}.V"), body, schema)];
+            binding(&req).map(|b| b.hash)
+        };
+        // Inside a view, the view's own schema.
+        let body = "create view V as select current_schema() as v from db.raw.u";
+        assert!(in_view("PROD", body).is_some());
+        assert_ne!(in_view("PROD", body), in_view("DEV", body));
+        let plain = "create view V as select v from db.raw.u";
+        assert_eq!(in_view("PROD", plain), in_view("DEV", plain));
+        // In the root SQL, the session's.
+        let root =
+            |schema: &str, sql: &str| binding(&request(sql, schema, &["DB.RAW.U"])).map(|b| b.hash);
+        let sql = "select current_database() || current_schema() as v from db.raw.u";
+        assert_ne!(root("PROD", sql), root("DEV", sql));
+        // The search path is unknown.
+        assert_eq!(
+            root("PROD", "select current_schemas() as v from db.raw.u"),
+            None
+        );
+    }
+
+    #[test]
+    fn time_travel_has_no_binding() {
+        let req = |sql: &str| request(sql, "dev", &["DB.RAW.U"]);
+        assert!(binding(&req("select v from db.raw.u")).is_some());
+        for clause in [
+            "at (offset => -60)",
+            "at (timestamp => '2026-11-23 00:00:00'::timestamp_ltz)",
+            "before (statement => '8e5d0ca9-005e-44e6-b858-a8f5b37c5726')",
+            "changes (information => default) at (offset => -60)",
+        ] {
+            let sql = format!("select v from db.raw.u {clause}");
+            // It parses: the clause, not the parser, declines.
+            assert!(
+                Parser::parse_sql(&SnowflakeDialect {}, &sql).is_ok(),
+                "{clause}"
+            );
+            assert_eq!(binding(&req(&sql)), None, "{clause}");
+        }
+    }
+
+    #[test]
     fn a_views_declared_columns_rename_its_output() {
         let with_columns = |columns: &str| {
             let mut req = request("select x from db.s.v", "s", &[]);
@@ -743,6 +888,30 @@ mod tests {
         };
         assert!(chain(MAX_DEPTH).is_some());
         assert_eq!(chain(MAX_DEPTH + 1), None);
+        // A view bound shallow first is still too deep on a longer path:
+        // the limit does not depend on traversal order.
+        let shared_after = |links: usize| {
+            let mut req = request("select * from db.s.a cross join db.s.c0", "s", &[]);
+            req.query_dependencies = vec![
+                view("DB.S.A", "select v from db.s.b", "S"),
+                view("DB.S.B", "select 1 as v", "S"),
+            ];
+            req.query_dependencies.extend((0..links).map(|i| {
+                let next = if i + 1 == links {
+                    "a".to_string()
+                } else {
+                    format!("c{}", i + 1)
+                };
+                view(
+                    &format!("DB.S.C{i}"),
+                    &format!("select v from db.s.{next}"),
+                    "S",
+                )
+            }));
+            binding(&req)
+        };
+        assert!(shared_after(MAX_DEPTH - 2).is_some());
+        assert_eq!(shared_after(MAX_DEPTH - 1), None);
         // A diamond of shared views, each read twice per level: linear
         // with each definition bound once, exponential otherwise.
         let mut req = request("select * from db.s.d0 a cross join db.s.d0 b", "s", &[]);

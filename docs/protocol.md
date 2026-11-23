@@ -794,8 +794,11 @@ When the fallback applies:
   exactly the epoch it recorded. On Snowflake the submit, each Stand-in read
   as its source, must have that build's physical binding (every relation
   reference, in the SQL and the view definitions it reads, resolved to the
-  physical relation it reads, a one-part name only when no other reported
-  or defined relation shares it; `executions.node_binding_hash`), every base
+  physical relation it reads, a one-part name of the root SQL only when no
+  other reported or defined relation shares it and a view's in the view's
+  own schema, with the database and schema `CURRENT_DATABASE()` and
+  `CURRENT_SCHEMA()` return; Time Travel has none;
+  `executions.node_binding_hash`), every base
   relation it reads must be reported by both, and a read of the submit's own
   Target relation is never copied (#264, ADR 0007 "Result copy over
   different inputs"). It
