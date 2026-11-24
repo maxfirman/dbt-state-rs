@@ -894,10 +894,11 @@ impl Warehouse {
     }
 
     /// The forms, beyond the shared ones, Explain prints for this
-    /// Warehouse's captured volatile decisions (#213).
+    /// Warehouse's captured volatile decisions (#211, #213).
     pub(crate) fn volatile_explain_forms(self) -> crate::explain::VolatileForms {
         match self {
             Self::Databricks => databricks::VOLATILE_EXPLAIN_FORMS,
+            Self::Snowflake => snowflake::VOLATILE_EXPLAIN_FORMS,
             _ => crate::explain::VolatileForms::NONE,
         }
     }

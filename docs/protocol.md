@@ -1089,7 +1089,7 @@ rebuild, with an empty map or only the other functions' values. Hosted
 reuses a table whose only Volatile call is the constant generator
 `uniform(1, 100, 1234)` (generator-merge entry 28, Explain 35; #211). This
 server still rebuilds it: matching relaxes a Reuse refusal, which waits for
-the maintainer (a Check-in, keyed in `replay_gaps.json`). A table downstream of a volatile model
+the maintainer (keyed in `replay_gaps.json`). A table downstream of a volatile model
 follows the ordinary
 [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) rules: the
 upstream's rebuild is upstream data drift, not an Upstream producer change,
@@ -1118,7 +1118,8 @@ section, its [DATA TEST](explain-catalog.md#data-test) section and its
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
 [testing.md](testing.md#goldenreplay_gapsjson)). Every entry of the three
 Snowflake fixtures replays, and every generator-merge entry but the
-Check-in `gu` reuse and its Explain (entries 28 and 35). Cells entry 146
+`gu` reuse that waits for the maintainer and its Explain (entries 28 and
+35). Cells entry 146
 echoes the runtime of another data test with the same SQL, the
 later-confirmed run of its history key (#200; it was keyed until then,
 decision 2 on #201).

@@ -156,6 +156,10 @@ pub(crate) struct VolatileForms {
     /// Kinds whose refusal after an External modification of the sole
     /// input lists that upstream against the refused build.
     pub(crate) input_modified_externally_refusal: &'static [ModelExecutionType],
+    /// Kinds whose refusal with zero Lag tolerance over one source upstream
+    /// lists that source against the refused build, fresh or after its data
+    /// drifted.
+    pub(crate) zero_tolerance_source_refusal: &'static [ModelExecutionType],
     /// Whether a reuse with Volatile evaluation requested (a checked
     /// reuse) says its query has not changed, with no tolerance line.
     pub(crate) requested_reuse: bool,
@@ -167,6 +171,7 @@ impl VolatileForms {
         dropped_target_refusal: &[],
         sourceless_refusal: &[],
         input_modified_externally_refusal: &[],
+        zero_tolerance_source_refusal: &[],
         requested_reuse: false,
     };
 }
@@ -1016,10 +1021,11 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// whose definition also rendered values (entry 186, #204: the own values
 /// only), or over an upstream table (entry 195, #206); and for an APPEND
 /// incremental and a snapshot (in `snapshot` wording) over an upstream table
-/// (entries 189 and 190, #205); and for a keyed MERGE incremental over a
-/// source table (`explain_volatile_generator_merge.jsonl` entry 37, #211),
-/// which with zero Lag tolerance also lists the upstream `OUTDATED` against
-/// the refused build after its data drifted (entry 45: `upstream data is
+/// (entries 189 and 190, #205); and, through a Warehouse's
+/// `VolatileForms`, for a Snowflake MERGE incremental with zero Lag
+/// tolerance over one source table (`explain_volatile_generator_merge.jsonl`
+/// entry 37, #211), which also lists the source `OUTDATED` against the
+/// refused build after its data drifted (entry 45: `upstream data is
 /// outdated`). Every form with an upstream or a query
 /// dependency adds `upstream model queries have not changed`; the dependency
 /// says `upstream data is up to date`, and an upstream table is listed
@@ -1077,13 +1083,14 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             query.push(upstream_queries_unchanged);
             upstream_data_up_to_date()
         }
-        (K::Full | K::Append | K::Merge | K::Snapshot, false, true)
-            if upstreams_fresh_against_anchor(node)
+        (kind, false, true)
+            if matches!(kind, K::Full | K::Append | K::Snapshot)
+                && upstreams_fresh_against_anchor(node)
                 || forms.input_modified_externally_refusal.contains(&kind)
                     && sole_upstream_modified_externally(node)
-                || kind == K::Merge
+                || forms.zero_tolerance_source_refusal.contains(&kind)
                     && node.tolerance_ms == 0
-                    && upstreams_data_only_against_anchor(node) =>
+                    && sole_source_judged_against_anchor(node) =>
         {
             query.push(upstream_queries_unchanged);
             data_freshness_analysis_against_anchor(node)
@@ -1111,19 +1118,28 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
     })
 }
 
-/// Whether every genuine upstream is judged against the anchored build and
-/// none is unprovable or changed producer since it: each is fresh, or only
-/// its data drifted. #211 captured the drifted form for a MERGE incremental
-/// with zero Lag tolerance over a source table
-/// (`explain_volatile_generator_merge.jsonl` entry 45).
-fn upstreams_data_only_against_anchor(node: &ExplainNode) -> bool {
+/// #211: the one genuine upstream is a source (no recorded build produced
+/// it, then or now) judged against the anchored build, fresh or with only
+/// its data drifted since it (`explain_volatile_generator_merge.jsonl`
+/// entries 37 and 45).
+fn sole_source_judged_against_anchor(node: &ExplainNode) -> bool {
+    use crate::store::Producer;
     node.anchor.as_ref().is_some_and(|anchor| {
         let freshness = decision::upstream_freshness(freshness_inputs(node), anchor);
-        freshness.evidence == decision::FreshnessEvidence::Evaluated
-            && freshness
-                .upstreams
+        let [upstream] = freshness.upstreams.as_slice() else {
+            return false;
+        };
+        let source = |inputs: &[InputTable]| {
+            inputs
                 .iter()
-                .all(|u| !u.unprovable && !u.producer_changed)
+                .find(|t| t.name == upstream.name)
+                .is_some_and(|t| t.producer == Producer::NoBuild)
+        };
+        freshness.evidence == decision::FreshnessEvidence::Evaluated
+            && !upstream.unprovable
+            && !upstream.producer_changed
+            && source(&node.input_tables)
+            && source(&anchor.input_tables)
     })
 }
 

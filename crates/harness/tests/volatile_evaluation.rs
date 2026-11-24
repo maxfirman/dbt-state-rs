@@ -2421,13 +2421,14 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     // Snowflake: the captured FULL first build renders, and so does an APPEND
-    // incremental's, a snapshot's and a custom node's (#205) and a view's
-    // with evaluation on (#204); the same build of another incremental
-    // strategy does not.
+    // incremental's, a snapshot's and a custom node's (#205), a view's with
+    // evaluation on (#204) and a MERGE incremental's (#211); the same build
+    // of another incremental strategy does not.
     let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
     for execution_type in [
         ExecutionType::Full,
         ExecutionType::Append,
+        ExecutionType::Merge,
         ExecutionType::Snapshot,
         ExecutionType::DbtCustom,
         ExecutionType::View,
@@ -2440,7 +2441,6 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
         assert!(!rendered(&ready).is_empty(), "{case}");
     }
     for execution_type in [
-        ExecutionType::Merge,
         ExecutionType::InsertOverwrite,
         ExecutionType::DeleteInsert,
         ExecutionType::Microbatch,
@@ -3764,13 +3764,22 @@ mod generator_merge {
 
     const GENERATOR_MERGE: &str =
         include_str!("../../../golden/fixtures/explain_volatile_generator_merge.jsonl");
-    /// `mv` (submit, its Explain): first build, unchanged rerun, and the
-    /// rerun after upstream data drift.
-    const MV_FIRST: (usize, usize) = (7, 19);
-    const MV_RERUN: (usize, usize) = (31, 37);
-    const MV_DRIFT: (usize, usize) = (41, 45);
+    /// `mv`'s submits and hosted's Explain of each: first build, unchanged
+    /// rerun, and the rerun after upstream data drift.
+    const MV_FIRST: usize = 7;
+    const MV_FIRST_EXPLAIN: usize = 19;
+    const MV_RERUN: usize = 31;
+    const MV_RERUN_EXPLAIN: usize = 37;
+    const MV_DRIFT: usize = 41;
+    const MV_DRIFT_EXPLAIN: usize = 45;
     /// `gu`'s unchanged rerun, which hosted reuses (a Check-in finding).
     const GU_RERUN: usize = 28;
+    /// `gr` (`random()` alone): first build and rerun refused at Reuse
+    /// qualification.
+    const GR_FIRST: usize = 10;
+    const GR_RERUN: usize = 27;
+    /// The source table both MERGE models read, as the client reports it.
+    const MS: &str = r#""CDO_DEMO_DB"."PROD_STATE_DEMO"."MS_000054C3E38D""#;
 
     /// `explain` with the `updated … after` and `last updated:` lines masked,
     /// as the conformance replay masks them.
@@ -3784,14 +3793,18 @@ mod generator_merge {
         let database = std::sync::Arc::new(support::TestDatabase::new("volatile_211_merge").await);
         let server = support::start_server_on_database(database.clone()).await;
         let entries = entries(GENERATOR_MERGE);
-        let responses = replay(&Scenario::connect(&server).await, &entries, MV_DRIFT.0).await;
+        let responses = replay(&Scenario::connect(&server).await, &entries, MV_DRIFT).await;
         let explains: Vec<_> = [
-            (MV_FIRST, "mv first build"),
-            (MV_RERUN, "mv unchanged rerun"),
-            (MV_DRIFT, "mv rerun after upstream data drift"),
+            (MV_FIRST, MV_FIRST_EXPLAIN, "mv first build"),
+            (MV_RERUN, MV_RERUN_EXPLAIN, "mv unchanged rerun"),
+            (
+                MV_DRIFT,
+                MV_DRIFT_EXPLAIN,
+                "mv rerun after upstream data drift",
+            ),
         ]
         .into_iter()
-        .map(|((submit, explained), case)| {
+        .map(|(submit, explained, case)| {
             assert_matches_hosted(&responses[&submit], &entries[submit], case);
             HostedExplain::of_response(
                 case,
@@ -3829,8 +3842,8 @@ mod generator_merge {
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
         let entries = entries(GENERATOR_MERGE);
-        let first = captured_submit(&entries[MV_FIRST.0].request);
-        let drifted = captured_submit(&entries[MV_DRIFT.0].request);
+        let first = captured_submit(&entries[MV_FIRST].request);
+        let drifted = captured_submit(&entries[MV_DRIFT].request);
         let own_epoch = |s: &Submit| {
             let req = s.clone().build();
             req.tables
@@ -3851,7 +3864,7 @@ mod generator_merge {
                 "an upstream of unknown epoch",
                 drifted.clone().with(|r| {
                     for t in &mut r.tables {
-                        if t.name.contains("MS_") {
+                        if t.name == MS {
                             t.last_modified_epoch = None;
                         }
                     }
@@ -3868,5 +3881,32 @@ mod generator_merge {
             let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
             assert!(texts(&explained).is_empty(), "{case}: {explained}");
         }
+
+        // The upstream is a dbt-built table, rebuilt between the two builds
+        // with its producer unchanged: `gr` (a `random()` table, refused at
+        // Reuse qualification on its rerun) built into `ms`'s relation.
+        let sc = sc.org("a dbt-built upstream rebuilt");
+        let as_ms = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("GR_000054C3E38D", "MS_000054C3E38D")
+                .replace("gr_000054c3e38d", "ms_000054c3e38d");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        let ms_epoch = |s: &Submit| {
+            let req = s.clone().build();
+            req.tables
+                .iter()
+                .find(|t| t.name == MS)
+                .and_then(|t| t.last_modified_epoch)
+                .unwrap()
+        };
+        sc.build(as_ms(GR_FIRST), ms_epoch(&first)).await;
+        sc.build(first.clone(), built_epoch).await;
+        sc.build(as_ms(GR_RERUN), ms_epoch(&drifted)).await;
+        let rebuilt = sc.expect_execute(drifted.clone()).await;
+        assert!(!rendered(&rebuilt).is_empty(), "refused and rendered");
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
     }
 }

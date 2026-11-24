@@ -79,7 +79,7 @@ the source.
 | Node | Round | S | C | E | Decision, codes | Description | Map | Read back | `ms` epoch |
 |---|---|---|---|---|---|---|---|---|---|
 | gl | 1 | 6 | 12 | 16 | EXECUTE, 6 / 6 | "model was executed because its table did not exist" | `{}` | `V = gl_000054c3e38d` | — |
-| gl | 2 | 30 | — | 34 | SKIP, – / –, runtime 5287 (C 12) | "model was a no-op because both its query and its upstream data are up to date" | `{}` | unchanged | — |
+| gl | 2 | 30 | — | 34 | SKIP, – / –, runtime 5287 (C 12) | "model was a no-op because both its query and its upstream data are up to date" | `{}` | `V = gl_000054c3e38d` (kept) | — |
 | gu | 1 | 9 | 11 | 17 | EXECUTE, 6 / 6 | "… its table did not exist" | `UNIFORM(1, 100, 1234) -> 96` | `U = 66` | — |
 | gu | 2 | 28 | — | 35 | **SKIP**, – / –, runtime 4826 (C 11) | "… both its query and its upstream data are up to date" | `UNIFORM(1, 100, 1234) -> 96` | `U = 66` (kept) | — |
 | gr | 1 | 10 | 15 | 18 | EXECUTE, 6 / 6 | "… its table did not exist" | `RANDOM() -> 0.6111945338547795` | `R = 6337935761198095612` | — |
@@ -88,7 +88,7 @@ the source.
 | mv | 2 | 31 | 33 | 37 | EXECUTE, 6 / 6 | "… either its query didn't match or its upstream data is out of date" | `CURRENT_TIMESTAMP() -> 2026-11-24 00:01:42.090251` | `V = a`, `TS = 00:01:44.935` | 1795478465632 |
 | mv | 3 | 41 | 43 | 45 | EXECUTE, 6 / 6 | same | `CURRENT_TIMESTAMP() -> 2026-11-24 00:02:16.869513` | `V = b`, `TS = 00:02:19.734` | 1795478527299 (00:02:07.299) |
 | mc | 1 | 8 | 13 | 20 | EXECUTE, 6 / 6 | "… its table did not exist" | `{}` | `V = a`, `TS = 2026-01-01 00:00:00` | 1795478465632 |
-| mc | 2 | 29 | — | 38 | SKIP, – / –, runtime 5403 (C 13) | "… both its query and its upstream data are up to date" | `{}` | unchanged | 1795478465632 |
+| mc | 2 | 29 | — | 38 | SKIP, – / –, runtime 5403 (C 13) | "… both its query and its upstream data are up to date" | `{}` | `V = a`, `TS = 2026-01-01 00:00:00` (kept) | 1795478465632 |
 | mc | 3 | 42 | 44 | 46 | EXECUTE, 6 / 6 | "… either its query didn't match or its upstream data is out of date" | `{}` | `V = b`, `TS = 2026-01-01 00:00:00` | 1795478527299 |
 
 Every response has `is_stale: false`. The source read back `V = a` before
@@ -181,18 +181,19 @@ the `TS` the Warehouse wrote (the Warehouse executes the original SQL).
 
 `cargo test -p dbt-state-harness --test conformance conformance_replay_all_corpora`
 replays every entry exactly except the two keyed Check-in gaps (28, 35).
-Before this change the replay differed in five entries:
+Before this change the replay differed in seven entries:
 
 | Entries | What differed | Now |
 |---|---|---|
 | 7, 31, 41 | `mv`'s map: hosted filled, local `{}` (MERGE was not a Snowflake cell) | rendered: `cell(Merge, true, FIRST_BUILD \| REFUSED_VOLATILE_SQL, Own)` in `warehouse/snowflake.rs` |
-| 37, 45 | `mv`'s rerun trees: local empty | `explain.rs::volatile_rebuild_lines` prints the MERGE rerun tree over fresh upstreams, and over drifted upstreams with zero Lag tolerance |
+| 37, 45 | `mv`'s rerun trees: local empty | `explain.rs::volatile_rebuild_lines` prints the MERGE rerun tree with zero Lag tolerance over one source table, fresh or after its data drifted (`snowflake::VOLATILE_EXPLAIN_FORMS`) |
 | 28, 35 | `gu`'s reuse | keyed Check-in gaps |
 
 These are response-only changes: no decision, identity or Upstream producer
 rule changed. Uncaptured neighbours keep the conservative behavior: a MERGE
-rerun after drift within a Lag tolerance, or over an upstream of unknown
-epoch, is refused and rendered but explained with no tree
+rerun after drift within a Lag tolerance, over an upstream of unknown epoch,
+or over a dbt-built upstream rebuilt since the refused build, is refused and
+rendered but explained with no tree
 (`snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree`).
 The other #211 cells stay open in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

@@ -681,7 +681,7 @@ prints no tree (#211).
 
 #### SKIP of a constant-generator call, evaluation on (hosted only)
 
-#211, a **Check-in** finding (`explain_volatile_generator_merge.jsonl`
+#211, pending a maintainer decision (`explain_volatile_generator_merge.jsonl`
 entry 35, `gu`). Hosted reuses a Snowflake table whose only Volatile call
 is `uniform(1, 100, 1234)`, with evaluation requested, and explains the
 reuse with the volatile block and no tolerance line, the form of the
@@ -1088,13 +1088,16 @@ back since the build, so no summary line follows, as in a SKIP tree. The
 tree renders only when no upstream drifted or changed its producer since
 that build.
 
-A keyed MERGE incremental over a source table prints the same tree (#211,
-`explain_volatile_generator_merge.jsonl` `mv`). On its unchanged rerun
-(entry 37) the source is `<FRESH>` at the epoch recorded at the refused
-build, so `upstream data is up to date` [SUCCESS] follows the listing. With
-zero Lag tolerance it prints the tree after the source's data drifted as
-well (entry 45), with the source `<OUTDATED>` against the refused build:
+A Snowflake MERGE incremental with zero Lag tolerance over one source
+table prints the same tree (#211, `explain_volatile_generator_merge.jsonl`
+`mv`; `Warehouse::volatile_explain_forms`). On its unchanged rerun (entry
+37) the source is `<FRESH>` at the epoch recorded at the refused build, so
+`upstream data is up to date` [SUCCESS] follows the listing. After the
+source's data drifted (entry 45) the source is `<OUTDATED>` against the
+refused build:
 ```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
 - query analysis
   - …volatile lines…
   - the model query has changed                       [FAIL]    <NODE_QUERY_CHANGED>
@@ -1113,12 +1116,13 @@ the drift with the ordinary SHAPE 9 tree (entries 38, 46).
 
 Not captured, and keeping the decision's own (empty) tree: the same rerun
 over an upstream table that drifted or changed producer since the refused
-build (a MERGE with zero Lag tolerance after data drift is the one captured
-drift), or over both an upstream table and a query dependency; a custom node
-rerun with upstreams; an APPEND incremental or snapshot rerun without
-upstreams; the APPEND, snapshot, MERGE or custom rerun with query
-dependencies; a MERGE rerun after drift within a Lag tolerance, or after an
-upstream changed producer; the INSERT_OVERWRITE, DELETE_INSERT and
+build (a MERGE with zero Lag tolerance after its source's data drifted is
+the one captured drift), or over both an upstream table and a query
+dependency; a custom node rerun with upstreams; an APPEND incremental or
+snapshot rerun without upstreams; the APPEND, snapshot, MERGE or custom
+rerun with query dependencies; a MERGE rerun with a Lag tolerance, over
+several upstreams or over a dbt-built upstream; the INSERT_OVERWRITE,
+DELETE_INSERT and
 MICROBATCH strategies; a view over a `ref`. Those strategies render no
 values at all, so they print no volatile lines. A
 Databricks FULL rerun prints the tree shown, with `RAND()` (#198,

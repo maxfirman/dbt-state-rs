@@ -340,7 +340,8 @@ server keeps the conservative behavior described.
       the model rerun tree on both reruns; after drift with zero Lag
       tolerance it lists the source `<OUTDATED>` with `upstream data is
       outdated` (entries 37, 45). Hosted gave no separate reason for the
-      drift. The deterministic control `mc` SKIPs the unchanged rerun and
+      drift. The tree is printed only for that shape (zero Lag tolerance,
+      one source upstream); other MERGE reruns keep an empty tree. The deterministic control `mc` SKIPs the unchanged rerun and
       rebuilds after drift with an empty map (entries 29, 42), as this
       server already did.
   - Snowflake, reachable through client 2.0.11 but not captured (#211):

@@ -640,8 +640,8 @@ exactly, and values of other functions are compared as they are. Explain
 (`conformance.rs::normalize_volatile_line`). A malformed value fails the
 replay. Field-scoped gaps are judged after this normalization, so a map that
 differs only in its runtime values needs no gap. The only Volatile evaluation
-gaps are `explain_volatile_generator_merge.jsonl` entries 28 and 35, the
-#211 Check-in: hosted reuses a table whose only Volatile call is a
+gaps are `explain_volatile_generator_merge.jsonl` entries 28 and 35, which
+wait for the maintainer (#211): hosted reuses a table whose only Volatile call is a
 constant generator, and this server still rebuilds it
 ([correctness-handoff.md](correctness-handoff.md#open-hosted-questions)).
 `explain_volatile_cells.jsonl` entry 146 had a field-scoped

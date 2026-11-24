@@ -285,6 +285,19 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     }
 };
 
+/// How Explain describes the captured volatile decisions beyond the shared
+/// forms (#211, `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`):
+/// a MERGE refusal with zero Lag tolerance over one source table lists the
+/// source against the refused build, fresh (`explain_volatile_generator_merge.jsonl`
+/// entry 37) or after its data drifted (entry 45).
+pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
+    use crate::query_cache::ModelExecutionType::Merge;
+    crate::explain::VolatileForms {
+        zero_tolerance_source_refusal: &[Merge],
+        ..crate::explain::VolatileForms::NONE
+    }
+};
+
 /// Verified live: the same model in two environments shares this identity.
 pub(super) const NAMESPACE_IDENTITY: NamespaceIdentity = NamespaceIdentity::SchemaAbstracted {
     version: b"dbt-state-ns-logic-v4",
