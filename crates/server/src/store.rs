@@ -986,7 +986,15 @@ impl Store {
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
                    unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
-                   rendered_volatile_values, volatile_evaluation_requested
+                   rendered_volatile_values, volatile_evaluation_requested,
+                   (SELECT jsonb_build_object(
+                       'target_table', held.target_table,
+                       'input_tables', held.input_tables
+                    )
+                    FROM executions held
+                    WHERE held.org_id = node_decisions.org_id
+                      AND held.id = node_decisions.copy_source_build_id
+                   ) AS copy_source_build
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -1067,6 +1075,8 @@ pub struct ExplainDecisionRow {
     pub is_stale: bool,
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
+    /// The held build's target and recorded inputs, scoped to this decision.
+    pub copy_source_build: Option<serde_json::Value>,
     pub input_tables: serde_json::Value,
     pub query_dependencies: serde_json::Value,
     /// The matched prior `executions` row id (NULL when the decision matched no
@@ -1167,6 +1177,7 @@ mod tests {
             is_stale: false,
             target_table: Some("T".into()),
             clone_source: None,
+            copy_source_build: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
             query_dependencies: serde_json::json!([]),
             matched_execution_id: Some(1),

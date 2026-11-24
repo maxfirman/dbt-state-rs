@@ -828,9 +828,11 @@ it passes over `mid` as an equivalent that read another relation, and over
 `new` as stale. Before #264 it copied `mid` alone (entries 10, 78), copied
 `mid` over `old` when `mid` completed later (entries 20, 26), and built when
 all three competed and `mid` completed after `old` (entries 46, 54).
-Hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
-that this server renders on Databricks only. The Snowflake Explain gaps
-(entries 3, 7, 21, 27, 33, 39, 47, 55, 61, 67, 75) are tracked in #252.
+The Snowflake copy trees now replay with the hosted `<FRESH>` badge and
+destination anchor line for same-input upstreams (#252). For a dropped
+Target relation with its own build still recorded, the existing own-build
+listing applies. Hosted anchor precedence remains uncharacterized when
+that build's upstream epochs differ from the fresh copy source's epochs.
 [Cross-warehouse comparison](reports/result-copy-source-selection-2026-11-22.md),
 [Snowflake report](reports/snowflake-copy-source-choice-2026-11-21.md).
 

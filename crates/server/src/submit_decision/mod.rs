@@ -150,6 +150,19 @@ impl SubmitOutcome {
             Self::Copy { .. } | Self::ChainLimitExecute { .. } => None,
         }
     }
+
+    /// The exact execution the plan selected for an unanchored Snowflake FULL
+    /// copy into an absent target. Capture follows that execution's provenance.
+    pub(crate) fn explain_copy_source_id(&self, req: &qc::SubmitEnrichedSqlRequest) -> Option<i64> {
+        let Self::Copy { copy, record, .. } = self else {
+            return None;
+        };
+        (Warehouse::from_dialect(&req.dialect) == Warehouse::Snowflake
+            && req.execution_type == ModelExecutionType::Full as i32
+            && own_target_absent(req)
+            && record.matched_execution_id.is_none())
+        .then_some(copy.source_execution_id)
+    }
 }
 
 /// What a SQL submit's capture persists for `dbt state explain` (ADR 0005),
@@ -1197,37 +1210,6 @@ async fn latest_data_test_of_unique_id(
     }
 }
 
-/// The most copies [`held_build`] follows back to the build they hold.
-const HELD_BUILD_HOPS: usize = 16;
-
-/// The ordinary build whose result `row` holds: `row` itself when it is a
-/// build, else, for a copy this server recorded (a Result copy on submit or a
-/// RegisterClone), the build it was copied from, through any copies between
-/// (`clone_source_execution_id`, each a confirmed row of the organization).
-/// A copy holds exactly its source's result, so what that build recorded at
-/// build time is what the copy was computed from (#264). `None` when the
-/// chain is broken or longer than [`HELD_BUILD_HOPS`].
-async fn held_build(
-    store: &Store,
-    org_id: &str,
-    row: ExecutionRow,
-) -> sqlx::Result<Option<ExecutionRow>> {
-    let mut row = row;
-    for _ in 0..=HELD_BUILD_HOPS {
-        if row.clone_source_table.is_none() {
-            return Ok(Some(row));
-        }
-        let Some(source_id) = row.clone_source_execution_id else {
-            return Ok(None);
-        };
-        match store.execution_by_id(org_id, source_id).await? {
-            Some(source) if source.status == "confirmed" => row = source,
-            _ => return Ok(None),
-        }
-    }
-    Ok(None)
-}
-
 /// A Result copy on submit is reused only while the build it holds still
 /// qualifies as a copy source for the submit ([`copy_search::reads_as_recorded`])
 /// and the copy recorded that build's inputs
@@ -1254,7 +1236,8 @@ async fn revalidate_copy_candidate(
         return Ok(());
     }
     let reads = crate::stand_in::input_reads(store, evidence).await?;
-    let proven = held_build(store, org_id, candidate.clone())
+    let proven = store
+        .held_build(org_id, candidate.clone())
         .await?
         .is_some_and(|held| {
             copy_search::reads_as_recorded(req, evidence, &reads, &held).is_some_and(|aligned| {
@@ -1409,7 +1392,7 @@ async fn result_copy_fallback(
             };
             // A copy is judged by the build it holds; one whose build cannot
             // be established is passed over.
-            let Some(held) = held_build(store, org_id, source.clone()).await? else {
+            let Some(held) = store.held_build(org_id, source.clone()).await? else {
                 continue;
             };
             let (judged, inputs) =

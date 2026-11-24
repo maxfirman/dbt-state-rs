@@ -23,6 +23,7 @@ use crate::decision::{self, DecisionKind, DecisionReason, NoCandidate, Reuse};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
+use serde::Deserialize;
 
 // ── proto enum ints (explain_service.proto) ───────────────────────────────
 // Markers.
@@ -140,6 +141,12 @@ pub struct ExplainNode {
     /// (FRESH/OUTDATED + «gap» + «rel_time») can only be re-derived when this is
     /// present — it lands with the `matched_execution_id` column (ticket #30).
     pub anchor: Option<ExecutionRow>,
+}
+
+#[derive(Deserialize)]
+struct CopySourceBuild {
+    target_table: String,
+    input_tables: Vec<InputTable>,
 }
 
 /// The forms, beyond the shared ones, that Explain prints for a Warehouse's
@@ -286,7 +293,7 @@ impl ExplainNode {
     /// The Explain input for one persisted node decision with its matched
     /// and unmatched executions. `None` for a row without an execution
     /// decision id or with an unknown decision class.
-    pub(crate) fn of_decision(row: crate::store::ExplainDecisionRow) -> Option<Self> {
+    fn of_decision(row: &crate::store::ExplainDecisionRow) -> Option<Self> {
         let decision = DecisionKind::from_stored(&row.decision)?;
         Some(Self {
             display_submitted_at_ms: row.display_submitted_at_ms,
@@ -372,11 +379,30 @@ pub(crate) fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> 
 
 /// Re-derive the full `ExplainMessageEntry` (tree + description) for one node.
 pub fn explain_entry(node: &ExplainNode) -> qc::ExplainMessageEntry {
+    entry_with_source(node, None)
+}
+
+/// Render a persisted decision with the build held by its selected copy source.
+pub(crate) fn recorded_entry(
+    row: &crate::store::ExplainDecisionRow,
+) -> Option<qc::ExplainMessageEntry> {
+    let node = ExplainNode::of_decision(row)?;
+    let source = row
+        .copy_source_build
+        .as_ref()
+        .and_then(|value| CopySourceBuild::deserialize(value).ok());
+    Some(entry_with_source(&node, source.as_ref()))
+}
+
+fn entry_with_source(
+    node: &ExplainNode,
+    source: Option<&CopySourceBuild>,
+) -> qc::ExplainMessageEntry {
     qc::ExplainMessageEntry {
         execution_decision_id: node.execution_decision_id.clone(),
         decision: node.decision.wire_decision(),
         decision_description: decision_description(node),
-        explain_lines: explain_lines(node),
+        explain_lines: lines_with_source(node, source),
     }
 }
 
@@ -998,7 +1024,11 @@ fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
 /// Build the structured tree: fenced by node kind, then shaped by the
 /// persisted decision reason, with the values Volatile evaluation rendered.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let mut lines = volatile_rebuild_lines(node).unwrap_or_else(|| decision_lines(node));
+    lines_with_source(node, None)
+}
+
+fn lines_with_source(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
+    let mut lines = volatile_rebuild_lines(node).unwrap_or_else(|| decision_lines(node, source));
     add_volatile_lines(node, &mut lines);
     lines
 }
@@ -1410,7 +1440,7 @@ fn compares_templates(node: &ExplainNode) -> bool {
 }
 
 /// The tree [`explain_lines`] prints before Volatile evaluation's lines.
-fn decision_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn decision_lines(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
     let mut displayed = node.clone();
     if let Some(comparison) = &node.template_comparison {
         displayed.input_tables.sort_by_key(|input| {
@@ -1425,7 +1455,7 @@ fn decision_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     if let Some(lines) = literal_dependency_lines(node) {
         return lines;
     }
-    let mut lines = base_explain_lines(node);
+    let mut lines = base_explain_lines(node, source);
     let Some(current) = &node.template_comparison else {
         return lines;
     };
@@ -1588,7 +1618,10 @@ fn literal_dependency_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> 
     ])
 }
 
-fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn base_explain_lines(
+    node: &ExplainNode,
+    source: Option<&CopySourceBuild>,
+) -> Vec<qc::ExplainLine> {
     // F7 fence (PR #31 round 4): never render an invented tree for an
     // uncharacterized node kind (this also fences data-test EXECUTE/CLONE).
     if !is_characterized(node.execution_type, node.decision) {
@@ -1670,7 +1703,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             tree[0].children.push(leaf(format!("but it's old. We would have cloned from {}, but the maximum number of nested clones has been reached", quote(node.clone_source.as_deref().unwrap_or_default())), Some(MARKER_FAIL), None));
             tree
         }
-        Some(Shape::Clone) => clone_tree(node),
+        Some(Shape::Clone) => clone_tree(node, source),
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
@@ -2847,7 +2880,7 @@ fn query_analysis_changed(node: &ExplainNode) -> qc::ExplainLine {
 
 // ── CLONE ────────────────────────────────────────────────────────────────────
 
-fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn clone_tree(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
     let mut out = Vec::new();
     // `table analysis`: the table does not exist but could be cloned from the
     // clone source (catalog CLONE shape).
@@ -2911,7 +2944,7 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         freshness_children.push(if node.anchor.is_some() {
             upstream_dependencies_freshness(node, &upstreams)
         } else {
-            clone_upstream_dependencies(&upstreams)
+            clone_upstream_dependencies(node, &upstreams, source)
         });
     }
     freshness_children.extend(copied_freshness_summary(node));
@@ -2940,20 +2973,47 @@ fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     lines
 }
 
-/// The CLONE `upstream dependencies` listing. Unlike the SKIP/anchored listing
-/// ([`upstream_dependencies_freshness`]), a clone has NO own-build anchor (ADR
-/// 0005: a CLONE records no `matched_execution_id`), so the hosted service does
-/// NOT emit a FRESH/OUTDATED badge or the anchor-relative `no updates since …`
-/// line — it lists each upstream with ONLY the humanized `last updated: …`
-/// child. VERIFIED LIVE (golden/fixtures/explain_clone_history.jsonl, the
-/// history-bearing CLONE capture from #34). The earlier generator reused the
-/// anchored SKIP listing here and wrongly emitted a `<FRESH>` badge plus a
-/// `no updates since … last executed` line that hosted never renders for a
-/// clone. A data-test EXECUTE lists its decision-time upstreams the same way,
-/// even when it has a matched build (VERIFIED LIVE 2026-11-10,
-/// explain_data_test_history.jsonl).
-fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
-    let children = upstreams.iter().map(|up| clone_upstream_line(up)).collect();
+/// All reported upstreams must match direct reads of the held build at known
+/// epochs. A Stand-in that qualified the copy can have a different physical
+/// name from the read recorded by that build.
+fn copy_source_read_same_epochs(build: &CopySourceBuild, upstreams: &[&InputTable]) -> bool {
+    use crate::sql_norm::canonical_identifiers;
+    let build_target = canonical_identifiers(&build.target_table);
+    let mut current: std::collections::BTreeMap<_, _> = upstreams
+        .iter()
+        .map(|up| (canonical_identifiers(&up.name), up.last_modified_epoch))
+        .collect();
+    current.len() == upstreams.len()
+        && build
+            .input_tables
+            .iter()
+            .map(|up| (canonical_identifiers(&up.name), up.last_modified_epoch))
+            .filter(|(name, _)| *name != build_target)
+            .all(|(name, epoch)| epoch.is_some() && current.remove(&name) == Some(epoch))
+        && current.is_empty()
+}
+
+/// An unanchored copy lists a verdict only when its source read the same
+/// upstreams at the same epochs. The anchor line names the destination.
+fn clone_upstream_dependencies(
+    node: &ExplainNode,
+    upstreams: &[&InputTable],
+    source: Option<&CopySourceBuild>,
+) -> qc::ExplainLine {
+    let fresh = source.is_some_and(|build| copy_source_read_same_epochs(build, upstreams));
+    let children = upstreams
+        .iter()
+        .map(|up| {
+            let mut entry = clone_upstream_line(up);
+            if fresh {
+                entry.badge = Some(BADGE_FRESH);
+                entry
+                    .children
+                    .insert(0, fresh_anchor_line(node, &fqn(node)));
+            }
+            entry
+        })
+        .collect();
     section("upstream dependencies", children)
 }
 
@@ -3502,10 +3562,8 @@ mod tests {
         );
         assert_eq!(lines[1].text, "query analysis (vs clone)");
         assert_eq!(lines[2].text, "data freshness analysis (vs clone)");
-        // CLONE upstream listing (#34): a clone has no own-build anchor, so the
-        // upstream is listed with NO badge and ONLY a `last updated: …` child —
-        // NOT the SKIP-style `<FRESH>` badge + `no updates since …` anchor line.
-        // Pinned to golden/fixtures/explain_clone_history.jsonl.
+        // Without source evidence, the upstream is listed with just its
+        // last-updated line (explain_clone_history.jsonl).
         let deps = &lines[2].children[0];
         assert_eq!(deps.text, "upstream dependencies");
         let up = &deps.children[0];
@@ -3524,6 +3582,27 @@ mod tests {
         assert_eq!(
             lines[2].children[1].text, "upstream data is up to date",
             "the clone freshness section still ends with the up-to-date line"
+        );
+    }
+
+    #[test]
+    fn same_epoch_clone_listing_names_the_destination() {
+        let mut n = node(DecisionKind::Clone, ModelExecutionType::Full as i32, "");
+        let source = r#""DB"."PROD"."T""#;
+        let upstream = tbl(r#""DB"."RAW"."UP""#);
+        n.clone_source = Some(source.into());
+        n.input_tables = vec![upstream.clone()];
+        let build = CopySourceBuild {
+            target_table: source.into(),
+            input_tables: vec![tbl(source), upstream],
+        };
+
+        let lines = lines_with_source(&n, Some(&build));
+        let upstream = &lines[2].children[0].children[0];
+        assert_eq!(upstream.badge, Some(BADGE_FRESH));
+        assert_eq!(
+            upstream.children[0].text,
+            r#"no updates since "DB"."S"."T" last executed"#
         );
     }
 
