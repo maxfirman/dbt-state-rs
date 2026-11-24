@@ -147,8 +147,8 @@ pub struct CaptureInput {
     pub default_schema: Option<String>,
     pub clone_source: Option<String>,
     pub clone_sqls: Option<Vec<String>>,
-    /// The build held by the source of a Snowflake submit copy, for Explain.
-    pub copy_source_build_id: Option<i64>,
+    /// The source execution named by the copy plan, for Explain.
+    pub copy_source_execution_id: Option<i64>,
     pub input_tables: Vec<InputTable>,
     /// Upstream dependency relation names (from query_dependencies), used for
     /// lineage reconstruction.
@@ -286,6 +286,21 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .fetch_one(pool)
     .await?;
 
+    // A replacement at the same physical name cannot change which build
+    // the selected source held. Follow its recorded execution IDs only.
+    let copy_source_build_id = if let Some(id) = i.copy_source_execution_id {
+        let store = crate::store::Store::new(pool.clone());
+        match store.execution_by_id(&i.org_id, id).await? {
+            Some(source) if source.status == "confirmed" => store
+                .held_build(&i.org_id, source)
+                .await?
+                .map(|build| build.id),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     // 5. Append the node decision (the audit log row).
     let clone_sqls = i
         .clone_sqls
@@ -353,7 +368,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(i.volatile_evaluation.stored_values())
     .bind(i.volatile_evaluation.requested)
     .bind(&i.principal_id)
-    .bind(i.copy_source_build_id)
+    .bind(copy_source_build_id)
     .execute(pool)
     .await?;
 

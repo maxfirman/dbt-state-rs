@@ -23,6 +23,7 @@ use crate::decision::{self, DecisionKind, DecisionReason, NoCandidate, Reuse};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
+use serde::Deserialize;
 
 // ── proto enum ints (explain_service.proto) ───────────────────────────────
 // Markers.
@@ -112,8 +113,6 @@ pub struct ExplainNode {
     /// Warehouse presentation only; raw names still identify own inputs.
     pub display_target_table: Option<String>,
     pub clone_source: Option<String>,
-    /// The build held by the Snowflake copy source, read as recorded.
-    copy_source_build: Option<CopySourceBuild>,
     pub input_tables: Vec<InputTable>,
     pub query_dependencies: Vec<String>,
     /// The node's Lag tolerance (0: none) and the reuse candidate's build age
@@ -144,7 +143,7 @@ pub struct ExplainNode {
     pub anchor: Option<ExecutionRow>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Deserialize)]
 struct CopySourceBuild {
     target_table: String,
     input_tables: Vec<InputTable>,
@@ -294,7 +293,7 @@ impl ExplainNode {
     /// The Explain input for one persisted node decision with its matched
     /// and unmatched executions. `None` for a row without an execution
     /// decision id or with an unknown decision class.
-    pub(crate) fn of_decision(row: crate::store::ExplainDecisionRow) -> Option<Self> {
+    fn of_decision(row: &crate::store::ExplainDecisionRow) -> Option<Self> {
         let decision = DecisionKind::from_stored(&row.decision)?;
         Some(Self {
             display_submitted_at_ms: row.display_submitted_at_ms,
@@ -316,10 +315,6 @@ impl ExplainNode {
                 },
             ),
             clone_source: row.clone_source.clone(),
-            copy_source_build: row
-                .copy_source_build
-                .clone()
-                .and_then(|value| serde_json::from_value(value).ok()),
             input_tables: row.input_tables(),
             query_dependencies: serde_json::from_value(row.query_dependencies.clone())
                 .unwrap_or_default(),
@@ -384,11 +379,30 @@ pub(crate) fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> 
 
 /// Re-derive the full `ExplainMessageEntry` (tree + description) for one node.
 pub fn explain_entry(node: &ExplainNode) -> qc::ExplainMessageEntry {
+    entry_with_source(node, None)
+}
+
+/// Render a persisted decision with the build held by its selected copy source.
+pub(crate) fn recorded_entry(
+    row: &crate::store::ExplainDecisionRow,
+) -> Option<qc::ExplainMessageEntry> {
+    let node = ExplainNode::of_decision(row)?;
+    let source = row
+        .copy_source_build
+        .as_ref()
+        .and_then(|value| CopySourceBuild::deserialize(value).ok());
+    Some(entry_with_source(&node, source.as_ref()))
+}
+
+fn entry_with_source(
+    node: &ExplainNode,
+    source: Option<&CopySourceBuild>,
+) -> qc::ExplainMessageEntry {
     qc::ExplainMessageEntry {
         execution_decision_id: node.execution_decision_id.clone(),
         decision: node.decision.wire_decision(),
         decision_description: decision_description(node),
-        explain_lines: explain_lines(node),
+        explain_lines: lines_with_source(node, source),
     }
 }
 
@@ -1010,7 +1024,11 @@ fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
 /// Build the structured tree: fenced by node kind, then shaped by the
 /// persisted decision reason, with the values Volatile evaluation rendered.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let mut lines = volatile_rebuild_lines(node).unwrap_or_else(|| decision_lines(node));
+    lines_with_source(node, None)
+}
+
+fn lines_with_source(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
+    let mut lines = volatile_rebuild_lines(node).unwrap_or_else(|| decision_lines(node, source));
     add_volatile_lines(node, &mut lines);
     lines
 }
@@ -1422,7 +1440,7 @@ fn compares_templates(node: &ExplainNode) -> bool {
 }
 
 /// The tree [`explain_lines`] prints before Volatile evaluation's lines.
-fn decision_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn decision_lines(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
     let mut displayed = node.clone();
     if let Some(comparison) = &node.template_comparison {
         displayed.input_tables.sort_by_key(|input| {
@@ -1437,7 +1455,7 @@ fn decision_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     if let Some(lines) = literal_dependency_lines(node) {
         return lines;
     }
-    let mut lines = base_explain_lines(node);
+    let mut lines = base_explain_lines(node, source);
     let Some(current) = &node.template_comparison else {
         return lines;
     };
@@ -1600,7 +1618,10 @@ fn literal_dependency_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> 
     ])
 }
 
-fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn base_explain_lines(
+    node: &ExplainNode,
+    source: Option<&CopySourceBuild>,
+) -> Vec<qc::ExplainLine> {
     // F7 fence (PR #31 round 4): never render an invented tree for an
     // uncharacterized node kind (this also fences data-test EXECUTE/CLONE).
     if !is_characterized(node.execution_type, node.decision) {
@@ -1682,7 +1703,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             tree[0].children.push(leaf(format!("but it's old. We would have cloned from {}, but the maximum number of nested clones has been reached", quote(node.clone_source.as_deref().unwrap_or_default())), Some(MARKER_FAIL), None));
             tree
         }
-        Some(Shape::Clone) => clone_tree(node),
+        Some(Shape::Clone) => clone_tree(node, source),
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
@@ -2859,7 +2880,7 @@ fn query_analysis_changed(node: &ExplainNode) -> qc::ExplainLine {
 
 // ── CLONE ────────────────────────────────────────────────────────────────────
 
-fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+fn clone_tree(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Vec<qc::ExplainLine> {
     let mut out = Vec::new();
     // `table analysis`: the table does not exist but could be cloned from the
     // clone source (catalog CLONE shape).
@@ -2923,7 +2944,7 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         freshness_children.push(if node.anchor.is_some() {
             upstream_dependencies_freshness(node, &upstreams)
         } else {
-            clone_upstream_dependencies(node, &upstreams)
+            clone_upstream_dependencies(node, &upstreams, source)
         });
     }
     freshness_children.extend(copied_freshness_summary(node));
@@ -2955,11 +2976,8 @@ fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// All reported upstreams must match direct reads of the held build at known
 /// epochs. A Stand-in that qualified the copy can have a different physical
 /// name from the read recorded by that build.
-fn copy_source_read_same_epochs(node: &ExplainNode, upstreams: &[&InputTable]) -> bool {
+fn copy_source_read_same_epochs(build: &CopySourceBuild, upstreams: &[&InputTable]) -> bool {
     use crate::sql_norm::canonical_identifiers;
-    let Some(build) = node.copy_source_build.as_ref() else {
-        return false;
-    };
     let build_target = canonical_identifiers(&build.target_table);
     let mut current: std::collections::BTreeMap<_, _> = upstreams
         .iter()
@@ -2977,8 +2995,12 @@ fn copy_source_read_same_epochs(node: &ExplainNode, upstreams: &[&InputTable]) -
 
 /// An unanchored copy lists a verdict only when its source read the same
 /// upstreams at the same epochs. The anchor line names the destination.
-fn clone_upstream_dependencies(node: &ExplainNode, upstreams: &[&InputTable]) -> qc::ExplainLine {
-    let fresh = copy_source_read_same_epochs(node, upstreams);
+fn clone_upstream_dependencies(
+    node: &ExplainNode,
+    upstreams: &[&InputTable],
+    source: Option<&CopySourceBuild>,
+) -> qc::ExplainLine {
+    let fresh = source.is_some_and(|build| copy_source_read_same_epochs(build, upstreams));
     let children = upstreams
         .iter()
         .map(|up| {
@@ -3062,7 +3084,6 @@ mod tests {
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             display_target_table: None,
             clone_source: None,
-            copy_source_build: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
             query_dependencies: Vec::new(),
             tolerance_ms: 0,
@@ -3571,12 +3592,12 @@ mod tests {
         let upstream = tbl(r#""DB"."RAW"."UP""#);
         n.clone_source = Some(source.into());
         n.input_tables = vec![upstream.clone()];
-        n.copy_source_build = Some(CopySourceBuild {
+        let build = CopySourceBuild {
             target_table: source.into(),
             input_tables: vec![tbl(source), upstream],
-        });
+        };
 
-        let lines = explain_lines(&n);
+        let lines = lines_with_source(&n, Some(&build));
         let upstream = &lines[2].children[0].children[0];
         assert_eq!(upstream.badge, Some(BADGE_FRESH));
         assert_eq!(

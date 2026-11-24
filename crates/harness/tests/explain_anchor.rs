@@ -8,14 +8,48 @@ mod support;
 
 use dbt_state_server::capture::{self, CaptureInput, DecisionKind};
 use dbt_state_server::decision::{DecisionReason, Reuse};
+use dbt_state_server::explain::{decision_description, explain_entry, explain_lines, ExplainNode};
 use dbt_state_server::submit_decision::{self, SubmitOutcome};
 use support::scenario::{
-    confirm_in, environment_model, environment_target, outcome, ENVIRONMENT_NAMESPACE,
+    built_at, confirm_in, environment_model, environment_target, outcome, Scenario,
+    ENVIRONMENT_NAMESPACE,
 };
 use support::TestDatabase;
 
 const ORG: &str = "org-explain-anchor";
 const BUILT: i64 = 1_000;
+
+/// The public renderer accepts the same struct literal as before copy evidence
+/// was added to persisted decisions.
+#[test]
+fn library_caller_can_render_a_node_without_stored_copy_evidence() {
+    let node = ExplainNode {
+        display_submitted_at_ms: None,
+        template_comparison: None,
+        volatile_evaluation: Default::default(),
+        execution_decision_id: "build".into(),
+        decision: DecisionKind::Build,
+        execution_type: 1,
+        decision_description: Some("first build".into()),
+        reason: Some(DecisionReason::FirstBuild),
+        is_stale: false,
+        target_table: Some(environment_target("dev")),
+        display_target_table: None,
+        clone_source: None,
+        input_tables: vec![],
+        query_dependencies: vec![],
+        tolerance_ms: 0,
+        build_age_ms: None,
+        skip_rejection_reason: None,
+        unmatched: None,
+        reads_relation: None,
+        anchor: None,
+    };
+    let entry = explain_entry(&node);
+    assert_eq!(decision_description(&node), "first build");
+    assert_eq!(entry.explain_lines, explain_lines(&node));
+    assert!(!entry.explain_lines.is_empty());
+}
 
 fn now_ms() -> i64 {
     dbt_state_server::Clock::System.now_ms(&Default::default())
@@ -55,7 +89,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         default_schema: Some("prod".into()),
         clone_source: None,
         clone_sqls: None,
-        copy_source_build_id: None,
+        copy_source_execution_id: None,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         execution_runtime_ms: None,
@@ -118,4 +152,54 @@ async fn explain_anchor_is_the_complete_matched_execution() {
         anchor, matched_execution,
         "the anchor is the row the decision matched"
     );
+}
+
+#[tokio::test]
+async fn explain_follows_the_selected_copy_when_its_source_is_rebuilt_during_lookup() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org(ORG);
+
+    // Start a build of QA. Before it confirms, QA receives a copy of PROD.
+    // The copy and the replacement build both read the same upstream epoch.
+    let qa_target = r#""DB"."PROD"."QA_M""#;
+    let dev_target = r#""DB"."PROD"."DEV_M""#;
+    let qa = environment_model("prod").target(qa_target);
+    let replacement = sc.execute_id(qa.clone()).await;
+    sc.build(environment_model("prod"), 1_000).await;
+    let selected = sc.expect_clone(qa).await;
+    assert!(sc.confirm(&selected.request_id, built_at(2_000)).await);
+    assert!(sc.confirm(&replacement, built_at(3_000)).await);
+
+    let replacement = support::rows::execution_in(&server, ORG, &replacement)
+        .await
+        .expect("confirmed replacement");
+    support::fault::replace_source_after_candidate_lookup(&server, replacement.id).await;
+    let copy = sc
+        .expect_clone(environment_model("prod").target(dev_target))
+        .await;
+    assert_eq!(copy.clone_source, qa_target);
+    assert_eq!(copy.clone_required_last_modified_epoch, Some(2_000));
+
+    let id = copy.execution_decision_id.unwrap();
+    let explain = sc.explain(&[&id]).await;
+    let upstream = &explain.messages[0].explain_lines[2].children[0].children[0];
+    assert_eq!(upstream.badge, Some(1)); // FRESH
+    assert_eq!(
+        upstream.children[0].text,
+        format!("no updates since {dev_target} last executed")
+    );
+
+    // QA's selected copy holds PROD's build. Recording QA's newer build
+    // would give the same badge here but would cite the wrong evidence.
+    let decisions = server
+        .state
+        .store
+        .fetch_explain_decisions(ORG, &[id])
+        .await
+        .unwrap();
+    let build = decisions[0]
+        .copy_source_build
+        .as_ref()
+        .expect("selected copy's held build");
+    assert_eq!(build["target_table"], environment_target("prod"));
 }

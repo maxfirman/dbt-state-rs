@@ -59,6 +59,25 @@ pub async fn hold_decision_capture(db: &impl Db) -> CaptureHold {
     CaptureHold(connection)
 }
 
+/// Reproduce the two snapshots of a source replacement without timing the
+/// test. The candidate lookup sees the previous confirmed row. The physical
+/// state read, capture, and every other query see the replacement too.
+pub async fn replace_source_after_candidate_lookup(db: &impl Db, replacement_id: i64) {
+    let mut tx = db.pool().begin().await.expect("begin visibility fault");
+    sqlx::query("ALTER TABLE executions RENAME TO all_executions")
+        .execute(&mut *tx)
+        .await
+        .expect("rename test ledger");
+    sqlx::query(&format!(
+        "CREATE VIEW executions AS SELECT * FROM all_executions
+         WHERE id <> {replacement_id} OR position('node_namespace_logic_hash = ANY(' in current_query()) = 0"
+    ))
+    .execute(&mut *tx)
+    .await
+    .expect("install candidate lookup snapshot");
+    tx.commit().await.expect("publish visibility fault");
+}
+
 /// Make every `node_states` write fail (a `CHECK (false)` constraint), so a
 /// transaction that writes node state rolls back.
 pub async fn reject_node_state_writes(db: &impl Db) {

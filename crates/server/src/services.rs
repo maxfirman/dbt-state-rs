@@ -64,23 +64,23 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
                 execution_decision_id: Some(ids.execution_decision_id),
             })
         }
-        SubmitOutcome::Copy {
-            ids, copy, record, ..
-        } => Response::ReadyToClone(qc::ReadyToCloneResponse {
-            request_id: ids.request_id,
-            last_modified_query: String::new(),
-            clone_sqls: copy.clone_sqls,
-            clone_source: copy.source_table,
-            clone_target: clone_target.to_string(),
-            explained_decision: Some(explained_decision(&record)),
-            transformed_nodes_by_query: Default::default(),
-            clone_required_last_modified_epoch: copy.source_last_modified_epoch,
-            clone_execution_results: Some(qc::Struct {
-                fields: Default::default(),
-            }),
-            execution_runtime_ms: copy.source_execution_runtime_ms,
-            execution_decision_id: Some(ids.execution_decision_id),
-        }),
+        SubmitOutcome::Copy { ids, copy, record } => {
+            Response::ReadyToClone(qc::ReadyToCloneResponse {
+                request_id: ids.request_id,
+                last_modified_query: String::new(),
+                clone_sqls: copy.clone_sqls,
+                clone_source: copy.source_table,
+                clone_target: clone_target.to_string(),
+                explained_decision: Some(explained_decision(&record)),
+                transformed_nodes_by_query: Default::default(),
+                clone_required_last_modified_epoch: copy.source_last_modified_epoch,
+                clone_execution_results: Some(qc::Struct {
+                    fields: Default::default(),
+                }),
+                execution_runtime_ms: copy.source_execution_runtime_ms,
+                execution_decision_id: Some(ids.execution_decision_id),
+            })
+        }
     };
     qc::SubmitSqlResponse {
         response: Some(response),
@@ -197,26 +197,6 @@ fn submit_capture(
     execution_type: i32,
 ) -> crate::capture::CaptureInput {
     let record = outcome.record();
-    // Explain names the selected or refused source. A Snowflake copy can
-    // also supply the recorded build for its upstream comparison.
-    let (clone_source, copy_source_build_id) = match outcome {
-        SubmitOutcome::Copy {
-            copy,
-            copy_source_build_id,
-            ..
-        } => (
-            Some(copy.source_table.clone()).filter(|s| !s.is_empty()),
-            *copy_source_build_id,
-        ),
-        SubmitOutcome::ChainLimitExecute { source_table, .. } => {
-            (Some(source_table.clone()).filter(|s| !s.is_empty()), None)
-        }
-        SubmitOutcome::Execute {
-            refused_copy_source,
-            ..
-        } => (refused_copy_source.clone(), None),
-        _ => (None, None),
-    };
     crate::capture::CaptureInput {
         org_id: scope.organization().to_owned(),
         principal_id: scope.principal().map(|p| p.as_str().to_owned()),
@@ -244,9 +224,25 @@ fn submit_capture(
         table_namespace: None,
         target_table: None,
         default_schema: None,
-        clone_source,
+        // The physical relation a Copy is made FROM, so the Explain CLONE
+        // renderer (`explain.rs::clone_tree`) can emit `could be cloned from
+        // "<source>"` (F2); for a build whose copy the submit disallowed, the
+        // equivalent it could have been copied from.
+        clone_source: match outcome {
+            SubmitOutcome::Execute {
+                refused_copy_source,
+                ..
+            } => refused_copy_source.clone(),
+            SubmitOutcome::Copy { copy, .. } => {
+                Some(copy.source_table.clone()).filter(|s| !s.is_empty())
+            }
+            SubmitOutcome::ChainLimitExecute { source_table, .. } => {
+                Some(source_table.clone()).filter(|s| !s.is_empty())
+            }
+            _ => None,
+        },
         clone_sqls: None,
-        copy_source_build_id,
+        copy_source_execution_id: None,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         // Only a Skip reports the runtime it echoes.
@@ -283,6 +279,7 @@ fn capture_submit(
 ) {
     let explain = decided.explain.clone();
     let input = crate::capture::CaptureInput {
+        copy_source_execution_id: decided.outcome.explain_copy_source_id(req),
         display_submitted_at_ms: explain.display_submitted_at_ms,
         template_comparison: explain.template_comparison,
         table_namespace: explain.table_namespace,
@@ -350,7 +347,7 @@ fn capture_register(
             default_schema: None,
             clone_source: Some(req.clone_source_table.clone()),
             clone_sqls: Some(clone_sqls.to_vec()),
-            copy_source_build_id: None,
+            copy_source_execution_id: None,
             input_tables: Vec::new(),
             query_dependencies: Vec::new(),
             execution_runtime_ms: None,
@@ -845,14 +842,10 @@ impl Explain for ExplainService {
                 .map_err(store_status)?;
         }
 
-        let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
-            std::collections::HashMap::new();
-        for node in rows
-            .into_iter()
-            .filter_map(crate::explain::ExplainNode::of_decision)
-        {
-            by_id.insert(node.execution_decision_id.clone(), node);
-        }
+        let by_id: std::collections::HashMap<_, _> = rows
+            .iter()
+            .filter_map(|row| Some((row.execution_decision_id.as_deref()?, row)))
+            .collect();
 
         // Hosted emits tracked decisions in ascending decision-ID order,
         // independently of request order (Databricks baseline + six reversed
@@ -860,8 +853,7 @@ impl Explain for ExplainService {
         let mut messages: Vec<_> = req
             .execution_decision_ids
             .iter()
-            .filter_map(|id| by_id.get(id))
-            .map(crate::explain::explain_entry)
+            .filter_map(|id| crate::explain::recorded_entry(by_id.get(id.as_str())?))
             .collect();
         messages.sort_by(|a, b| a.execution_decision_id.cmp(&b.execution_decision_id));
 
