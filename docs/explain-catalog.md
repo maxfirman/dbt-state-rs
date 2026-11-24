@@ -289,11 +289,11 @@ other reason is in [Decision reason coverage](#decision-reason-coverage). The ev
 capture metadata. The current table includes the Databricks identity, freshness,
 deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-22) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-24) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 356 (216 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6), SKIP 288 (168 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 25 (18 crafted, 6 client 2.0.11, 1 client 2.0.6) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 360 (220 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6), SKIP 290 (170 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 25 (18 crafted, 6 client 2.0.11, 1 client 2.0.6) |
 | 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 33 (29 client 2.0.11, 4 crafted), SKIP 19 (18 client 2.0.11, 1 crafted) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 44 (42 client 2.0.11, 2 crafted), SKIP 28 (28 client 2.0.11) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 49 (47 client 2.0.11, 2 crafted), SKIP 29 (29 client 2.0.11) |
 | 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 32 (28 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 27 (25 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
@@ -428,28 +428,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 1368 trees in the
-tracked fixtures (2026-11-22). A line without a marker or badge is "none"
-(7215 lines without a marker, 8855 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 1380 trees in the
+tracked fixtures (2026-11-24). A line without a marker or badge is "none"
+(7261 lines without a marker, 8925 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 3478 lines |
-| ExplainMarker | FAIL (2) | ✅ 937 lines |
-| ExplainMarker | INFO (3) | ✅ 168 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1368 trees (2026-11-22; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 1008 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 190 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 27 `databricks_*.jsonl` captures) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 816 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 3498 lines |
+| ExplainMarker | FAIL (2) | ✅ 952 lines |
+| ExplainMarker | INFO (3) | ✅ 175 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1380 trees (2026-11-24; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 1015 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 193 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 27 `databricks_*.jsonl` captures) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 820 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 40 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 15 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 571 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 256 lines |
+| ExplainBadge | FRESH (1) | ✅ 573 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 258 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 47 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1368 trees (2026-11-22; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1380 trees (2026-11-24; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 1368 tracked trees: 907 client 2.0.11, 452 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
+1. Origins across the 1380 tracked trees: 919 client 2.0.11, 452 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -469,17 +469,17 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-22 (1368 trees in 166 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-24 (1380 trees in 167 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 288 | 168 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 356 | 216 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | SKIP | 290 | 170 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 360 | 220 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 25 | 18 crafted, 6 client 2.0.11, 1 client 2.0.6 |
 | APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 33 | 29 client 2.0.11, 4 crafted |
-| MERGE | SKIP | 28 | 28 client 2.0.11 |
-| MERGE | EXECUTE | 44 | 42 client 2.0.11, 2 crafted |
+| MERGE | SKIP | 29 | 29 client 2.0.11 |
+| MERGE | EXECUTE | 49 | 47 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 17 | 16 client 2.0.11, 1 crafted |
 | INSERT_OVERWRITE | EXECUTE | 32 | 28 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |
@@ -678,6 +678,27 @@ Every other Snowflake decision under `compare_unrendered_code` keeps its
 ordinary tree, uncaptured in that mode: a changed template with the same
 rendered SQL is refused at Reuse qualification, renders no values and
 prints no tree (#211).
+
+#### SKIP of a constant-generator call, evaluation on (hosted only)
+
+#211, a **Check-in** finding (`explain_volatile_generator_merge.jsonl`
+entry 35, `gu`). Hosted reuses a Snowflake table whose only Volatile call
+is `uniform(1, 100, 1234)`, with evaluation requested, and explains the
+reuse with the volatile block and no tolerance line, the form of the
+Databricks checked `rand(42)` reuse:
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - non-deterministic functions detected in query     [INFO]
+    - UNIFORM(1, 100, 1234) -> rendered with '96'
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+- data freshness analysis
+  - no upstream dependencies                          [SUCCESS]
+```
+This server still refuses the reuse and explains the rebuild (the
+[model rerun](#execute-rerun-of-a-volatile-model) tree), pending the
+maintainer; the entry is keyed in `replay_gaps.json`.
 
 ### EXECUTE: node query changed (SHAPE 7)
 
@@ -1067,13 +1088,39 @@ back since the build, so no summary line follows, as in a SKIP tree. The
 tree renders only when no upstream drifted or changed its producer since
 that build.
 
+A keyed MERGE incremental over a source table prints the same tree (#211,
+`explain_volatile_generator_merge.jsonl` `mv`). On its unchanged rerun
+(entry 37) the source is `<FRESH>` at the epoch recorded at the refused
+build, so `upstream data is up to date` [SUCCESS] follows the listing. With
+zero Lag tolerance it prints the tree after the source's data drifted as
+well (entry 45), with the source `<OUTDATED>` against the refused build:
+```
+- query analysis
+  - …volatile lines…
+  - the model query has changed                       [FAIL]    <NODE_QUERY_CHANGED>
+  - upstream model queries have not changed           [SUCCESS]
+- data freshness analysis
+  - upstream dependencies
+    - "«upstream FQN»"                                <OUTDATED>
+      - updated «gap» after "«FQN»" last executed
+      - last updated: «rel_time»
+  - upstream data is outdated                         [FAIL]
+```
+The volatile lines and the query verdict are those of the unchanged rerun:
+hosted reports no separate reason for the drift. A deterministic control
+under the same config (`mc`) SKIPs the unchanged rerun and rebuilds after
+the drift with the ordinary SHAPE 9 tree (entries 38, 46).
+
 Not captured, and keeping the decision's own (empty) tree: the same rerun
 over an upstream table that drifted or changed producer since the refused
-build, or over both an upstream table and a query dependency; a custom node
+build (a MERGE with zero Lag tolerance after data drift is the one captured
+drift), or over both an upstream table and a query dependency; a custom node
 rerun with upstreams; an APPEND incremental or snapshot rerun without
-upstreams; the APPEND, snapshot or custom rerun with query dependencies; the
-other incremental strategies; a view over a `ref`. The other incremental
-strategies render no values at all, so they print no volatile lines. A
+upstreams; the APPEND, snapshot, MERGE or custom rerun with query
+dependencies; a MERGE rerun after drift within a Lag tolerance, or after an
+upstream changed producer; the INSERT_OVERWRITE, DELETE_INSERT and
+MICROBATCH strategies; a view over a `ref`. Those strategies render no
+values at all, so they print no volatile lines. A
 Databricks FULL rerun prints the tree shown, with `RAND()` (#198,
 `databricks_volatile_evaluation.jsonl` entries 21 and 28). Under `compare_unrendered_code` an unchanged
 template is reused instead

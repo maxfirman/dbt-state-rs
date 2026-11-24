@@ -3749,3 +3749,124 @@ async fn snowflake_uncaptured_copy_cells_render_nothing() {
     assert_eq!(variant(&response), "ready_to_clone");
     assert!(volatile_values(&response).is_empty(), "{response:?}");
 }
+
+// ── Snowflake constant generator and MERGE over upstream drift (#211) ───────
+//
+// Evidence: the first #211 capture,
+// `golden/fixtures/explain_volatile_generator_merge.jsonl` (dbt 2.0.11;
+// `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`). Every
+// model requests evaluation. `gu` is a FULL table projecting
+// `uniform(1, 100, 1234)` alone. `mv` is a keyed MERGE incremental with
+// `current_timestamp()` and `lag_tolerance: 0s` over the source table `ms`,
+// built, rerun unchanged, then rerun after only `ms`'s value changed.
+mod generator_merge {
+    use super::*;
+
+    const GENERATOR_MERGE: &str =
+        include_str!("../../../golden/fixtures/explain_volatile_generator_merge.jsonl");
+    /// `mv` (submit, its Explain): first build, unchanged rerun, and the
+    /// rerun after upstream data drift.
+    const MV_FIRST: (usize, usize) = (7, 19);
+    const MV_RERUN: (usize, usize) = (31, 37);
+    const MV_DRIFT: (usize, usize) = (41, 45);
+    /// `gu`'s unchanged rerun, which hosted reuses (a Check-in finding).
+    const GU_RERUN: usize = 28;
+
+    /// `explain` with the `updated … after` and `last updated:` lines masked,
+    /// as the conformance replay masks them.
+    fn masked(explain: serde_json::Value) -> serde_json::Value {
+        masked_relative_times(masked_gaps(explain))
+    }
+
+    #[tokio::test]
+    async fn snowflake_merge_renders_and_explains_as_hosted_on_its_builds_and_after_upstream_drift()
+    {
+        let database = std::sync::Arc::new(support::TestDatabase::new("volatile_211_merge").await);
+        let server = support::start_server_on_database(database.clone()).await;
+        let entries = entries(GENERATOR_MERGE);
+        let responses = replay(&Scenario::connect(&server).await, &entries, MV_DRIFT.0).await;
+        let explains: Vec<_> = [
+            (MV_FIRST, "mv first build"),
+            (MV_RERUN, "mv unchanged rerun"),
+            (MV_DRIFT, "mv rerun after upstream data drift"),
+        ]
+        .into_iter()
+        .map(|((submit, explained), case)| {
+            assert_matches_hosted(&responses[&submit], &entries[submit], case);
+            HostedExplain::of_response(
+                case,
+                &entries[explained],
+                &entries[submit],
+                &responses[&submit],
+            )
+        })
+        .collect();
+        assert_explains_match_hosted(&database, server, &explains, masked).await;
+    }
+
+    /// Hosted reuses `gu` (entry 28). Matching it relaxes a Reuse refusal,
+    /// which waits for the maintainer (#211, #201 check-in rule): this
+    /// server still refuses it and renders hosted's map on the rebuild.
+    #[tokio::test]
+    async fn snowflake_constant_generator_alone_is_still_refused_pending_check_in() {
+        let server = support::start_server().await;
+        let entries = entries(GENERATOR_MERGE);
+        let responses = replay(&Scenario::connect(&server).await, &entries, GU_RERUN).await;
+        let rerun = &responses[&GU_RERUN];
+        assert_eq!(variant(rerun), "ready_to_execute");
+        assert_eq!(
+            volatile_map_shape(&volatile_values(rerun)),
+            volatile_map_shape(&hosted_volatile_values(&entries[GU_RERUN].response)),
+        );
+    }
+
+    /// Uncaptured neighbours of `mv`'s drifted rerun keep the conservative
+    /// form: refused and rendered, explained with no tree. Within a Lag
+    /// tolerance the drift is no rebuild reason, and an upstream with an
+    /// unknown epoch proves nothing.
+    #[tokio::test]
+    async fn snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[MV_FIRST.0].request);
+        let drifted = captured_submit(&entries[MV_DRIFT.0].request);
+        let own_epoch = |s: &Submit| {
+            let req = s.clone().build();
+            req.tables
+                .iter()
+                .find(|t| Some(&t.name) == req.target_table.as_ref())
+                .and_then(|t| t.last_modified_epoch)
+                .unwrap()
+        };
+        let built_epoch = own_epoch(&drifted);
+        for (case, rerun) in [
+            (
+                "drift within an hour's Lag tolerance",
+                drifted
+                    .clone()
+                    .with(|r| r.freshness_tolerance_seconds = 3600),
+            ),
+            (
+                "an upstream of unknown epoch",
+                drifted.clone().with(|r| {
+                    for t in &mut r.tables {
+                        if t.name.contains("MS_") {
+                            t.last_modified_epoch = None;
+                        }
+                    }
+                }),
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(first.clone(), built_epoch).await;
+            let rebuilt = sc.expect_execute(rerun).await;
+            assert!(
+                !rendered(&rebuilt).is_empty(),
+                "{case}: refused and rendered"
+            );
+            let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+            assert!(texts(&explained).is_empty(), "{case}: {explained}");
+        }
+    }
+}

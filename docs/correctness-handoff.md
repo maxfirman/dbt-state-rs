@@ -319,21 +319,43 @@ server keeps the conservative behavior described.
     Target relation. The client sends `target_table: null` even for a
     `store_failures` test (cells entries 61, 145), so this server renders
     nothing for one.
+  - Snowflake, first #211 batch
+    (`golden/fixtures/explain_volatile_generator_merge.jsonl`,
+    [characterization note](reports/snowflake-volatile-generator-merge-2026-11-24.md)).
+    - **Check-in, open.** Hosted reuses a FULL table whose only Volatile
+      call is `uniform(1, 100, 1234)`, with evaluation requested (`gu`,
+      entry 28, Explain 35: map `UNIFORM(1, 100, 1234) -> 96`, the
+      volatile block and `the model query has not changed`, no tolerance
+      line). A literal control is reused and `random()` alone is rebuilt.
+      This server still refuses `gu` at Reuse qualification and rebuilds;
+      matching hosted relaxes a Reuse refusal, so it waits for the
+      maintainer (#201 check-in rule). Both entries are keyed in
+      `replay_gaps.json`. Open: whether hosted's rule is "every call has a
+      constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are
+      uncaptured) and whether it holds for other kinds and over upstreams.
+    - Implemented: a keyed MERGE incremental with `current_timestamp()`
+      over a source table renders its own values on the first build, the
+      unchanged rerun and the rerun after the source's data drifted, each
+      refused at Reuse qualification (entries 7, 31, 41). Explain prints
+      the model rerun tree on both reruns; after drift with zero Lag
+      tolerance it lists the source `<OUTDATED>` with `upstream data is
+      outdated` (entries 37, 45). Hosted gave no separate reason for the
+      drift. The deterministic control `mc` SKIPs the unchanged rerun and
+      rebuilds after drift with an empty map (entries 29, 42), as this
+      server already did.
   - Snowflake, reachable through client 2.0.11 but not captured (#211):
     the map stays empty for
     - the call forms `current_timestamp(n)` with another precision than 3,
       `current_time(n)`, and `uniform`, `randstr` or `normal` with other
-      arguments. Whether a constant-generator call alone, such as
-      `uniform(1, 100, 1234)`, blocks hosted's reuse is not isolated (entries
-      36 and 131 also call `random()`); the detector rebuilds it;
+      arguments;
     - a data test with values in both its own SQL and a query dependency;
     - evaluation off for a data test over a volatile view, a table with
       values in both its SQL and a query dependency, and APPEND, snapshot
       and custom nodes;
-    - APPEND, snapshot and custom rebuilds other than a first build and a
-      rerun refused at Reuse qualification, their values in a query
-      dependency, and the MERGE, INSERT_OVERWRITE, DELETE_INSERT and
-      MICROBATCH strategies;
+    - APPEND, snapshot, custom and MERGE rebuilds other than a first build
+      and a rerun refused at Reuse qualification, their values in a query
+      dependency, MERGE with evaluation off, and the INSERT_OVERWRITE,
+      DELETE_INSERT and MICROBATCH strategies;
     - any build for another decision reason: upstream data or Upstream
       producer changes, an External modification with evaluation off, an
       execution type change;
@@ -356,8 +378,10 @@ server keeps the conservative behavior described.
     the decision's own tree without volatile lines for an evaluation-off
     rebuild other than a table's query change without upstreams; the model
     rerun tree or the volatile-dependency tree over an upstream table that
-    drifted or changed producer since the refused build, or over both an
-    upstream table and a query dependency; the model rerun tree of a custom
+    drifted or changed producer since the refused build (except a MERGE
+    with zero Lag tolerance after its source's data drifted, entry 45), or
+    over both an upstream table and a query dependency; a MERGE rerun after
+    drift within a Lag tolerance; the model rerun tree of a custom
     node with upstreams, of an APPEND incremental or snapshot without
     upstreams, of any non-FULL kind with query dependencies, and of a view
     over a `ref`; the volatile-dependency tree of another node kind; the

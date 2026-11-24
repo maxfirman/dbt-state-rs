@@ -1016,7 +1016,11 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// whose definition also rendered values (entry 186, #204: the own values
 /// only), or over an upstream table (entry 195, #206); and for an APPEND
 /// incremental and a snapshot (in `snapshot` wording) over an upstream table
-/// (entries 189 and 190, #205). Every form with an upstream or a query
+/// (entries 189 and 190, #205); and for a keyed MERGE incremental over a
+/// source table (`explain_volatile_generator_merge.jsonl` entry 37, #211),
+/// which with zero Lag tolerance also lists the upstream `OUTDATED` against
+/// the refused build after its data drifted (entry 45: `upstream data is
+/// outdated`). Every form with an upstream or a query
 /// dependency adds `upstream model queries have not changed`; the dependency
 /// says `upstream data is up to date`, and an upstream table is listed
 /// against the refused build, as a reuse does, when none provably changed
@@ -1073,10 +1077,13 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             query.push(upstream_queries_unchanged);
             upstream_data_up_to_date()
         }
-        (K::Full | K::Append | K::Snapshot, false, true)
+        (K::Full | K::Append | K::Merge | K::Snapshot, false, true)
             if upstreams_fresh_against_anchor(node)
                 || forms.input_modified_externally_refusal.contains(&kind)
-                    && sole_upstream_modified_externally(node) =>
+                    && sole_upstream_modified_externally(node)
+                || kind == K::Merge
+                    && node.tolerance_ms == 0
+                    && upstreams_data_only_against_anchor(node) =>
         {
             query.push(upstream_queries_unchanged);
             data_freshness_analysis_against_anchor(node)
@@ -1101,6 +1108,22 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
                 .upstreams
                 .iter()
                 .all(|u| !u.drifted && !u.unprovable && !u.producer_changed)
+    })
+}
+
+/// Whether every genuine upstream is judged against the anchored build and
+/// none is unprovable or changed producer since it: each is fresh, or only
+/// its data drifted. #211 captured the drifted form for a MERGE incremental
+/// with zero Lag tolerance over a source table
+/// (`explain_volatile_generator_merge.jsonl` entry 45).
+fn upstreams_data_only_against_anchor(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|anchor| {
+        let freshness = decision::upstream_freshness(freshness_inputs(node), anchor);
+        freshness.evidence == decision::FreshnessEvidence::Evaluated
+            && freshness
+                .upstreams
+                .iter()
+                .all(|u| !u.unprovable && !u.producer_changed)
     })
 }
 

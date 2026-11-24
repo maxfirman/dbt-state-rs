@@ -23,7 +23,7 @@ use sqlparser::dialect::SnowflakeDialect;
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
     use crate::query_cache::ModelExecutionType::{
-        Append, DbtCustom, DbtDataTest, Full, Snapshot, View,
+        Append, DbtCustom, DbtDataTest, Full, Merge, Snapshot, View,
     };
     use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
@@ -244,6 +244,12 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Snapshot, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
             cell(DbtCustom, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            // Evaluation on: a keyed MERGE incremental over a source table,
+            // first build, unchanged rerun and rerun after upstream data
+            // drift (#211, `explain_volatile_generator_merge.jsonl` entries
+            // 7, 31 and 41).
+            cell(Merge, true, FIRST_BUILD, Queries::Own),
+            cell(Merge, true, REFUSED_VOLATILE_SQL, Queries::Own),
             // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
             // on, first build and rerun refused at Reuse qualification: a
             // table with values of its own and in a view dependency (entries
