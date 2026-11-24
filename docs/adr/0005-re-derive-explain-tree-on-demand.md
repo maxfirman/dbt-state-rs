@@ -191,6 +191,16 @@ caller already holds this id). Everything else is re-derived.
 > matches (F39, F67, F84, P59). Only evidence is stored; inputs recorded
 > before #200 carry no copy name and render as before.
 
+> **Amended by #252.** An unanchored Snowflake FULL copy into an absent
+> Target relation records the id of the build the selected copy source holds
+> (`node_decisions.copy_source_build_id`, migration 0036). Explain loads that
+> build in the decision's organization and compares its recorded upstreams
+> against the decision-time inputs. Equal physical relations and known epochs
+> produce the `<FRESH>` listing with the absent destination in the anchor
+> line. Missing source evidence, including decisions recorded before the
+> migration, yields the plain listing. The optional id is used by Explain
+> only.
+
 ## Why re-derive (not persist the tree)
 
 ### Explain visibility amendment (Databricks #132)

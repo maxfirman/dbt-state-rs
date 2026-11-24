@@ -55,6 +55,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         default_schema: Some("prod".into()),
         clone_source: None,
         clone_sqls: None,
+        copy_source_build_id: None,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         execution_runtime_ms: None,

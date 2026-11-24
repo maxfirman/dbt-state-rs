@@ -660,10 +660,9 @@ field it ignores in `local_payload_fields`.
   since #194, #195 and #203–#207.
 - **Badge-scoped Explain gap** (`ignore_explain_badges`, `{text, badge}`): on
   hosted lines with that normalized text and badge the badge is cleared before
-  comparing; at least one must be cleared. With `ignore_explain_lines` it
-  scopes hosted's `<FRESH>` listing of a same-input upstream in a Snowflake
-  copy tree (`copy_source_choice.jsonl` entries 3, 7, 33, 39, 61, 67, 75,
-  #252): the decision, the description and the rest of the tree must match.
+  comparing. At least one must be cleared. The decision, description and the
+  rest of the tree must match. The Snowflake same-input copy listings formerly
+  covered by this gap type replay exactly since #252.
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.

@@ -1682,18 +1682,24 @@ verdict:
   - no upstream dependencies                          [SUCCESS]
 ```
 
-Without a matched build the listing has no `<FRESH>`/`<OUTDATED>` badge and no
-`no updates since … last executed` line (`explain_clone_history.jsonl`,
-`explain.rs::clone_upstream_dependencies`). When the copy source read the
-submit's upstream relation at the epoch the submit reports, hosted lists that
-upstream `<FRESH>` with `no updates since "«destination FQN»" last executed`
-(the absent destination, not the source), on Snowflake
-(`copy_source_choice.jsonl`, eleven trees, #239) and on Databricks
-(`databricks_submit_copy.jsonl` entry 13). This server renders that listing on
-Databricks only; the Snowflake trees are keyed gaps in
-`golden/replay_gaps.json` (open, #252). When the copy keeps the Target
-relation's own build as its anchor, the listing is the anchored SKIP one
-(`lag_copy_candidates` `de`). A copy of a stale equivalent ends with
+For a Snowflake FULL copy into an absent Target relation, Explain compares the
+submit's upstreams with the recorded inputs of the build the copy source holds.
+When both read the same physical relations at the same known epochs, it lists
+each upstream like this (`copy_source_choice.jsonl`, #252):
+
+```
+- upstream dependencies
+  - "«upstream FQN»"                                  <FRESH>
+    - no updates since "«destination FQN»" last executed
+    - last updated: «rel_time»
+```
+
+The anchor line names the absent destination. Databricks shows this same
+listing for a matching source (`databricks_submit_copy.jsonl` entry 13).
+When the source read other relations or the same input epochs cannot be
+established, Explain uses the plain listing above (`explain_clone_history.jsonl`).
+When the copy keeps the Target relation's own build as its anchor, the listing
+uses the anchored SKIP form (`lag_copy_candidates` `de`). A copy of a stale equivalent ends with
 `upstream data is outdated` [FAIL] and, with a non-zero tolerance, the Lag
 tolerance line instead of `upstream data is up to date`
 (`lag_dropped_targets` `dset600`).

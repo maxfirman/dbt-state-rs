@@ -811,7 +811,10 @@ async fn a_seed_loaded_in_another_schema_is_copied_into_its_absent_table() {
     load(store, environment_seed("prod").values("v1"), BUILT).await;
 
     let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
-    let SubmitOutcome::Copy { ids, copy, record } = outcome else {
+    let SubmitOutcome::Copy {
+        ids, copy, record, ..
+    } = outcome
+    else {
         panic!("expected Copy, got {outcome:?}");
     };
     assert_eq!(copy.source_table, PROD_SEED);

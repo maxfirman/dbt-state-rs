@@ -89,6 +89,8 @@ pub enum SubmitOutcome {
     Copy {
         ids: DecisionIds,
         copy: ResultCopy,
+        /// The build held by the Snowflake copy source, for Explain.
+        copy_source_build_id: Option<i64>,
         record: DecisionRecord,
     },
     /// An equivalent exists but the target forbids copies or the copy chain is
@@ -1044,6 +1046,7 @@ async fn seed_copy_fallback(
             Ok(SeedCopy::Copied(Box::new(SubmitOutcome::Copy {
                 ids,
                 copy,
+                copy_source_build_id: None,
                 record: DecisionRecord::seed_result_copy(over),
             })))
         }
@@ -1311,7 +1314,8 @@ async fn result_copy_fallback(
     judgement: (Option<&ExecutionRow>, Option<&ExecutionRow>),
 ) -> sqlx::Result<CopyFallback> {
     let (own, anchor) = judgement;
-    let requires_checked_source = Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks;
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    let requires_checked_source = warehouse == Warehouse::Databricks;
     if requires_checked_source && !crate::databricks_submit_copy::request_admits(req, evidence) {
         return Ok(CopyFallback::Ordinary);
     }
@@ -1330,7 +1334,10 @@ async fn result_copy_fallback(
     /// and DuckDB the inputs of the build the source holds (#264).
     enum RecordedSource {
         Publication(Box<ExecutionRow>),
-        HeldInputs(Vec<crate::store::InputTable>),
+        HeldInputs {
+            inputs: Vec<crate::store::InputTable>,
+            explain_build_id: Option<i64>,
+        },
     }
     let candidates = copy_candidates(store, org_id, req, &lookup).await?;
     let reads = if requires_checked_source || candidates.is_empty() {
@@ -1412,12 +1419,26 @@ async fn result_copy_fallback(
             let Some(held) = held_build(store, org_id, source.clone()).await? else {
                 continue;
             };
+            // The plan names the initial lookup row. Record Explain evidence
+            // only when the freshness read saw that same source execution.
+            let explain_build_id = (warehouse == Warehouse::Snowflake
+                && freshness.own_target_absent
+                && anchor.is_none()
+                && source.id == equivalent.source_execution_id)
+                .then_some(held.id);
             let (judged, inputs) =
                 match copy_search::offer(req, evidence, freshness, &reads, source, &held) {
                     copy_search::Offer::Choose { judged, inputs } => (judged, inputs),
                     copy_search::Offer::Next => continue,
                 };
-            (equivalent, judged, RecordedSource::HeldInputs(inputs))
+            (
+                equivalent,
+                judged,
+                RecordedSource::HeldInputs {
+                    inputs,
+                    explain_build_id,
+                },
+            )
         };
         let source_table = equivalent.source_table.clone();
         let plan = result_copy::plan_submit(req, equivalent);
@@ -1468,11 +1489,14 @@ async fn result_copy_fallback(
             // Keep the checked source's original inputs and execution evidence
             // for confirmation. Otherwise record the source named by the plan,
             // over the inputs of the build it holds.
-            let (pending, publication_source) = match recorded {
+            let (pending, publication_source, copy_source_build_id) = match recorded {
                 RecordedSource::Publication(source) => {
-                    (evidence.submit_copied_from(&source), Some(*source))
+                    (evidence.submit_copied_from(&source), Some(*source), None)
                 }
-                RecordedSource::HeldInputs(inputs) => {
+                RecordedSource::HeldInputs {
+                    inputs,
+                    explain_build_id,
+                } => {
                     let mut pending = evidence.copied_from(&copy);
                     pending.fallback_input_tables = Some(
                         evidence
@@ -1482,7 +1506,7 @@ async fn result_copy_fallback(
                     );
                     pending.input_tables = inputs;
                     pending.raw_input_tables = None;
-                    (pending, None)
+                    (pending, None, explain_build_id)
                 }
             };
             write_pending(store, &pending, &ids).await?;
@@ -1496,6 +1520,7 @@ async fn result_copy_fallback(
             Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
                 ids,
                 copy,
+                copy_source_build_id,
                 record,
             })))
         }

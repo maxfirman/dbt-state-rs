@@ -112,6 +112,8 @@ pub struct ExplainNode {
     /// Warehouse presentation only; raw names still identify own inputs.
     pub display_target_table: Option<String>,
     pub clone_source: Option<String>,
+    /// The build held by the Snowflake copy source, read as recorded.
+    pub copy_source_build: Option<ExecutionRow>,
     pub input_tables: Vec<InputTable>,
     pub query_dependencies: Vec<String>,
     /// The node's Lag tolerance (0: none) and the reuse candidate's build age
@@ -308,6 +310,7 @@ impl ExplainNode {
                 },
             ),
             clone_source: row.clone_source.clone(),
+            copy_source_build: row.copy_source_build.clone(),
             input_tables: row.input_tables(),
             query_dependencies: serde_json::from_value(row.query_dependencies.clone())
                 .unwrap_or_default(),
@@ -2910,6 +2913,21 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         // anchor (VERIFIED LIVE 2026-11-10, lag_copy_candidates `de`).
         freshness_children.push(if node.anchor.is_some() {
             upstream_dependencies_freshness(node, &upstreams)
+        } else if copy_source_read_same_epochs(node, &upstreams) {
+            section(
+                "upstream dependencies",
+                upstreams
+                    .iter()
+                    .map(|up| {
+                        let mut entry = clone_upstream_line(up);
+                        entry.badge = Some(BADGE_FRESH);
+                        entry
+                            .children
+                            .insert(0, fresh_anchor_line(node, &fqn(node)));
+                        entry
+                    })
+                    .collect(),
+            )
         } else {
             clone_upstream_dependencies(&upstreams)
         });
@@ -2940,18 +2958,32 @@ fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     lines
 }
 
-/// The CLONE `upstream dependencies` listing. Unlike the SKIP/anchored listing
-/// ([`upstream_dependencies_freshness`]), a clone has NO own-build anchor (ADR
-/// 0005: a CLONE records no `matched_execution_id`), so the hosted service does
-/// NOT emit a FRESH/OUTDATED badge or the anchor-relative `no updates since …`
-/// line — it lists each upstream with ONLY the humanized `last updated: …`
-/// child. VERIFIED LIVE (golden/fixtures/explain_clone_history.jsonl, the
-/// history-bearing CLONE capture from #34). The earlier generator reused the
-/// anchored SKIP listing here and wrongly emitted a `<FRESH>` badge plus a
-/// `no updates since … last executed` line that hosted never renders for a
-/// clone. A data-test EXECUTE lists its decision-time upstreams the same way,
-/// even when it has a matched build (VERIFIED LIVE 2026-11-10,
-/// explain_data_test_history.jsonl).
+/// All reported upstreams must match direct reads of the held build at known
+/// epochs. A Stand-in that qualified the copy can have a different physical
+/// name from the read recorded by that build.
+fn copy_source_read_same_epochs(node: &ExplainNode, upstreams: &[&InputTable]) -> bool {
+    use crate::sql_norm::canonical_identifiers;
+    let Some(build) = node.copy_source_build.as_ref() else {
+        return false;
+    };
+    let build_target = canonical_identifiers(&build.target_table);
+    let mut current: std::collections::BTreeMap<_, _> = upstreams
+        .iter()
+        .map(|up| (canonical_identifiers(&up.name), up.last_modified_epoch))
+        .collect();
+    current.len() == upstreams.len()
+        && build
+            .input_tables
+            .iter()
+            .map(|up| (canonical_identifiers(&up.name), up.last_modified_epoch))
+            .filter(|(name, _)| *name != build_target)
+            .all(|(name, epoch)| epoch.is_some() && current.remove(&name) == Some(epoch))
+        && current.is_empty()
+}
+
+/// The plain listing when copy source reads cannot establish a freshness
+/// verdict (explain_clone_history.jsonl). Data-test builds use the same listing
+/// even when they have a matched build (explain_data_test_history.jsonl).
 fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
     let children = upstreams.iter().map(|up| clone_upstream_line(up)).collect();
     section("upstream dependencies", children)
@@ -3024,6 +3056,7 @@ mod tests {
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             display_target_table: None,
             clone_source: None,
+            copy_source_build: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
             query_dependencies: Vec::new(),
             tolerance_ms: 0,

@@ -64,23 +64,23 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
                 execution_decision_id: Some(ids.execution_decision_id),
             })
         }
-        SubmitOutcome::Copy { ids, copy, record } => {
-            Response::ReadyToClone(qc::ReadyToCloneResponse {
-                request_id: ids.request_id,
-                last_modified_query: String::new(),
-                clone_sqls: copy.clone_sqls,
-                clone_source: copy.source_table,
-                clone_target: clone_target.to_string(),
-                explained_decision: Some(explained_decision(&record)),
-                transformed_nodes_by_query: Default::default(),
-                clone_required_last_modified_epoch: copy.source_last_modified_epoch,
-                clone_execution_results: Some(qc::Struct {
-                    fields: Default::default(),
-                }),
-                execution_runtime_ms: copy.source_execution_runtime_ms,
-                execution_decision_id: Some(ids.execution_decision_id),
-            })
-        }
+        SubmitOutcome::Copy {
+            ids, copy, record, ..
+        } => Response::ReadyToClone(qc::ReadyToCloneResponse {
+            request_id: ids.request_id,
+            last_modified_query: String::new(),
+            clone_sqls: copy.clone_sqls,
+            clone_source: copy.source_table,
+            clone_target: clone_target.to_string(),
+            explained_decision: Some(explained_decision(&record)),
+            transformed_nodes_by_query: Default::default(),
+            clone_required_last_modified_epoch: copy.source_last_modified_epoch,
+            clone_execution_results: Some(qc::Struct {
+                fields: Default::default(),
+            }),
+            execution_runtime_ms: copy.source_execution_runtime_ms,
+            execution_decision_id: Some(ids.execution_decision_id),
+        }),
     };
     qc::SubmitSqlResponse {
         response: Some(response),
@@ -242,6 +242,13 @@ fn submit_capture(
             _ => None,
         },
         clone_sqls: None,
+        copy_source_build_id: match outcome {
+            SubmitOutcome::Copy {
+                copy_source_build_id,
+                ..
+            } => *copy_source_build_id,
+            _ => None,
+        },
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         // Only a Skip reports the runtime it echoes.
@@ -345,6 +352,7 @@ fn capture_register(
             default_schema: None,
             clone_source: Some(req.clone_source_table.clone()),
             clone_sqls: Some(clone_sqls.to_vec()),
+            copy_source_build_id: None,
             input_tables: Vec::new(),
             query_dependencies: Vec::new(),
             execution_runtime_ms: None,

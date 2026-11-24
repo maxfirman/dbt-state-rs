@@ -75,6 +75,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         default_schema: Some("s".into()),
         clone_source: None,
         clone_sqls: None,
+        copy_source_build_id: None,
         input_tables: vec![],
         query_dependencies: vec![],
         execution_runtime_ms: Some(42),
