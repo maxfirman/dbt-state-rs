@@ -113,7 +113,7 @@ pub struct ExplainNode {
     pub display_target_table: Option<String>,
     pub clone_source: Option<String>,
     /// The build held by the Snowflake copy source, read as recorded.
-    pub copy_source_build: Option<ExecutionRow>,
+    copy_source_build: Option<CopySourceBuild>,
     pub input_tables: Vec<InputTable>,
     pub query_dependencies: Vec<String>,
     /// The node's Lag tolerance (0: none) and the reuse candidate's build age
@@ -142,6 +142,12 @@ pub struct ExplainNode {
     /// (FRESH/OUTDATED + «gap» + «rel_time») can only be re-derived when this is
     /// present — it lands with the `matched_execution_id` column (ticket #30).
     pub anchor: Option<ExecutionRow>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CopySourceBuild {
+    target_table: String,
+    input_tables: Vec<InputTable>,
 }
 
 /// The forms, beyond the shared ones, that Explain prints for a Warehouse's
@@ -310,7 +316,10 @@ impl ExplainNode {
                 },
             ),
             clone_source: row.clone_source.clone(),
-            copy_source_build: row.copy_source_build.clone(),
+            copy_source_build: row
+                .copy_source_build
+                .clone()
+                .and_then(|value| serde_json::from_value(value).ok()),
             input_tables: row.input_tables(),
             query_dependencies: serde_json::from_value(row.query_dependencies.clone())
                 .unwrap_or_default(),
@@ -2913,23 +2922,8 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         // anchor (VERIFIED LIVE 2026-11-10, lag_copy_candidates `de`).
         freshness_children.push(if node.anchor.is_some() {
             upstream_dependencies_freshness(node, &upstreams)
-        } else if copy_source_read_same_epochs(node, &upstreams) {
-            section(
-                "upstream dependencies",
-                upstreams
-                    .iter()
-                    .map(|up| {
-                        let mut entry = clone_upstream_line(up);
-                        entry.badge = Some(BADGE_FRESH);
-                        entry
-                            .children
-                            .insert(0, fresh_anchor_line(node, &fqn(node)));
-                        entry
-                    })
-                    .collect(),
-            )
         } else {
-            clone_upstream_dependencies(&upstreams)
+            clone_upstream_dependencies(node, &upstreams)
         });
     }
     freshness_children.extend(copied_freshness_summary(node));
@@ -2981,11 +2975,23 @@ fn copy_source_read_same_epochs(node: &ExplainNode, upstreams: &[&InputTable]) -
         && current.is_empty()
 }
 
-/// The plain listing when copy source reads cannot establish a freshness
-/// verdict (explain_clone_history.jsonl). Data-test builds use the same listing
-/// even when they have a matched build (explain_data_test_history.jsonl).
-fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
-    let children = upstreams.iter().map(|up| clone_upstream_line(up)).collect();
+/// An unanchored copy lists a verdict only when its source read the same
+/// upstreams at the same epochs. The anchor line names the destination.
+fn clone_upstream_dependencies(node: &ExplainNode, upstreams: &[&InputTable]) -> qc::ExplainLine {
+    let fresh = copy_source_read_same_epochs(node, upstreams);
+    let children = upstreams
+        .iter()
+        .map(|up| {
+            let mut entry = clone_upstream_line(up);
+            if fresh {
+                entry.badge = Some(BADGE_FRESH);
+                entry
+                    .children
+                    .insert(0, fresh_anchor_line(node, &fqn(node)));
+            }
+            entry
+        })
+        .collect();
     section("upstream dependencies", children)
 }
 
@@ -3535,10 +3541,8 @@ mod tests {
         );
         assert_eq!(lines[1].text, "query analysis (vs clone)");
         assert_eq!(lines[2].text, "data freshness analysis (vs clone)");
-        // CLONE upstream listing (#34): a clone has no own-build anchor, so the
-        // upstream is listed with NO badge and ONLY a `last updated: …` child —
-        // NOT the SKIP-style `<FRESH>` badge + `no updates since …` anchor line.
-        // Pinned to golden/fixtures/explain_clone_history.jsonl.
+        // Without source evidence, the upstream is listed with just its
+        // last-updated line (explain_clone_history.jsonl).
         let deps = &lines[2].children[0];
         assert_eq!(deps.text, "upstream dependencies");
         let up = &deps.children[0];
@@ -3557,6 +3561,27 @@ mod tests {
         assert_eq!(
             lines[2].children[1].text, "upstream data is up to date",
             "the clone freshness section still ends with the up-to-date line"
+        );
+    }
+
+    #[test]
+    fn same_epoch_clone_listing_names_the_destination() {
+        let mut n = node(DecisionKind::Clone, ModelExecutionType::Full as i32, "");
+        let source = r#""DB"."PROD"."T""#;
+        let upstream = tbl(r#""DB"."RAW"."UP""#);
+        n.clone_source = Some(source.into());
+        n.input_tables = vec![upstream.clone()];
+        n.copy_source_build = Some(CopySourceBuild {
+            target_table: source.into(),
+            input_tables: vec![tbl(source), upstream],
+        });
+
+        let lines = explain_lines(&n);
+        let upstream = &lines[2].children[0].children[0];
+        assert_eq!(upstream.badge, Some(BADGE_FRESH));
+        assert_eq!(
+            upstream.children[0].text,
+            r#"no updates since "DB"."S"."T" last executed"#
         );
     }
 

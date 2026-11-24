@@ -986,7 +986,15 @@ impl Store {
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
                    unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
-                   rendered_volatile_values, volatile_evaluation_requested, copy_source_build_id
+                   rendered_volatile_values, volatile_evaluation_requested,
+                   (SELECT jsonb_build_object(
+                       'target_table', held.target_table,
+                       'input_tables', held.input_tables
+                    )
+                    FROM executions held
+                    WHERE held.org_id = node_decisions.org_id
+                      AND held.id = node_decisions.copy_source_build_id
+                   ) AS copy_source_build
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -999,21 +1007,15 @@ impl Store {
         .await?;
 
         // The matched `executions` anchors (ADR 0005 / ticket #30) and the
-        // unmatched latest builds (migration 0017), plus the builds held by
-        // Snowflake copy sources (migration 0036).
+        // unmatched latest builds (migration 0017): the builds the explain
+        // generator re-derives freshness against, read as complete rows.
         // Org-scoped like the decisions (AGENTS.md).
-        let execution_ids: Vec<i64> = rows
+        let matched: Vec<i64> = rows
             .iter()
-            .flat_map(|r| {
-                [
-                    r.matched_execution_id,
-                    r.unmatched_execution_id,
-                    r.copy_source_build_id,
-                ]
-            })
+            .flat_map(|r| [r.matched_execution_id, r.unmatched_execution_id])
             .flatten()
             .collect();
-        if execution_ids.is_empty() {
+        if matched.is_empty() {
             return Ok(rows);
         }
         let mut anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
@@ -1021,7 +1023,7 @@ impl Store {
             ExecutionRow::COLUMNS
         ))
         .bind(org_id)
-        .bind(&execution_ids)
+        .bind(&matched)
         .fetch_all(&self.pool)
         .await?;
         // Only exact execution/request correlations selected above. No older
@@ -1054,9 +1056,6 @@ impl Store {
             row.unmatched_execution = row
                 .unmatched_execution_id
                 .and_then(|id| anchors.get(&id).cloned());
-            row.copy_source_build = row
-                .copy_source_build_id
-                .and_then(|id| anchors.get(&id).cloned());
         }
         Ok(rows)
     }
@@ -1076,10 +1075,8 @@ pub struct ExplainDecisionRow {
     pub is_stale: bool,
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
-    pub copy_source_build_id: Option<i64>,
-    /// The build the copy source held when the submit was decided.
-    #[sqlx(skip)]
-    pub copy_source_build: Option<ExecutionRow>,
+    /// The held build's target and recorded inputs, scoped to this decision.
+    pub copy_source_build: Option<serde_json::Value>,
     pub input_tables: serde_json::Value,
     pub query_dependencies: serde_json::Value,
     /// The matched prior `executions` row id (NULL when the decision matched no
@@ -1180,7 +1177,6 @@ mod tests {
             is_stale: false,
             target_table: Some("T".into()),
             clone_source: None,
-            copy_source_build_id: None,
             copy_source_build: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
             query_dependencies: serde_json::json!([]),

@@ -197,6 +197,26 @@ fn submit_capture(
     execution_type: i32,
 ) -> crate::capture::CaptureInput {
     let record = outcome.record();
+    // Explain names the selected or refused source. A Snowflake copy can
+    // also supply the recorded build for its upstream comparison.
+    let (clone_source, copy_source_build_id) = match outcome {
+        SubmitOutcome::Copy {
+            copy,
+            copy_source_build_id,
+            ..
+        } => (
+            Some(copy.source_table.clone()).filter(|s| !s.is_empty()),
+            *copy_source_build_id,
+        ),
+        SubmitOutcome::ChainLimitExecute { source_table, .. } => {
+            (Some(source_table.clone()).filter(|s| !s.is_empty()), None)
+        }
+        SubmitOutcome::Execute {
+            refused_copy_source,
+            ..
+        } => (refused_copy_source.clone(), None),
+        _ => (None, None),
+    };
     crate::capture::CaptureInput {
         org_id: scope.organization().to_owned(),
         principal_id: scope.principal().map(|p| p.as_str().to_owned()),
@@ -224,31 +244,9 @@ fn submit_capture(
         table_namespace: None,
         target_table: None,
         default_schema: None,
-        // The physical relation a Copy is made FROM, so the Explain CLONE
-        // renderer (`explain.rs::clone_tree`) can emit `could be cloned from
-        // "<source>"` (F2); for a build whose copy the submit disallowed, the
-        // equivalent it could have been copied from.
-        clone_source: match outcome {
-            SubmitOutcome::Execute {
-                refused_copy_source,
-                ..
-            } => refused_copy_source.clone(),
-            SubmitOutcome::Copy { copy, .. } => {
-                Some(copy.source_table.clone()).filter(|s| !s.is_empty())
-            }
-            SubmitOutcome::ChainLimitExecute { source_table, .. } => {
-                Some(source_table.clone()).filter(|s| !s.is_empty())
-            }
-            _ => None,
-        },
+        clone_source,
         clone_sqls: None,
-        copy_source_build_id: match outcome {
-            SubmitOutcome::Copy {
-                copy_source_build_id,
-                ..
-            } => *copy_source_build_id,
-            _ => None,
-        },
+        copy_source_build_id,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         // Only a Skip reports the runtime it echoes.
