@@ -405,6 +405,35 @@ impl Store {
         .await
     }
 
+    /// The ordinary build whose result `row` holds: `row` itself when it is a
+    /// build, else, for a copy this server recorded (a Result copy on submit or a
+    /// RegisterClone), the build it was copied from, through any copies between
+    /// (`clone_source_execution_id`, each a confirmed row of the organization).
+    /// A copy holds exactly its source's result, so what that build recorded at
+    /// build time is what the copy was computed from (#264). `None` when the
+    /// chain is broken or longer than 16 copies.
+    pub(crate) async fn held_build(
+        &self,
+        org_id: &str,
+        row: ExecutionRow,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        const HELD_BUILD_HOPS: usize = 16;
+        let mut row = row;
+        for _ in 0..=HELD_BUILD_HOPS {
+            if row.clone_source_table.is_none() {
+                return Ok(Some(row));
+            }
+            let Some(source_id) = row.clone_source_execution_id else {
+                return Ok(None);
+            };
+            match self.execution_by_id(org_id, source_id).await? {
+                Some(source) if source.status == "confirmed" => row = source,
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
     /// Current seed loads with a seed's reuse identity under other names
     /// (#91): the latest confirmed row of each other target in the physical
     /// scope, kept only when it is a seed with these values and this seed

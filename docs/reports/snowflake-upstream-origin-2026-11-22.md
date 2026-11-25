@@ -246,6 +246,10 @@ so no copy fell back to a build on the client.
 
 ## Replay
 
+Since #252, the three copy trees (I23, T29 and T36) replay with the hosted
+`<FRESH>` badge and destination anchor line. The counts below describe the
+original replay.
+
 Both fixtures replay in `conformance.rs`. 27 keyed open gaps
 (`golden/replay_gaps.json`) cover the differences; everything else matches
 exactly.

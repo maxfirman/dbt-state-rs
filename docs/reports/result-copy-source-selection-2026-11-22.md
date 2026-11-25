@@ -181,7 +181,7 @@ The public replay baseline covers the complete response and selected source,
 including the source epoch and runtime. Carry the winning evidence through
 pending write, successful confirmation and unchanged resubmit. Retain the
 existing confirmations that mark a failed copy as an ordinary fallback build,
-the copy permission and chain checks, seed and `RegisterClone` behavior, and
-the distinct Snowflake `<FRESH>` Explain gaps tracked in
+and the copy permission and chain checks, seed and `RegisterClone` behavior.
+The Snowflake `<FRESH>` Explain gaps were resolved in
 [#252](https://github.com/maxfirman/dbt-state-rs/issues/252).
 [Refactor acceptance criteria](https://github.com/maxfirman/dbt-state-rs/issues/243).

@@ -242,6 +242,7 @@ fn submit_capture(
             _ => None,
         },
         clone_sqls: None,
+        copy_source_execution_id: None,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         // Only a Skip reports the runtime it echoes.
@@ -278,6 +279,7 @@ fn capture_submit(
 ) {
     let explain = decided.explain.clone();
     let input = crate::capture::CaptureInput {
+        copy_source_execution_id: decided.outcome.explain_copy_source_id(req),
         display_submitted_at_ms: explain.display_submitted_at_ms,
         template_comparison: explain.template_comparison,
         table_namespace: explain.table_namespace,
@@ -345,6 +347,7 @@ fn capture_register(
             default_schema: None,
             clone_source: Some(req.clone_source_table.clone()),
             clone_sqls: Some(clone_sqls.to_vec()),
+            copy_source_execution_id: None,
             input_tables: Vec::new(),
             query_dependencies: Vec::new(),
             execution_runtime_ms: None,
@@ -839,14 +842,10 @@ impl Explain for ExplainService {
                 .map_err(store_status)?;
         }
 
-        let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
-            std::collections::HashMap::new();
-        for node in rows
-            .into_iter()
-            .filter_map(crate::explain::ExplainNode::of_decision)
-        {
-            by_id.insert(node.execution_decision_id.clone(), node);
-        }
+        let by_id: std::collections::HashMap<_, _> = rows
+            .iter()
+            .filter_map(|row| Some((row.execution_decision_id.as_deref()?, row)))
+            .collect();
 
         // Hosted emits tracked decisions in ascending decision-ID order,
         // independently of request order (Databricks baseline + six reversed
@@ -854,8 +853,7 @@ impl Explain for ExplainService {
         let mut messages: Vec<_> = req
             .execution_decision_ids
             .iter()
-            .filter_map(|id| by_id.get(id))
-            .map(crate::explain::explain_entry)
+            .filter_map(|id| crate::explain::recorded_entry(by_id.get(id.as_str())?))
             .collect();
         messages.sort_by(|a, b| a.execution_decision_id.cmp(&b.execution_decision_id));
 

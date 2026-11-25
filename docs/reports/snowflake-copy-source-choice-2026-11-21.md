@@ -13,6 +13,10 @@ histories: it passes over an equivalent that read another relation. The
 "This server" section below describes the server before that change. See
 [ADR 0007](../adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs).
 
+**Update (#252).** All eleven copy Explain trees now replay with the hosted
+`<FRESH>` listing and destination anchor line. The Explain gaps described
+below have been removed.
+
 ## Provenance
 
 | | Main run | Completion-order controls | Middle-epoch control |
