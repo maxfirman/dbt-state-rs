@@ -3848,17 +3848,6 @@ mod generator_merge {
             .unwrap()
     }
 
-    /// `submit` with `relation` reported at `epoch`.
-    fn reporting(submit: &Submit, relation: &'static str, epoch: Option<i64>) -> Submit {
-        submit.clone().with(move |r| {
-            for t in &mut r.tables {
-                if t.name == relation {
-                    t.last_modified_epoch = epoch;
-                }
-            }
-        })
-    }
-
     /// Uncaptured neighbours of `mv`'s reruns keep the conservative form:
     /// refused and explained with no tree. Hosted rendered `mv`'s map with
     /// its Target relation as built and the source's epoch known, at or past
@@ -3880,6 +3869,16 @@ mod generator_merge {
             .to_owned();
         let built_epoch = epoch_of(&drifted, &target);
         let source_epoch = epoch_of(&unchanged, MS);
+        // `submit` with `relation` reported at `epoch`.
+        let reporting = |submit: &Submit, relation: String, epoch: Option<i64>| {
+            submit.clone().with(move |r| {
+                for t in &mut r.tables {
+                    if t.name == relation {
+                        t.last_modified_epoch = epoch;
+                    }
+                }
+            })
+        };
         for (case, rerun, renders) in [
             (
                 "drift within an hour's Lag tolerance",
@@ -3890,26 +3889,17 @@ mod generator_merge {
             ),
             (
                 "an upstream of unknown epoch",
-                reporting(&drifted, MS, None),
+                reporting(&drifted, MS.to_owned(), None),
                 false,
             ),
             (
                 "the source's epoch moved back",
-                reporting(&unchanged, MS, Some(source_epoch - 1)),
+                reporting(&unchanged, MS.to_owned(), Some(source_epoch - 1)),
                 false,
             ),
             (
                 "its Target relation written since the build",
-                unchanged.clone().with({
-                    let target = target.clone();
-                    move |r| {
-                        for t in &mut r.tables {
-                            if t.name == target {
-                                t.last_modified_epoch = Some(built_epoch + 1);
-                            }
-                        }
-                    }
-                }),
+                reporting(&unchanged, target.clone(), Some(built_epoch + 1)),
                 false,
             ),
         ] {
