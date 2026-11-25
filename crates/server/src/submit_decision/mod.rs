@@ -286,6 +286,9 @@ pub struct ExplainedOutcome {
     pub rendered: Option<crate::volatile_evaluation::Rendered>,
     /// Evidence for a rendering cell after Reuse qualification refused a build.
     rerun_evidence: crate::reuse_candidate::RerunEvidence,
+    /// Whether that refused rerun has the captured Snowflake MERGE shape
+    /// (`reuse_candidate::sole_source_rerun`, #211).
+    sole_source_rerun: bool,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -337,6 +340,7 @@ pub async fn submit_sql_explained(
             {
                 crate::volatile_evaluation::Decided::RefusedVolatileSql {
                     rerun: decided.rerun_evidence,
+                    sole_source: decided.sole_source_rerun,
                 }
             } else {
                 crate::volatile_evaluation::Decided::Build(record.reason)
@@ -445,6 +449,7 @@ async fn decide_sql(
     revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
     judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
+    let sole_source_rerun = selection.sole_source_rerun;
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
@@ -452,6 +457,7 @@ async fn decide_sql(
         outcome,
         rendered: None,
         rerun_evidence,
+        sole_source_rerun,
     }))
 }
 

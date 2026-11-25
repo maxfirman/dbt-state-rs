@@ -3850,11 +3850,12 @@ mod generator_merge {
 
     /// Uncaptured neighbours of `mv`'s reruns keep the conservative form:
     /// refused and explained with no tree. Hosted rendered `mv`'s map with
-    /// its Target relation as built and the source's epoch known, at or past
-    /// the epoch recorded at the refused build (entries 31 and 41); other
-    /// target and source states render nothing. Within a Lag tolerance the
-    /// drift is no rebuild reason, so its tree is uncaptured, though its map
-    /// renders.
+    /// its Target relation physically as built and one source whose epoch
+    /// is known, at or past the epoch recorded at the refused build
+    /// (entries 31 and 41); every other target and upstream state renders
+    /// nothing, even when the submit ignores External modifications. Within
+    /// a Lag tolerance the drift is no rebuild reason, so its tree is
+    /// uncaptured, though its map renders.
     #[tokio::test]
     async fn snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree() {
         let server = support::start_server().await;
@@ -3902,6 +3903,12 @@ mod generator_merge {
                 reporting(&unchanged, target.clone(), Some(built_epoch + 1)),
                 false,
             ),
+            (
+                "its Target relation written, External modifications ignored",
+                reporting(&unchanged, target.clone(), Some(built_epoch + 1))
+                    .ignore_external_modifications(),
+                false,
+            ),
         ] {
             let sc = sc.org(case);
             sc.build(first.clone(), built_epoch).await;
@@ -3926,8 +3933,54 @@ mod generator_merge {
         sc.build(first.clone(), built_epoch).await;
         sc.build(as_ms(GR_RERUN), epoch_of(&drifted, MS)).await;
         let rebuilt = sc.expect_execute(drifted.clone()).await;
-        assert!(!rendered(&rebuilt).is_empty(), "refused and rendered");
+        assert!(rendered(&rebuilt).is_empty(), "a dbt-built upstream");
         let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
         assert!(texts(&explained).is_empty(), "{explained}");
+
+        // A source-less MERGE, built and rerun unchanged.
+        let sc = sc.org("source-less");
+        let sourceless = |s: &Submit| s.clone().with(|r| r.tables.retain(|t| t.name != MS));
+        sc.build(sourceless(&first), built_epoch).await;
+        let rebuilt = sc.expect_execute(sourceless(&unchanged)).await;
+        assert!(rendered(&rebuilt).is_empty(), "source-less");
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
+
+    /// The isolated generator's empty tree is limited to `gu`'s shape. With
+    /// `UNIFORM(1, 100, 1234)` in place of `UUID_STRING()` in `cmb`, a table
+    /// over the volatile view `vw` (`explain_volatile_cells.jsonl` entries
+    /// 59 and 159), the rerun renders both functions and keeps the rerun
+    /// tree.
+    #[tokio::test]
+    async fn snowflake_generator_beside_a_volatile_dependency_keeps_the_rerun_tree() {
+        const CMB: (usize, usize) = (59, 159);
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let mut cells = entries(CELLS);
+        for entry in [CMB.0, CMB.1] {
+            let sql = cells[entry].request["sql"].as_str().unwrap();
+            assert!(sql.contains("uuid_string()"), "entry {entry}: {sql}");
+            let sql = sql.replace("uuid_string()", "uniform(1, 100, 1234)");
+            cells[entry].request["sql"] = sql.into();
+        }
+        let responses = replay(&sc, &cells, CMB.1).await;
+        let rerun = &responses[&CMB.1];
+        assert_eq!(variant(rerun), "ready_to_execute");
+        let mut functions: Vec<_> = volatile_map_shape(&volatile_values(rerun))
+            .into_iter()
+            .flat_map(|(_, functions)| functions)
+            .collect();
+        functions.sort();
+        assert_eq!(
+            functions,
+            ["CURRENT_TIMESTAMP()", "UNIFORM(1, 100, 1234)"],
+            "{functions:?}"
+        );
+        let explained = explain(&sc, &decision_id(rerun)).await;
+        assert!(
+            texts(&explained).contains(&"the model query has changed".to_owned()),
+            "{explained}"
+        );
     }
 }

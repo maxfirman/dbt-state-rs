@@ -328,8 +328,10 @@ server keeps the conservative behavior described.
       volatile block and `the model query has not changed`, no tolerance
       line). A literal control is reused and `random()` alone is rebuilt.
       This server still refuses `gu` at Reuse qualification and rebuilds,
-      with hosted's map and no Explain tree (a refusal whose own values are
-      all constant-seeded generators); matching hosted relaxes a Reuse
+      with hosted's map and no Explain tree (only a source-less FULL model
+      without query dependencies whose one rendered call is
+      `uniform(1, 100, 1234)`; every other shape keeps its tree); matching
+      hosted relaxes a Reuse
       refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
       `replay_gaps.json`. Open: whether hosted's rule is "every call has a
       constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are
@@ -339,9 +341,13 @@ server keeps the conservative behavior described.
       its Target relation did not exist (entry 7), and on the two reruns
       refused at Reuse qualification of the previous build: unchanged
       (entry 31) and after the source's data drifted (entry 41). A refusal
-      renders only with the Target relation as built and every upstream's
-      epoch known, at or past the one recorded at the refused build, with
-      its producer (`RerunEvidence::Unchanged`, `UpstreamDataDrifted`). Explain prints
+      renders only on physical evidence (`reuse_candidate::sole_source_rerun`,
+      shared with Explain): the Target relation reported once, no newer than
+      the refused build, whatever `ignore_external_modifications` allows,
+      and one upstream recorded as a source at that build and now, its
+      epoch known and at or past the recorded one. A source-less MERGE, an
+      unrecorded or dbt-built producer, several upstreams, or an unknown or
+      moved-back epoch renders nothing. Explain prints
       the model rerun tree on both reruns; after drift with zero Lag
       tolerance it lists the source `<OUTDATED>` with `upstream data is
       outdated` (entries 37, 45). Hosted gave no separate reason for the

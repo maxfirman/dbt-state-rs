@@ -152,8 +152,9 @@ is `66`, not `96` (as `frb` in #202).
 (`reuse_candidate::sql_qualifies`, the Volatile function detector) and
 rebuilds it with the same map. Matching hosted relaxes a Reuse refusal, so
 the change waits for the maintainer. Meanwhile the rebuild prints no Explain
-tree: every value its own SQL rendered is a constant-seeded generator, and
-hosted never reports that query as changed. Entries 28 (whole response) and
+tree, since hosted never reports that query as changed. Only this shape is
+affected: a FULL model without upstreams or query dependencies whose one
+rendered value is `UNIFORM(1, 100, 1234)`. Entries 28 (whole response) and
 35 (`empty_tree`) are keyed in `golden/replay_gaps.json`, and
 `volatile_evaluation.rs::generator_merge::snowflake_constant_generator_alone_is_still_refused_pending_check_in`
 pins the current local answer.
@@ -188,16 +189,17 @@ Before this change the replay differed in seven entries:
 | Entries | What differed | Now |
 |---|---|---|
 | 7 | `mv`'s first-build map: hosted filled, local `{}` (MERGE was not a Snowflake cell) | rendered: `cell(Merge, true, FIRST_BUILD, Own)` |
-| 31, 41 | `mv`'s map on the two refused reruns | rendered: `cell(Merge, true, RefusedVolatileSqlUnchangedOrDataDrifted, Own)`, the Target relation as built and every upstream's epoch known, at or past the one recorded at the refused build (`RerunEvidence::Unchanged`, `UpstreamDataDrifted`) |
+| 31, 41 | `mv`'s map on the two refused reruns | rendered: `cell(Merge, true, RefusedVolatileSqlSoleSourceRerun, Own)`: the Target relation physically as built and one recorded source, its epoch known and at or past the one recorded at the refused build (`reuse_candidate::sole_source_rerun`) |
 | 37, 45 | `mv`'s rerun trees: local empty | `explain.rs::volatile_rebuild_lines` prints the MERGE rerun tree with zero Lag tolerance over one source table, its Target relation as built and the source's epoch unchanged or advanced (`snowflake::VOLATILE_EXPLAIN_FORMS`) |
 | 28, 35 | `gu`'s reuse | keyed Check-in gaps; the local rebuild has no tree (35 is an `empty_tree` gap) |
 
 These are response-only changes: no decision, identity or Upstream producer
 rule changed. Uncaptured neighbours keep the conservative behavior. A MERGE
-rerun with an unknown or moved-back source epoch, or after its Target
-relation was written, is refused with an empty map and no tree. One after
-drift within a Lag tolerance, or over a dbt-built upstream rebuilt since the
-refused build, is refused and rendered but explained with no tree
+rerun with an unknown or moved-back source epoch, after its Target relation
+was written (also under `ignore_external_modifications`), without an
+upstream, over a dbt-built upstream or over an input whose producer was not
+recorded is refused with an empty map and no tree. One after drift within a
+Lag tolerance is refused and rendered but explained with no tree
 (`snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree`,
 `explain::tests::snowflake_merge_refusal_tree_needs_the_captured_target_and_source_states`).
 The other #211 cells stay open in

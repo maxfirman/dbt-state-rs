@@ -697,12 +697,14 @@ Databricks checked `rand(42)` reuse:
   - no upstream dependencies                          [SUCCESS]
 ```
 This server still refuses the reuse, pending the maintainer, and explains
-the rebuild with no tree: every value its own SQL rendered is a constant of
-the Snowflake rules (`Rules::renders_constant`), and hosted never reports
-that query as changed (`VolatileForms::constant_refusal_without_tree`). A
-constant beside another call, such as `RANDOM()`, keeps the
-[model rerun](#execute-rerun-of-a-volatile-model) tree (`explain_volatile_cells.jsonl`
-entries 180 and 181). The entry is keyed in `replay_gaps.json` as an
+the rebuild with no tree, since hosted never reports that query as changed
+(`VolatileForms::reused_generators`). Only the captured shape is affected:
+a FULL model without upstreams or query dependencies whose one rendered
+value is `UNIFORM(1, 100, 1234)`. Every other shape keeps the
+[model rerun](#execute-rerun-of-a-volatile-model) tree, including other
+constant-seeded generators alone (uncaptured), the generator beside
+`RANDOM()` (`explain_volatile_cells.jsonl` entries 180 and 181) and beside a
+volatile query dependency. The entry is keyed in `replay_gaps.json` as an
 `empty_tree` gap.
 
 ### EXECUTE: node query changed (SHAPE 7)
@@ -1095,10 +1097,11 @@ that build.
 
 A Snowflake MERGE incremental with zero Lag tolerance over one source
 table prints the same tree when its Target relation is as built (reported
-once, no newer than the refused build) and the source's epoch is known and
-at or past the epoch recorded at that build (#211,
-`explain_volatile_generator_merge.jsonl` `mv`;
-`Warehouse::volatile_explain_forms`). On its unchanged rerun (entry
+once, no newer than the refused build), the source is recorded as one at
+that build and now, and its epoch is known and at or past the epoch
+recorded at that build (#211, `explain_volatile_generator_merge.jsonl`
+`mv`; `Warehouse::volatile_explain_forms`, `reuse_candidate::sole_source_rerun`,
+the predicate the map renders under). On its unchanged rerun (entry
 37) the source is `<FRESH>` at the epoch recorded at the refused build, so
 `upstream data is up to date` [SUCCESS] follows the listing. After the
 source's data drifted (entry 45) the source is `<OUTDATED>` against the
@@ -2092,8 +2095,8 @@ last ones were settled.
   #211): the Snowflake MERGE rerun with zero Lag tolerance over one source
   table, its Target relation as built, unchanged (entry 37) and after the
   source's data drifted (entry 45); and, empty (LO), the refused rebuild of
-  SQL whose only rendered calls are constant-seeded generators, which hosted
-  reuses (entry 35). The trees over an upstream table are judged
+  a source-less FULL model whose one rendered call is
+  `uniform(1, 100, 1234)`, which hosted reuses (entry 35). The trees over an upstream table are judged
   against the refused build, recorded as the Explain anchor
   ([ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
   #201").

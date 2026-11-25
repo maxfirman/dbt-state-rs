@@ -247,15 +247,17 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             // Evaluation on: a keyed MERGE incremental over a source table,
             // its first build (#211, `explain_volatile_generator_merge.jsonl`
             // entry 7), and its rerun refused at Reuse qualification with its
-            // Target relation as built and the source's epoch known, unchanged
-            // (entry 31) or after its data drifted (entry 41). A refusal with
-            // an unknown epoch, an epoch that moved back or a changed Target
-            // relation is uncaptured.
+            // Target relation physically as built and one recorded source
+            // whose epoch is known, unchanged (entry 31) or after its data
+            // drifted (entry 41; `reuse_candidate::sole_source_rerun`). Every
+            // other refusal (no upstream, a dbt-built or unrecorded producer,
+            // an unknown or moved-back epoch, a written Target relation even
+            // under `ignore_external_modifications`) is uncaptured.
             cell(Merge, true, FIRST_BUILD, Queries::Own),
             cell(
                 Merge,
                 true,
-                Outcome::RefusedVolatileSqlUnchangedOrDataDrifted,
+                Outcome::RefusedVolatileSqlSoleSourceRerun,
                 Queries::Own,
             ),
             // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
@@ -298,14 +300,14 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
 /// a MERGE refusal with zero Lag tolerance over one source table, its Target
 /// relation as built, lists the source against the refused build, fresh
 /// (`explain_volatile_generator_merge.jsonl` entry 37) or after its data
-/// drifted (entry 45); and a refusal of SQL whose only rendered calls are
-/// constant-seeded generators prints no tree, since hosted reuses it (`gu`,
-/// entries 28 and 35, pending the maintainer).
+/// drifted (entry 45); and the refusal of a source-less FULL model whose
+/// only rendered call is `uniform(1, 100, 1234)` prints no tree, since
+/// hosted reuses it (`gu`, entries 28 and 35, pending the maintainer).
 pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
     use crate::query_cache::ModelExecutionType::Merge;
     crate::explain::VolatileForms {
         zero_tolerance_source_refusal: &[Merge],
-        constant_refusal_without_tree: true,
+        reused_generators: &["UNIFORM(1, 100, 1234)"],
         ..crate::explain::VolatileForms::NONE
     }
 };

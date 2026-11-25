@@ -64,16 +64,6 @@ pub struct Rules {
     pub cells: &'static [Cell],
 }
 
-impl Rules {
-    /// Whether `function`, a rendered function text, is rendered as a
-    /// constant (hosted's value for a generator with a constant seed).
-    pub fn renders_constant(&self, function: &str) -> bool {
-        self.functions
-            .iter()
-            .any(|rule| rule.key == function && matches!(rule.value, Value::Constant(_)))
-    }
-}
-
 /// A kind of submit and decision hosted was captured rendering values in.
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
@@ -140,11 +130,12 @@ pub enum Outcome {
     /// changed, as the Warehouse established it from the input's State
     /// (`Warehouse::changed_volatile_rerun`, #213).
     RefusedVolatileSqlChangedRerun,
-    /// [`Outcome::RefusedVolatileSql`] with the Target relation as built and
-    /// every upstream known, unchanged or with only its data drifted forward
-    /// ([`RerunEvidence::Unchanged`] or [`RerunEvidence::UpstreamDataDrifted`],
-    /// #211).
-    RefusedVolatileSqlUnchangedOrDataDrifted,
+    /// [`Outcome::RefusedVolatileSql`] in the captured Snowflake MERGE rerun:
+    /// the Target relation physically as built and one recorded source
+    /// upstream, unchanged or with only its data drifted forward
+    /// ([`Decided::RefusedVolatileSql`] with `sole_source`,
+    /// `reuse_candidate::sole_source_rerun`, #211).
+    RefusedVolatileSqlSoleSourceRerun,
     /// A reuse (`skip_execution`).
     Reuse,
     /// A Result copy (`ready_to_clone`) into a Target relation that does not
@@ -160,18 +151,20 @@ impl Outcome {
                 Self::RefusedVolatileSqlUnchangedRerun,
                 Decided::RefusedVolatileSql {
                     rerun: RerunEvidence::Unchanged,
+                    ..
                 },
             )
             | (
-                Self::RefusedVolatileSqlUnchangedOrDataDrifted,
+                Self::RefusedVolatileSqlSoleSourceRerun,
                 Decided::RefusedVolatileSql {
-                    rerun: RerunEvidence::Unchanged | RerunEvidence::UpstreamDataDrifted,
+                    sole_source: true, ..
                 },
             )
             | (
                 Self::RefusedVolatileSqlChangedRerun,
                 Decided::RefusedVolatileSql {
                     rerun: RerunEvidence::TargetChanged | RerunEvidence::InputModifiedExternally,
+                    ..
                 },
             )
             | (Self::Reuse, Decided::Reuse)
@@ -200,6 +193,9 @@ pub(crate) enum Decided {
     /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
     RefusedVolatileSql {
         rerun: RerunEvidence,
+        /// Whether the rerun has the captured Snowflake MERGE shape
+        /// (`reuse_candidate::sole_source_rerun`, #211).
+        sole_source: bool,
     },
     Reuse,
     /// A Result copy, and whether the decision saw the Target relation exist.
