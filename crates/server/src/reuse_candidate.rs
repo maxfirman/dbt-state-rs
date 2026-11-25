@@ -717,6 +717,11 @@ pub(crate) enum RerunEvidence {
     TargetChanged,
     /// Its sole input was externally modified with the Target relation as built.
     InputModifiedExternally,
+    /// The Target relation as built, and every upstream with a known epoch
+    /// and its recorded producer, at least one of them with only its data
+    /// drifted forward since the build ([`upstreams_unchanged_or_data_drifted`],
+    /// #211).
+    UpstreamDataDrifted,
 }
 
 impl RerunEvidence {
@@ -770,8 +775,27 @@ fn rerun_evidence(
         {
             RerunEvidence::InputModifiedExternally
         }
+        (OwnTarget::AsBuilt, false, _) if upstreams_unchanged_or_data_drifted(&freshness) => {
+            RerunEvidence::UpstreamDataDrifted
+        }
         _ => RerunEvidence::Unverified,
     }
+}
+
+/// Whether every genuine upstream was judged against the build with a known
+/// current epoch, at or after the epoch recorded for it, and its recorded
+/// producer: unchanged, or with only its data drifted forward. An epoch that
+/// moved back, an unprovable upstream or a changed producer is not (#211,
+/// `explain_volatile_generator_merge.jsonl` entries 31 and 41).
+pub(crate) fn upstreams_unchanged_or_data_drifted(
+    freshness: &crate::decision::UpstreamFreshness,
+) -> bool {
+    freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
+        && freshness.upstreams.iter().all(|u| {
+            !u.unprovable
+                && !u.producer_changed
+                && u.current_epoch.is_some_and(|epoch| epoch >= u.anchor_epoch)
+        })
 }
 
 /// Whether the one genuine upstream drifted since `prev` because it was

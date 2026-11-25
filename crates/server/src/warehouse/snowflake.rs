@@ -245,11 +245,19 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
             cell(DbtCustom, true, REFUSED_VOLATILE_SQL, Queries::Own),
             // Evaluation on: a keyed MERGE incremental over a source table,
-            // first build, unchanged rerun and rerun after upstream data
-            // drift (#211, `explain_volatile_generator_merge.jsonl` entries
-            // 7, 31 and 41).
+            // its first build (#211, `explain_volatile_generator_merge.jsonl`
+            // entry 7), and its rerun refused at Reuse qualification with its
+            // Target relation as built and the source's epoch known, unchanged
+            // (entry 31) or after its data drifted (entry 41). A refusal with
+            // an unknown epoch, an epoch that moved back or a changed Target
+            // relation is uncaptured.
             cell(Merge, true, FIRST_BUILD, Queries::Own),
-            cell(Merge, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            cell(
+                Merge,
+                true,
+                Outcome::RefusedVolatileSqlUnchangedOrDataDrifted,
+                Queries::Own,
+            ),
             // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
             // on, first build and rerun refused at Reuse qualification: a
             // table with values of its own and in a view dependency (entries
@@ -287,13 +295,17 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
 
 /// How Explain describes the captured volatile decisions beyond the shared
 /// forms (#211, `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`):
-/// a MERGE refusal with zero Lag tolerance over one source table lists the
-/// source against the refused build, fresh (`explain_volatile_generator_merge.jsonl`
-/// entry 37) or after its data drifted (entry 45).
+/// a MERGE refusal with zero Lag tolerance over one source table, its Target
+/// relation as built, lists the source against the refused build, fresh
+/// (`explain_volatile_generator_merge.jsonl` entry 37) or after its data
+/// drifted (entry 45); and a refusal of SQL whose only rendered calls are
+/// constant-seeded generators prints no tree, since hosted reuses it (`gu`,
+/// entries 28 and 35, pending the maintainer).
 pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
     use crate::query_cache::ModelExecutionType::Merge;
     crate::explain::VolatileForms {
         zero_tolerance_source_refusal: &[Merge],
+        constant_refusal_without_tree: true,
         ..crate::explain::VolatileForms::NONE
     }
 };

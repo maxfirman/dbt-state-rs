@@ -3819,65 +3819,104 @@ mod generator_merge {
 
     /// Hosted reuses `gu` (entry 28). Matching it relaxes a Reuse refusal,
     /// which waits for the maintainer (#211, #201 check-in rule): this
-    /// server still refuses it and renders hosted's map on the rebuild.
+    /// server still refuses it and renders hosted's map on the rebuild. The
+    /// rebuild prints no tree: hosted never reports this query as changed
+    /// (entry 35, an `empty_tree` replay gap).
     #[tokio::test]
     async fn snowflake_constant_generator_alone_is_still_refused_pending_check_in() {
         let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
         let entries = entries(GENERATOR_MERGE);
-        let responses = replay(&Scenario::connect(&server).await, &entries, GU_RERUN).await;
+        let responses = replay(&sc, &entries, GU_RERUN).await;
         let rerun = &responses[&GU_RERUN];
         assert_eq!(variant(rerun), "ready_to_execute");
         assert_eq!(
             volatile_map_shape(&volatile_values(rerun)),
             volatile_map_shape(&hosted_volatile_values(&entries[GU_RERUN].response)),
         );
+        let explained = explain(&sc, &decision_id(rerun)).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
     }
 
-    /// Uncaptured neighbours of `mv`'s drifted rerun keep the conservative
-    /// form: refused and rendered, explained with no tree. Within a Lag
-    /// tolerance the drift is no rebuild reason, and an upstream with an
-    /// unknown epoch proves nothing.
+    /// The epoch `submit` reports for `relation`.
+    fn epoch_of(submit: &Submit, relation: &str) -> i64 {
+        let req = submit.clone().build();
+        req.tables
+            .iter()
+            .find(|t| t.name == relation)
+            .and_then(|t| t.last_modified_epoch)
+            .unwrap()
+    }
+
+    /// `submit` with `relation` reported at `epoch`.
+    fn reporting(submit: &Submit, relation: &'static str, epoch: Option<i64>) -> Submit {
+        submit.clone().with(move |r| {
+            for t in &mut r.tables {
+                if t.name == relation {
+                    t.last_modified_epoch = epoch;
+                }
+            }
+        })
+    }
+
+    /// Uncaptured neighbours of `mv`'s reruns keep the conservative form:
+    /// refused and explained with no tree. Hosted rendered `mv`'s map with
+    /// its Target relation as built and the source's epoch known, at or past
+    /// the epoch recorded at the refused build (entries 31 and 41); other
+    /// target and source states render nothing. Within a Lag tolerance the
+    /// drift is no rebuild reason, so its tree is uncaptured, though its map
+    /// renders.
     #[tokio::test]
     async fn snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree() {
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
         let entries = entries(GENERATOR_MERGE);
         let first = captured_submit(&entries[MV_FIRST].request);
+        let unchanged = captured_submit(&entries[MV_RERUN].request);
         let drifted = captured_submit(&entries[MV_DRIFT].request);
-        let own_epoch = |s: &Submit| {
-            let req = s.clone().build();
-            req.tables
-                .iter()
-                .find(|t| Some(&t.name) == req.target_table.as_ref())
-                .and_then(|t| t.last_modified_epoch)
-                .unwrap()
-        };
-        let built_epoch = own_epoch(&drifted);
-        for (case, rerun) in [
+        let target = entries[MV_DRIFT].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let built_epoch = epoch_of(&drifted, &target);
+        let source_epoch = epoch_of(&unchanged, MS);
+        for (case, rerun, renders) in [
             (
                 "drift within an hour's Lag tolerance",
                 drifted
                     .clone()
                     .with(|r| r.freshness_tolerance_seconds = 3600),
+                true,
             ),
             (
                 "an upstream of unknown epoch",
-                drifted.clone().with(|r| {
-                    for t in &mut r.tables {
-                        if t.name == MS {
-                            t.last_modified_epoch = None;
+                reporting(&drifted, MS, None),
+                false,
+            ),
+            (
+                "the source's epoch moved back",
+                reporting(&unchanged, MS, Some(source_epoch - 1)),
+                false,
+            ),
+            (
+                "its Target relation written since the build",
+                unchanged.clone().with({
+                    let target = target.clone();
+                    move |r| {
+                        for t in &mut r.tables {
+                            if t.name == target {
+                                t.last_modified_epoch = Some(built_epoch + 1);
+                            }
                         }
                     }
                 }),
+                false,
             ),
         ] {
             let sc = sc.org(case);
             sc.build(first.clone(), built_epoch).await;
             let rebuilt = sc.expect_execute(rerun).await;
-            assert!(
-                !rendered(&rebuilt).is_empty(),
-                "{case}: refused and rendered"
-            );
+            assert_eq!(!rendered(&rebuilt).is_empty(), renders, "{case}");
             let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
             assert!(texts(&explained).is_empty(), "{case}: {explained}");
         }
@@ -3893,17 +3932,9 @@ mod generator_merge {
                 .replace("gr_000054c3e38d", "ms_000054c3e38d");
             captured_submit(&serde_json::from_str(&json).unwrap())
         };
-        let ms_epoch = |s: &Submit| {
-            let req = s.clone().build();
-            req.tables
-                .iter()
-                .find(|t| t.name == MS)
-                .and_then(|t| t.last_modified_epoch)
-                .unwrap()
-        };
-        sc.build(as_ms(GR_FIRST), ms_epoch(&first)).await;
+        sc.build(as_ms(GR_FIRST), epoch_of(&first, MS)).await;
         sc.build(first.clone(), built_epoch).await;
-        sc.build(as_ms(GR_RERUN), ms_epoch(&drifted)).await;
+        sc.build(as_ms(GR_RERUN), epoch_of(&drifted, MS)).await;
         let rebuilt = sc.expect_execute(drifted.clone()).await;
         assert!(!rendered(&rebuilt).is_empty(), "refused and rendered");
         let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;

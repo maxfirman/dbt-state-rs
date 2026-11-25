@@ -327,21 +327,28 @@ server keeps the conservative behavior described.
       entry 28, Explain 35: map `UNIFORM(1, 100, 1234) -> 96`, the
       volatile block and `the model query has not changed`, no tolerance
       line). A literal control is reused and `random()` alone is rebuilt.
-      This server still refuses `gu` at Reuse qualification and rebuilds;
-      matching hosted relaxes a Reuse refusal, so it waits for the
-      maintainer (#201 check-in rule). Both entries are keyed in
+      This server still refuses `gu` at Reuse qualification and rebuilds,
+      with hosted's map and no Explain tree (a refusal whose own values are
+      all constant-seeded generators); matching hosted relaxes a Reuse
+      refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
       `replay_gaps.json`. Open: whether hosted's rule is "every call has a
       constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are
       uncaptured) and whether it holds for other kinds and over upstreams.
     - Implemented: a keyed MERGE incremental with `current_timestamp()`
-      over a source table renders its own values on the first build, the
-      unchanged rerun and the rerun after the source's data drifted, each
-      refused at Reuse qualification (entries 7, 31, 41). Explain prints
+      over a source table renders its own values on its first build, where
+      its Target relation did not exist (entry 7), and on the two reruns
+      refused at Reuse qualification of the previous build: unchanged
+      (entry 31) and after the source's data drifted (entry 41). A refusal
+      renders only with the Target relation as built and every upstream's
+      epoch known, at or past the one recorded at the refused build, with
+      its producer (`RerunEvidence::Unchanged`, `UpstreamDataDrifted`). Explain prints
       the model rerun tree on both reruns; after drift with zero Lag
       tolerance it lists the source `<OUTDATED>` with `upstream data is
       outdated` (entries 37, 45). Hosted gave no separate reason for the
       drift. The tree is printed only for that shape (zero Lag tolerance,
-      one source upstream); other MERGE reruns keep an empty tree. The deterministic control `mc` SKIPs the unchanged rerun and
+      one source upstream, the Target relation as built, the source's epoch
+      known and unchanged or advanced); other MERGE reruns keep an empty
+      tree. The deterministic control `mc` SKIPs the unchanged rerun and
       rebuilds after drift with an empty map (entries 29, 42), as this
       server already did.
   - Snowflake, reachable through client 2.0.11 but not captured (#211):

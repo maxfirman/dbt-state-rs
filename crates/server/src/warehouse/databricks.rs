@@ -201,6 +201,7 @@ pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
         sourceless_refusal: &[Append, Merge, DeleteInsert],
         input_modified_externally_refusal: &[Full],
         zero_tolerance_source_refusal: &[],
+        constant_refusal_without_tree: false,
         requested_reuse: true,
     }
 };

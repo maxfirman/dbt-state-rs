@@ -1002,7 +1002,7 @@ says "empty".
 | Snowflake | data test without a Target relation, values only in a query dependency (the dependency's key) | rendered on a first execution and a rerun | empty, uncaptured | on: cells entries 52, 144 |
 | Snowflake | data test with values in both its own SQL and a query dependency | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | APPEND incremental, snapshot, custom node, root SQL | rendered on a first build and a rerun refused at Reuse qualification | empty, uncaptured | on: cells entries 71/167, 69/165, 24/143 (#205) |
-| Snowflake | keyed MERGE incremental, root SQL | rendered on a first build and a rerun refused at Reuse qualification, unchanged or after upstream data drift | empty, uncaptured | on: generator-merge entries 7, 31, 41 (#211) |
+| Snowflake | keyed MERGE incremental, root SQL | rendered on a first build, and on a rerun refused at Reuse qualification with its Target relation as built and every upstream's epoch known, unchanged or advanced with its producer (`Outcome::RefusedVolatileSqlUnchangedOrDataDrifted`). A refusal with an unknown or moved-back epoch, a changed producer or a written Target relation is empty, uncaptured | empty, uncaptured | on: generator-merge entries 7 (first build), 31, 41 (refusals, #211) |
 | Snowflake | those types' other rebuild reasons, their values in a query dependency; INSERT_OVERWRITE, DELETE_INSERT, MICROBATCH | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
@@ -1023,7 +1023,9 @@ A Snowflake build renders only for a captured decision reason
 (`first_build`) and a rerun refused at Reuse qualification for its volatile
 SQL alone, compared by its rendered SQL
 (`failed_reuse_qualification`: unchanged, after an External modification,
-over an upstream table or a query dependency, and after upstream data drift;
+over an upstream table or a query dependency, and for a MERGE only with
+its Target relation as built and every upstream unchanged or with only its
+data drifted forward;
 `reuse_candidate::refuses_volatile_sql_alone`); for a table's or a data
 test's own SQL also a query-changed rebuild (`identity_mismatch`; for a
 data test, a logic change). With evaluation off: a first build, and for a

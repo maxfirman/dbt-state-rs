@@ -417,7 +417,7 @@
   {
     "fixture": "explain_volatile_generator_merge.jsonl",
     "entry": 35,
-    "local_variant": "explain",
-    "reason": "CHECK-IN (#211) explain of entry 28: hosted explains gu's reuse (the volatile block, then 'the model query has not changed' with no tolerance line); the local server explains the refused rebuild it decided."
+    "local_variant": "empty_tree",
+    "reason": "CHECK-IN (#211) explain of entry 28: hosted explains gu's reuse (the volatile block, then 'the model query has not changed' with no tolerance line). The local server, which still refuses the reuse pending the maintainer, explains its rebuild of SQL whose only rendered calls are constant-seeded generators with no tree (explain.rs, VolatileForms::constant_refusal_without_tree)."
   }
 ]
