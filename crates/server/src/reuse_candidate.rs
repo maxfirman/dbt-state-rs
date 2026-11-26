@@ -774,6 +774,71 @@ fn rerun_evidence(
     }
 }
 
+/// Whether `inputs` report the Target relation `target` exactly once, with
+/// a known epoch no newer than the build `prev`'s: physically as built.
+/// `ignore_external_modifications` does not make a write since the build
+/// count as none (#211).
+pub(crate) fn own_target_as_built(
+    target: &str,
+    inputs: &[InputTable],
+    prev: &ExecutionRow,
+) -> bool {
+    let own: Vec<_> = inputs.iter().filter(|t| t.name == target).collect();
+    target == prev.target_table
+        && matches!(
+            (own.as_slice(), prev.last_modified_epoch),
+            ([own], Some(built)) if own.last_modified_epoch.is_some_and(|epoch| epoch <= built)
+        )
+}
+
+/// #211: whether a rerun of the build `prev` has the shape hosted was
+/// captured rendering a Snowflake MERGE refusal in, judged on physical
+/// evidence alone: the Target relation physically as built
+/// ([`own_target_as_built`]), and exactly one genuine upstream, a source.
+/// The source has no confirmed State in scope (`without_state`, so no
+/// recorded build ever produced it and its epoch is no External
+/// modification), was recorded with no producer at `prev` and now, and its
+/// epoch is known and stayed at or moved past the one recorded at `prev`,
+/// with nothing else against its freshness
+/// (`explain_volatile_generator_merge.jsonl` entries 31 and 41). An
+/// unrecorded producer is no evidence of a source.
+pub(crate) fn sole_source_rerun(
+    execution_type: i32,
+    target: &str,
+    inputs: &[InputTable],
+    without_state: &[String],
+    prev: &ExecutionRow,
+) -> bool {
+    use crate::store::Producer;
+    if !own_target_as_built(target, inputs, prev) {
+        return false;
+    }
+    let freshness = crate::decision::upstream_freshness(
+        crate::decision::FreshnessInputs {
+            execution_type,
+            input_tables: inputs,
+            target_table: Some(target),
+        },
+        prev,
+    );
+    let [upstream] = freshness.upstreams.as_slice() else {
+        return false;
+    };
+    let recorded_source = |tables: &[InputTable]| {
+        let named: Vec<_> = tables.iter().filter(|t| t.name == upstream.name).collect();
+        matches!(named.as_slice(), [t] if t.producer == Producer::NoBuild)
+    };
+    freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
+        && !upstream.unprovable
+        && !upstream.producer_changed
+        && upstream
+            .current_epoch
+            .is_some_and(|epoch| epoch >= upstream.anchor_epoch)
+        && without_state.contains(&upstream.name)
+        && recorded_source(inputs)
+        && recorded_source(&prev.input_tables)
+}
+
 /// Whether the one genuine upstream drifted since `prev` because it was
 /// modified externally after `prev` read it from a recorded build
 /// ([`InputTable::modified_externally_since`]). `freshness` is the upstream
@@ -866,6 +931,107 @@ mod tests {
         qc::TableModifiedInfo {
             name: name.into(),
             last_modified_epoch: Some(epoch),
+        }
+    }
+
+    /// #211: the captured Snowflake MERGE rerun shape needs physical
+    /// evidence: the Target relation reported once at or before the build,
+    /// and one source, with no confirmed State in scope and recorded with no
+    /// producer at the build and now, at or past its recorded epoch
+    /// (`explain_volatile_generator_merge.jsonl` entries 31, 41). Missing or
+    /// legacy evidence never stands in for it, and neither does an External
+    /// modification of a dbt-built relation, which also has no producer.
+    #[test]
+    fn sole_source_rerun_needs_the_captured_physical_evidence() {
+        use crate::store::Producer;
+        const UP2: &str = "\"DB\".\"DEV\".\"UP2\"";
+        let merge = ModelExecutionType::Merge as i32;
+        let input = |name: &str, epoch: Option<i64>, producer: Producer| InputTable {
+            name: name.into(),
+            last_modified_epoch: epoch,
+            producer,
+            read_copy: None,
+        };
+        let source = |epoch| input(UPSTREAM, Some(epoch), Producer::NoBuild);
+        let prev = |recorded: Vec<InputTable>| ExecutionRow {
+            target_table: TARGET.into(),
+            execution_type: merge,
+            last_modified_epoch: Some(BUILT),
+            input_tables: recorded,
+            ..ExecutionRow::default()
+        };
+        let own = |epoch| input(TARGET, Some(epoch), Producer::Unrecorded);
+        let stateless = vec![UPSTREAM.to_owned(), UP2.to_owned()];
+        let rerun = |inputs: &[InputTable], prev: &ExecutionRow| {
+            sole_source_rerun(merge, TARGET, inputs, &stateless, prev)
+        };
+        let built = prev(vec![source(500)]);
+        assert!(rerun(&[own(BUILT), source(500)], &built), "unchanged");
+        assert!(
+            rerun(&[own(BUILT - 1), source(600)], &built),
+            "data drifted"
+        );
+        assert!(
+            !sole_source_rerun(merge, TARGET, &[own(BUILT), source(600)], &[], &built),
+            "a dbt-built relation modified externally: it has State in scope"
+        );
+
+        for (case, inputs, prev) in [
+            ("source-less", vec![own(BUILT)], prev(Vec::new())),
+            (
+                "target written",
+                vec![own(BUILT + 1), source(500)],
+                built.clone(),
+            ),
+            ("target unreported", vec![source(500)], built.clone()),
+            (
+                "target duplicated",
+                vec![own(BUILT), own(BUILT), source(500)],
+                built.clone(),
+            ),
+            (
+                "source epoch moved back",
+                vec![own(BUILT), source(499)],
+                built.clone(),
+            ),
+            (
+                "source epoch unknown",
+                vec![own(BUILT), input(UPSTREAM, None, Producer::NoBuild)],
+                built.clone(),
+            ),
+            (
+                "recorded producer unrecorded",
+                vec![own(BUILT), source(500)],
+                prev(vec![input(UPSTREAM, Some(500), Producer::Unrecorded)]),
+            ),
+            (
+                "current producer unrecorded",
+                vec![own(BUILT), input(UPSTREAM, Some(500), Producer::Unrecorded)],
+                built.clone(),
+            ),
+            (
+                "a dbt-built upstream",
+                vec![
+                    own(BUILT),
+                    input(UPSTREAM, Some(600), Producer::Build("a".into())),
+                ],
+                prev(vec![input(
+                    UPSTREAM,
+                    Some(500),
+                    Producer::Build("a".into()),
+                )]),
+            ),
+            (
+                "two sources",
+                vec![
+                    own(BUILT),
+                    source(500),
+                    input(UP2, Some(5), Producer::NoBuild),
+                ],
+                prev(vec![source(500), input(UP2, Some(5), Producer::NoBuild)]),
+            ),
+        ] {
+            assert!(!rerun(&inputs, &prev), "{case}");
         }
     }
 

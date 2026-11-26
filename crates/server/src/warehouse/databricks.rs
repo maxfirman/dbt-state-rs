@@ -172,7 +172,7 @@ pub(super) fn checked_volatile_reuse(req: &crate::query_cache::SubmitEnrichedSql
 
     checked_volatile_full(req)
         && req.tables.iter().all(|table| Some(&table.name) == req.target_table.as_ref())
-        && projection_skeleton(&req.sql, |expr| {
+        && super::projection_skeleton(&DatabricksDialect {}, &req.sql, |expr| {
             matches!(expr, Expr::Value(value) if matches!(value.value, Value::Number(_, false) | Value::SingleQuotedString(_)))
                 || matches_call(expr, "rand", Call::Arguments("42"))
         }).is_some_and(|query| query == "SELECT checked_projection")
@@ -215,7 +215,7 @@ pub(super) fn volatile_producer_input(
         return None;
     }
     let mut has_rand = false;
-    let sql = projection_skeleton(&req.sql, |expr| {
+    let sql = super::projection_skeleton(&DatabricksDialect {}, &req.sql, |expr| {
         let rand = matches_call(expr, "rand", Call::Empty);
         has_rand |= rand;
         rand || matches!(expr, Expr::Identifier(_))
@@ -322,30 +322,6 @@ impl ChangedRerun<'_> {
             },
         }
     }
-}
-
-/// Check every projection and substitute one plain projection when checking
-/// the rest of the statement's grammar.
-fn projection_skeleton(sql: &str, mut allowed: impl FnMut(&Expr) -> bool) -> Option<String> {
-    let mut statements = Parser::parse_sql(&DatabricksDialect {}, sql).ok()?;
-    let [Statement::Query(query)] = statements.as_mut_slice() else {
-        return None;
-    };
-    let SetExpr::Select(select) = query.body.as_mut() else {
-        return None;
-    };
-    if select.projection.is_empty()
-        || !select.projection.iter().all(|item| match item {
-            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => allowed(expr),
-            _ => false,
-        })
-    {
-        return None;
-    }
-    select.projection = vec![SelectItem::UnnamedExpr(Expr::Identifier(
-        sqlparser::ast::Ident::new("checked_projection"),
-    ))];
-    Some(query.to_string())
 }
 
 /// Extra bounds on #144's source-less ordinary-submit rejection. The shared

@@ -130,6 +130,10 @@ pub enum Outcome {
     /// changed, as the Warehouse established it from the input's State
     /// (`Warehouse::changed_volatile_rerun`, #213).
     RefusedVolatileSqlChangedRerun,
+    /// [`Outcome::RefusedVolatileSql`] in a rerun the Warehouse established
+    /// in this captured form ([`Decided::RefusedVolatileSql`] with `form`,
+    /// `Warehouse::volatile_rerun_form`, #211).
+    RefusedVolatileSqlIn(RerunForm),
     /// A reuse (`skip_execution`).
     Reuse,
     /// A Result copy (`ready_to_clone`) into a Target relation that does not
@@ -145,12 +149,14 @@ impl Outcome {
                 Self::RefusedVolatileSqlUnchangedRerun,
                 Decided::RefusedVolatileSql {
                     rerun: RerunEvidence::Unchanged,
+                    ..
                 },
             )
             | (
                 Self::RefusedVolatileSqlChangedRerun,
                 Decided::RefusedVolatileSql {
                     rerun: RerunEvidence::TargetChanged | RerunEvidence::InputModifiedExternally,
+                    ..
                 },
             )
             | (Self::Reuse, Decided::Reuse)
@@ -160,6 +166,9 @@ impl Outcome {
                     target_exists: false,
                 },
             ) => true,
+            (Self::RefusedVolatileSqlIn(captured), Decided::RefusedVolatileSql { form, .. }) => {
+                form == Some(captured)
+            }
             (Self::BuildFor(captured), Decided::Build(reason)) => captured == reason,
             _ => false,
         }
@@ -179,12 +188,56 @@ pub(crate) enum Decided {
     /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
     RefusedVolatileSql {
         rerun: RerunEvidence,
+        /// The captured form the Warehouse established for the rerun, if
+        /// any (`Warehouse::volatile_rerun_form`, #211).
+        form: Option<RerunForm>,
     },
     Reuse,
     /// A Result copy, and whether the decision saw the Target relation exist.
     Copy {
         target_exists: bool,
     },
+}
+
+/// A rerun refused at Reuse qualification for its volatile SQL, in a form
+/// hosted was captured in (#211), as its Warehouse established it from the
+/// submit and the refused build (`Warehouse::volatile_rerun_form`). Persisted
+/// with the decision for Explain (migration 0037), which cannot re-derive it
+/// from the rendered values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RerunForm {
+    /// A Snowflake MERGE rerun with its Target relation physically as built
+    /// over one source table: no confirmed State in scope, recorded with no
+    /// producer at the refused build and now, its epoch known and unchanged
+    /// or advanced (`reuse_candidate::sole_source_rerun`;
+    /// `explain_volatile_generator_merge.jsonl` entries 31 and 41).
+    SoleSourceMerge,
+    /// A Snowflake FULL model without upstreams or query dependencies whose
+    /// SQL reads no relation, its Target relation physically as built,
+    /// projecting only literals and a generator hosted reuses
+    /// (`uniform(1, 100, 1234)`) in one `SELECT` with no other clause
+    /// (`explain_volatile_generator_merge.jsonl` entries 28 and 35;
+    /// `snowflake::isolated_generator_projection`).
+    IsolatedGenerator,
+}
+
+impl RerunForm {
+    /// The `node_decisions.volatile_rerun_form` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SoleSourceMerge => "sole_source_merge",
+            Self::IsolatedGenerator => "isolated_generator",
+        }
+    }
+
+    /// A stored value; `None` for NULL or an unknown value.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "sole_source_merge" => Some(Self::SoleSourceMerge),
+            "isolated_generator" => Some(Self::IsolatedGenerator),
+            _ => None,
+        }
+    }
 }
 
 /// The SQL a [`Cell`]'s values come from.
@@ -324,25 +377,40 @@ pub struct Evidence {
     /// The values rendered, as returned (migration 0027). Empty when none
     /// were, and for unreadable stored values.
     pub values: Vec<RenderedValue>,
+    /// The captured form of a rerun refused for its volatile SQL
+    /// (migration 0037). `None` for every other decision.
+    pub rerun_form: Option<RerunForm>,
 }
 
 impl Evidence {
-    /// The evidence of a decided SQL submit that rendered `rendered`.
-    pub fn of_submit(req: &qc::SubmitEnrichedSqlRequest, rendered: Option<&Rendered>) -> Self {
+    /// The evidence of a decided SQL submit that rendered `rendered`, its
+    /// rerun in `rerun_form` when Reuse qualification refused it.
+    pub fn of_submit(
+        req: &qc::SubmitEnrichedSqlRequest,
+        rendered: Option<&Rendered>,
+        rerun_form: Option<RerunForm>,
+    ) -> Self {
         Self {
             requested: Some(requested(req)),
             values: rendered.map(|r| r.0.clone()).unwrap_or_default(),
+            rerun_form,
         }
     }
 
-    /// The evidence stored in `node_decisions.rendered_volatile_values` and
-    /// `node_decisions.volatile_evaluation_requested`.
-    pub fn stored(values: Option<serde_json::Value>, requested: Option<bool>) -> Self {
+    /// The evidence stored in `node_decisions.rendered_volatile_values`,
+    /// `node_decisions.volatile_evaluation_requested` and
+    /// `node_decisions.volatile_rerun_form`.
+    pub fn stored(
+        values: Option<serde_json::Value>,
+        requested: Option<bool>,
+        rerun_form: Option<&str>,
+    ) -> Self {
         Self {
             requested,
             values: values
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+            rerun_form: rerun_form.and_then(RerunForm::from_stored),
         }
     }
 

@@ -286,6 +286,10 @@ pub struct ExplainedOutcome {
     pub rendered: Option<crate::volatile_evaluation::Rendered>,
     /// Evidence for a rendering cell after Reuse qualification refused a build.
     rerun_evidence: crate::reuse_candidate::RerunEvidence,
+    /// The captured form of that refused rerun, when its Warehouse
+    /// establishes one (`Warehouse::volatile_rerun_form`, #211). `None`
+    /// once the decision is anything but a refusal for volatile SQL alone.
+    pub rerun_form: Option<crate::volatile_evaluation::RerunForm>,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -337,6 +341,7 @@ pub async fn submit_sql_explained(
             {
                 crate::volatile_evaluation::Decided::RefusedVolatileSql {
                     rerun: decided.rerun_evidence,
+                    form: decided.rerun_form,
                 }
             } else {
                 crate::volatile_evaluation::Decided::Build(record.reason)
@@ -348,6 +353,12 @@ pub async fn submit_sql_explained(
         }),
         SubmitOutcome::ChainLimitExecute { .. } => None,
     };
+    if !matches!(
+        decision,
+        Some(crate::volatile_evaluation::Decided::RefusedVolatileSql { .. })
+    ) {
+        decided.rerun_form = None;
+    }
     decided.rendered = decision.and_then(|outcome| {
         crate::volatile_evaluation::evaluate(
             req,
@@ -445,6 +456,17 @@ async fn decide_sql(
     revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
     judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
+    // Only a refusal at Reuse qualification can have a captured rerun form,
+    // so nothing else pays for the Warehouse's checks (#211).
+    let rerun_form = selection
+        .unqualified
+        .as_ref()
+        .filter(|_| {
+            selection.why_no_candidate == Some(decision::NoCandidate::FailedReuseQualification)
+        })
+        .and_then(|refused| {
+            Warehouse::from_dialect(&req.dialect).volatile_rerun_form(req, &evidence, refused)
+        });
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
@@ -452,6 +474,7 @@ async fn decide_sql(
         outcome,
         rendered: None,
         rerun_evidence,
+        rerun_form,
     }))
 }
 
@@ -887,6 +910,10 @@ pub(crate) async fn resolve_producers(
     {
         input.producer = Producer::of(builds.get(&input.name), input.last_modified_epoch);
     }
+    evidence.inputs_without_state = names
+        .into_iter()
+        .filter(|name| !builds.contains_key(name))
+        .collect();
     Ok(())
 }
 

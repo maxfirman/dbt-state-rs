@@ -893,8 +893,23 @@ impl Warehouse {
         self == Self::Databricks && databricks::retains_producer_revision(execution_type)
     }
 
+    /// The captured form of a rerun of the build `refused`, which Reuse
+    /// qualification refused (#211): `evidence` is the submit's, with its
+    /// inputs' producers resolved. Snowflake only; checked only after such a
+    /// refusal, and cheap checks first.
+    pub(crate) fn volatile_rerun_form(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+        evidence: &crate::execution::ExecutionEvidence,
+        refused: &ExecutionRow,
+    ) -> Option<crate::volatile_evaluation::RerunForm> {
+        (self == Self::Snowflake)
+            .then(|| snowflake::volatile_rerun_form(req, evidence, refused))
+            .flatten()
+    }
+
     /// The forms, beyond the shared ones, Explain prints for this
-    /// Warehouse's captured volatile decisions (#213).
+    /// Warehouse's captured volatile decisions (#211, #213).
     pub(crate) fn volatile_explain_forms(self) -> crate::explain::VolatileForms {
         match self {
             Self::Databricks => databricks::VOLATILE_EXPLAIN_FORMS,
@@ -1205,6 +1220,36 @@ pub enum IncrementalCopyContract<'a> {
     /// Declared. The source must currently be the confirmed incremental build
     /// with this initialization identity.
     Declared { identity: &'a str },
+}
+
+/// Check every projection with `allowed` and substitute one plain projection
+/// (`checked_projection`) when checking
+/// the rest of the statement's grammar.
+pub(super) fn projection_skeleton(
+    dialect: &dyn sqlparser::dialect::Dialect,
+    sql: &str,
+    mut allowed: impl FnMut(&sqlparser::ast::Expr) -> bool,
+) -> Option<String> {
+    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+    let mut statements = sqlparser::parser::Parser::parse_sql(dialect, sql).ok()?;
+    let [Statement::Query(query)] = statements.as_mut_slice() else {
+        return None;
+    };
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return None;
+    };
+    if select.projection.is_empty()
+        || !select.projection.iter().all(|item| match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => allowed(expr),
+            _ => false,
+        })
+    {
+        return None;
+    }
+    select.projection = vec![SelectItem::UnnamedExpr(Expr::Identifier(
+        sqlparser::ast::Ident::new("checked_projection"),
+    ))];
+    Some(query.to_string())
 }
 
 #[cfg(test)]

@@ -291,6 +291,7 @@ fn capture_submit(
         volatile_evaluation: crate::volatile_evaluation::Evidence::of_submit(
             req,
             decided.rendered.as_ref(),
+            decided.rerun_form,
         ),
         ..submit_capture(
             scope,

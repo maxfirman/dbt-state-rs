@@ -987,6 +987,7 @@ impl Store {
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
                    unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
                    rendered_volatile_values, volatile_evaluation_requested,
+                   volatile_rerun_form,
                    (SELECT jsonb_build_object(
                        'target_table', held.target_table,
                        'input_tables', held.input_tables
@@ -1102,6 +1103,9 @@ pub struct ExplainDecisionRow {
     /// Migration 0028: whether the SQL submit requested Volatile evaluation.
     /// NULL for other decisions, and before the migration.
     pub volatile_evaluation_requested: Option<bool>,
+    /// Migration 0037: the captured form of a rerun refused for its
+    /// volatile SQL (#211). NULL otherwise, and before the migration.
+    pub volatile_rerun_form: Option<String>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -1120,11 +1124,12 @@ impl ExplainDecisionRow {
             .and_then(crate::decision::DecisionReason::from_stored)
     }
 
-    /// The decision's Volatile evaluation, from its two columns.
+    /// The decision's Volatile evaluation, from its three columns.
     pub fn volatile_evaluation(&self) -> crate::volatile_evaluation::Evidence {
         crate::volatile_evaluation::Evidence::stored(
             self.rendered_volatile_values.clone(),
             self.volatile_evaluation_requested,
+            self.volatile_rerun_form.as_deref(),
         )
     }
 
@@ -1169,6 +1174,7 @@ mod tests {
             template_comparison: None,
             rendered_volatile_values: None,
             volatile_evaluation_requested: None,
+            volatile_rerun_form: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),

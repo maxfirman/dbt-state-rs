@@ -104,8 +104,10 @@ and value formats are in [protocol.md](protocol.md#volatile-evaluation).
 Snowflake evidence, client 2.0.11: `explain_volatile_evaluation.jsonl`
 (run 1) and `explain_volatile_evaluation_functions.jsonl` (run 2)
 ([characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)),
-and `explain_volatile_cells.jsonl` (cells, #202,
-[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)).
+`explain_volatile_cells.jsonl` (cells, #202,
+[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)),
+and `explain_volatile_generator_merge.jsonl` (#211,
+[characterization note](reports/snowflake-volatile-generator-merge-2026-11-24.md)).
 
 | Scenario | Hosted | Reproduced |
 |---|---|---|
@@ -119,6 +121,8 @@ and `explain_volatile_cells.jsonl` (cells, #202,
 | Same, zero Lag tolerance, rerun | build, 6 / 6, empty map; Explain lists the volatile upstream `<OUTDATED>` (cells entry 172, Explain 200) | ✅ (#207); the `«gap»` wording rounds differently (#210) |
 | Snowflake table calling a Volatile function, evaluation on, `compare_unrendered_code`, unchanged template | skip, map filled; Explain by its unrendered code with no volatile lines (cells entries 140, 198) | ✅ (#206, maintainer decision 1 on #201) |
 | Snowflake call forms, combinations, views, APPEND, snapshot and custom nodes, rebuild reasons and an evaluation-off copy (#202) | map and Explain per cell ([protocol.md](protocol.md#volatile-evaluation)) | ✅ (#203–#207) |
+| Snowflake table whose only Volatile call is `uniform(1, 100, 1234)`, evaluation on, unchanged rerun (`gu`) | skip, map filled; Explain lists the value and "the model query has not changed", no tolerance line (generator-merge entries 28, 35) | ❌ pending a maintainer decision (#211): this server refuses the reuse and rebuilds |
+| Snowflake keyed MERGE incremental calling `current_timestamp()`, evaluation on, zero Lag tolerance: first build, unchanged rerun, rerun after its source's data drifted | build each time, 6 / 6, map filled; rerun Explain as the model rerun, after drift with the source `<OUTDATED>` (generator-merge entries 7, 31, 41; Explains 37, 45) | ✅ (#211) |
 | Snowflake data test with evaluation off, unchanged rerun (`cto`) | skip, map filled, echoing another data test's runtime (cells entry 146) | ✅ (the later-confirmed run of the history key, #200) |
 | Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
 | Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (crafted `clone_fallback_volatile.jsonl`) | ✅ |

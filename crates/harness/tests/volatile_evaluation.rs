@@ -2421,13 +2421,14 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     // Snowflake: the captured FULL first build renders, and so does an APPEND
-    // incremental's, a snapshot's and a custom node's (#205) and a view's
-    // with evaluation on (#204); the same build of another incremental
-    // strategy does not.
+    // incremental's, a snapshot's and a custom node's (#205), a view's with
+    // evaluation on (#204) and a MERGE incremental's (#211); the same build
+    // of another incremental strategy does not.
     let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
     for execution_type in [
         ExecutionType::Full,
         ExecutionType::Append,
+        ExecutionType::Merge,
         ExecutionType::Snapshot,
         ExecutionType::DbtCustom,
         ExecutionType::View,
@@ -2440,7 +2441,6 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
         assert!(!rendered(&ready).is_empty(), "{case}");
     }
     for execution_type in [
-        ExecutionType::Merge,
         ExecutionType::InsertOverwrite,
         ExecutionType::DeleteInsert,
         ExecutionType::Microbatch,
@@ -3748,4 +3748,361 @@ async fn snowflake_uncaptured_copy_cells_render_nothing() {
     let response = dependency.submit(vd_dev).await;
     assert_eq!(variant(&response), "ready_to_clone");
     assert!(volatile_values(&response).is_empty(), "{response:?}");
+}
+
+// ── Snowflake constant generator and MERGE over upstream drift (#211) ───────
+//
+// Evidence: the first #211 capture,
+// `golden/fixtures/explain_volatile_generator_merge.jsonl` (dbt 2.0.11;
+// `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`). Every
+// model requests evaluation. `gu` is a FULL table projecting
+// `uniform(1, 100, 1234)` alone. `mv` is a keyed MERGE incremental with
+// `current_timestamp()` and `lag_tolerance: 0s` over the source table `ms`,
+// built, rerun unchanged, then rerun after only `ms`'s value changed.
+mod generator_merge {
+    use super::*;
+
+    const GENERATOR_MERGE: &str =
+        include_str!("../../../golden/fixtures/explain_volatile_generator_merge.jsonl");
+    /// `mv`'s submits and hosted's Explain of each: first build, unchanged
+    /// rerun, and the rerun after upstream data drift.
+    const MV_FIRST: usize = 7;
+    const MV_FIRST_EXPLAIN: usize = 19;
+    const MV_RERUN: usize = 31;
+    const MV_RERUN_EXPLAIN: usize = 37;
+    const MV_DRIFT: usize = 41;
+    const MV_DRIFT_EXPLAIN: usize = 45;
+    /// `gu`'s first build, and its unchanged rerun, which hosted reuses (a
+    /// Check-in finding).
+    const GU_FIRST: usize = 9;
+    const GU_RERUN: usize = 28;
+    /// `gr` (`random()` alone): first build and rerun refused at Reuse
+    /// qualification.
+    const GR_FIRST: usize = 10;
+    const GR_RERUN: usize = 27;
+    /// The source table both MERGE models read, as the client reports it.
+    const MS: &str = r#""CDO_DEMO_DB"."PROD_STATE_DEMO"."MS_000054C3E38D""#;
+
+    /// `explain` with the `updated … after` and `last updated:` lines masked,
+    /// as the conformance replay masks them.
+    fn masked(explain: serde_json::Value) -> serde_json::Value {
+        masked_relative_times(masked_gaps(explain))
+    }
+
+    #[tokio::test]
+    async fn snowflake_merge_renders_and_explains_as_hosted_on_its_builds_and_after_upstream_drift()
+    {
+        let database = std::sync::Arc::new(support::TestDatabase::new("volatile_211_merge").await);
+        let server = support::start_server_on_database(database.clone()).await;
+        let entries = entries(GENERATOR_MERGE);
+        let responses = replay(&Scenario::connect(&server).await, &entries, MV_DRIFT).await;
+        let explains: Vec<_> = [
+            (MV_FIRST, MV_FIRST_EXPLAIN, "mv first build"),
+            (MV_RERUN, MV_RERUN_EXPLAIN, "mv unchanged rerun"),
+            (
+                MV_DRIFT,
+                MV_DRIFT_EXPLAIN,
+                "mv rerun after upstream data drift",
+            ),
+        ]
+        .into_iter()
+        .map(|(submit, explained, case)| {
+            assert_matches_hosted(&responses[&submit], &entries[submit], case);
+            HostedExplain::of_response(
+                case,
+                &entries[explained],
+                &entries[submit],
+                &responses[&submit],
+            )
+        })
+        .collect();
+        assert_explains_match_hosted(&database, server, &explains, masked).await;
+    }
+
+    /// Hosted reuses `gu` (entry 28). Matching it relaxes a Reuse refusal,
+    /// which waits for the maintainer (#211, #201 check-in rule): this
+    /// server still refuses it and renders hosted's map on the rebuild. The
+    /// rebuild prints no tree: hosted never reports this query as changed
+    /// (entry 35, an `empty_tree` replay gap).
+    #[tokio::test]
+    async fn snowflake_constant_generator_alone_is_still_refused_pending_check_in() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let responses = replay(&sc, &entries, GU_RERUN).await;
+        let rerun = &responses[&GU_RERUN];
+        assert_eq!(variant(rerun), "ready_to_execute");
+        assert_eq!(
+            volatile_map_shape(&volatile_values(rerun)),
+            volatile_map_shape(&hosted_volatile_values(&entries[GU_RERUN].response)),
+        );
+        let explained = explain(&sc, &decision_id(rerun)).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
+
+    /// The epoch `submit` reports for `relation`.
+    fn epoch_of(submit: &Submit, relation: &str) -> i64 {
+        let req = submit.clone().build();
+        req.tables
+            .iter()
+            .find(|t| t.name == relation)
+            .and_then(|t| t.last_modified_epoch)
+            .unwrap()
+    }
+
+    /// Uncaptured neighbours of `mv`'s reruns keep the conservative form:
+    /// refused and explained with no tree. Hosted rendered `mv`'s map with
+    /// its Target relation physically as built and one source whose epoch
+    /// is known, at or past the epoch recorded at the refused build
+    /// (entries 31 and 41); every other target and upstream state renders
+    /// nothing, even when the submit ignores External modifications. Within
+    /// a Lag tolerance the drift is no rebuild reason, so its tree is
+    /// uncaptured, though its map renders.
+    #[tokio::test]
+    async fn snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[MV_FIRST].request);
+        let unchanged = captured_submit(&entries[MV_RERUN].request);
+        let drifted = captured_submit(&entries[MV_DRIFT].request);
+        let target = entries[MV_DRIFT].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let built_epoch = epoch_of(&drifted, &target);
+        let source_epoch = epoch_of(&unchanged, MS);
+        // `submit` with `relation` reported at `epoch`.
+        let reporting = |submit: &Submit, relation: String, epoch: Option<i64>| {
+            submit.clone().with(move |r| {
+                for t in &mut r.tables {
+                    if t.name == relation {
+                        t.last_modified_epoch = epoch;
+                    }
+                }
+            })
+        };
+        for (case, rerun, renders) in [
+            (
+                "drift within an hour's Lag tolerance",
+                drifted
+                    .clone()
+                    .with(|r| r.freshness_tolerance_seconds = 3600),
+                true,
+            ),
+            (
+                "an upstream of unknown epoch",
+                reporting(&drifted, MS.to_owned(), None),
+                false,
+            ),
+            (
+                "the source's epoch moved back",
+                reporting(&unchanged, MS.to_owned(), Some(source_epoch - 1)),
+                false,
+            ),
+            (
+                "its Target relation written since the build",
+                reporting(&unchanged, target.clone(), Some(built_epoch + 1)),
+                false,
+            ),
+            (
+                "its Target relation written, External modifications ignored",
+                reporting(&unchanged, target.clone(), Some(built_epoch + 1))
+                    .ignore_external_modifications(),
+                false,
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(first.clone(), built_epoch).await;
+            let rebuilt = sc.expect_execute(rerun).await;
+            assert_eq!(!rendered(&rebuilt).is_empty(), renders, "{case}");
+            let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+            assert!(texts(&explained).is_empty(), "{case}: {explained}");
+        }
+
+        // The upstream is a dbt-built table, rebuilt between the two builds
+        // with its producer unchanged: `gr` (a `random()` table, refused at
+        // Reuse qualification on its rerun) built into `ms`'s relation.
+        let sc = sc.org("a dbt-built upstream rebuilt");
+        let as_ms = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("GR_000054C3E38D", "MS_000054C3E38D")
+                .replace("gr_000054c3e38d", "ms_000054c3e38d");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        sc.build(as_ms(GR_FIRST), epoch_of(&first, MS)).await;
+        sc.build(first.clone(), built_epoch).await;
+        sc.build(as_ms(GR_RERUN), epoch_of(&drifted, MS)).await;
+        let rebuilt = sc.expect_execute(drifted.clone()).await;
+        assert!(rendered(&rebuilt).is_empty(), "a dbt-built upstream");
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+
+        // A source-less MERGE, built and rerun unchanged.
+        let sc = sc.org("source-less");
+        let sourceless = |s: &Submit| s.clone().with(|r| r.tables.retain(|t| t.name != MS));
+        sc.build(sourceless(&first), built_epoch).await;
+        let rebuilt = sc.expect_execute(sourceless(&unchanged)).await;
+        assert!(rendered(&rebuilt).is_empty(), "source-less");
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
+
+    /// The isolated generator's empty tree is limited to `gu`'s shape. With
+    /// `UNIFORM(1, 100, 1234)` in place of `UUID_STRING()` in `cmb`, a table
+    /// over the volatile view `vw` (`explain_volatile_cells.jsonl` entries
+    /// 59 and 159), the rerun renders both functions and keeps the rerun
+    /// tree.
+    #[tokio::test]
+    async fn snowflake_generator_beside_a_volatile_dependency_keeps_the_rerun_tree() {
+        const CMB: (usize, usize) = (59, 159);
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let mut cells = entries(CELLS);
+        for entry in [CMB.0, CMB.1] {
+            let sql = cells[entry].request["sql"].as_str().unwrap();
+            assert!(sql.contains("uuid_string()"), "entry {entry}: {sql}");
+            let sql = sql.replace("uuid_string()", "uniform(1, 100, 1234)");
+            cells[entry].request["sql"] = sql.into();
+        }
+        let responses = replay(&sc, &cells, CMB.1).await;
+        let rerun = &responses[&CMB.1];
+        assert_eq!(variant(rerun), "ready_to_execute");
+        let mut functions: Vec<_> = volatile_map_shape(&volatile_values(rerun))
+            .into_iter()
+            .flat_map(|(_, functions)| functions)
+            .collect();
+        functions.sort();
+        assert_eq!(
+            functions,
+            ["CURRENT_TIMESTAMP()", "UNIFORM(1, 100, 1234)"],
+            "{functions:?}"
+        );
+        let explained = explain(&sc, &decision_id(rerun)).await;
+        assert!(
+            texts(&explained).contains(&"the model query has changed".to_owned()),
+            "{explained}"
+        );
+    }
+
+    /// The empty tree is limited to `gu` as captured: its SQL projecting
+    /// only literals and `uniform(1, 100, 1234)` and reading no relation,
+    /// with its Target relation as built. Another expression in any
+    /// spelling, even one the map does not show (`CURRENT_TIMESTAMP(6)`,
+    /// `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
+    /// a read of its own Target relation, or a write to that relation since
+    /// the build keeps the rerun tree.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let target = entries[GU_RERUN].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let with_sql = |entry: usize, tail: String| {
+            captured_submit(&entries[entry].request).with(move |r| {
+                assert!(r.sql.contains(" as u"), "{}", r.sql);
+                r.sql = r.sql.replace(" as u", &format!(" as u{tail}"));
+            })
+        };
+        let with_call = |entry: usize, call: &str| with_sql(entry, format!(", {call} as w"));
+        let self_read = |entry: usize| with_sql(entry, format!(" from {target}"));
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let built_epoch = epoch_of(&rerun, &target);
+        for (case, first, rerun) in [
+            (
+                "beside CURRENT_TIMESTAMP(6)",
+                with_call(GU_FIRST, "current_timestamp(6)"),
+                with_call(GU_RERUN, "current_timestamp(6)"),
+            ),
+            (
+                "beside SEQ4()",
+                with_call(GU_FIRST, "seq4()"),
+                with_call(GU_RERUN, "seq4()"),
+            ),
+            (
+                "beside CURRENT_USER",
+                with_call(GU_FIRST, "current_user"),
+                with_call(GU_RERUN, "current_user"),
+            ),
+            (
+                "beside CURRENT_USER()",
+                with_call(GU_FIRST, "current_user()"),
+                with_call(GU_RERUN, "current_user()"),
+            ),
+            (
+                "beside FLOOR(1.5)",
+                with_call(GU_FIRST, "floor(1.5)"),
+                with_call(GU_RERUN, "floor(1.5)"),
+            ),
+            (
+                "reading its own Target relation",
+                self_read(GU_FIRST),
+                self_read(GU_RERUN),
+            ),
+            (
+                "its Target relation written since the build",
+                first.clone(),
+                rerun.clone().with({
+                    let target = target.clone();
+                    move |r| {
+                        for t in &mut r.tables {
+                            if t.name == target {
+                                t.last_modified_epoch = Some(built_epoch + 1);
+                            }
+                        }
+                    }
+                }),
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(first, built_epoch).await;
+            let rebuilt = sc.expect_execute(rerun).await;
+            assert_eq!(
+                volatile_map_shape(&rendered(&rebuilt)),
+                [(target.clone(), vec!["UNIFORM(1, 100, 1234)".to_owned()])],
+                "{case}"
+            );
+            let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+            assert!(
+                texts(&explained).contains(&"the model query has changed".to_owned()),
+                "{case}: {explained}"
+            );
+        }
+    }
+
+    /// A dbt-built `ms`, modified externally before `mv`'s build, is recorded
+    /// with no producer like a source, but it has a confirmed State in scope:
+    /// it is not the captured source, so `mv`'s rerun renders nothing and
+    /// prints no tree.
+    #[tokio::test]
+    async fn snowflake_merge_over_an_externally_modified_dbt_built_input_renders_nothing() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[MV_FIRST].request);
+        let unchanged = captured_submit(&entries[MV_RERUN].request);
+        let target = entries[MV_DRIFT].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let as_ms = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("GR_000054C3E38D", "MS_000054C3E38D")
+                .replace("gr_000054c3e38d", "ms_000054c3e38d");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        // `ms` is built by dbt, then written outside dbt before `mv` reads it.
+        sc.build(as_ms(GR_FIRST), epoch_of(&first, MS) - 1).await;
+        sc.build(first, epoch_of(&unchanged, &target)).await;
+        let rebuilt = sc.expect_execute(unchanged).await;
+        assert!(rendered(&rebuilt).is_empty(), "{:?}", rendered(&rebuilt));
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
 }

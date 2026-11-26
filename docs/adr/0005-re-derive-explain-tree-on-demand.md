@@ -203,6 +203,30 @@ caller already holds this id). Everything else is re-derived.
 > migration, yields the plain listing. The optional id is used by Explain
 > only.
 
+> **Amended by #211.** A Snowflake rerun refused at Reuse qualification for
+> its volatile SQL records the captured form its decision established, if
+> any (`node_decisions.volatile_rerun_form`, TEXT, migration 0037;
+> `Warehouse::volatile_rerun_form`): `sole_source_merge` for a MERGE whose
+> Target relation is physically as built over one source table (no
+> confirmed State in scope, recorded with no producer at the refused build
+> and now, its epoch known and unchanged or advanced), and
+> `isolated_generator` for a FULL model without upstreams or query
+> dependencies, its Target relation physically as built, whose SQL is one
+> `SELECT` without `FROM` or another clause, projecting only literals and
+> `uniform(1, 100, 1234)`, and reads no relation. Both rest on decision-time
+> facts the decision row does not keep: the submitted SQL, and whether an
+> input that has no producer is a source or an External modification of a
+> dbt-built relation (both record `Producer::NoBuild`). Explain therefore
+> reads the recorded form instead of re-deriving it: the MERGE form, with
+> zero Lag tolerance, prints the model rerun tree
+> (`explain_volatile_generator_merge.jsonl` entries 37 and 45), and the
+> generator form prints no tree, because hosted reuses that model (entries
+> 28 and 35, pending the maintainer). The same form selects the MERGE map
+> (`Outcome::RefusedVolatileSqlIn`). The form records evidence of the
+> rerun's shape, never a tree; decisions and Reuse qualification never read
+> it, and it is part of no identity. NULL, including every decision recorded
+> before the migration, prints neither form.
+
 ## Why re-derive (not persist the tree)
 
 ### Explain visibility amendment (Databricks #132)

@@ -1,0 +1,15 @@
+-- Volatile evaluation (#211): the captured form of a rerun that Reuse
+-- qualification refused for its volatile SQL, as the Warehouse established
+-- it when it decided (`Warehouse::volatile_rerun_form`): 'sole_source_merge'
+-- (a Snowflake MERGE over one source table, its Target relation as built)
+-- or 'isolated_generator' (a source-less Snowflake FULL model calling only
+-- a generator hosted reuses). It depends on the submitted SQL and on which
+-- inputs had any recorded State, neither of which the decision row keeps,
+-- so Explain cannot re-derive it.
+--
+-- Explain evidence only: Reuse qualification and identity never read it,
+-- and it is part of no fingerprint. Read by Explain with the decision,
+-- scoped by organization. NULL for every other decision and for every
+-- decision recorded before this migration; Explain then prints neither form.
+-- No backfill.
+ALTER TABLE node_decisions ADD COLUMN volatile_rerun_form TEXT;

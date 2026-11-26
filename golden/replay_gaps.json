@@ -407,5 +407,17 @@
     "ignore_explain_lines": [
       "upstream data is up to date"
     ]
+  },
+  {
+    "fixture": "explain_volatile_generator_merge.jsonl",
+    "entry": 28,
+    "local_variant": "ready_to_execute",
+    "reason": "CHECK-IN (#211, hosted 2026-11-24): gu projects uniform(1, 100, 1234) alone with evaluation requested. Hosted reuses its unchanged rerun (SKIP, runtime 4826 from confirm entry 11, map UNIFORM(1, 100, 1234) -> 96); the local server refuses volatile SQL at Reuse qualification and rebuilds with the same map. Matching relaxes a Reuse refusal and waits for the maintainer (#201 check-in rule). See docs/reports/snowflake-volatile-generator-merge-2026-11-24.md."
+  },
+  {
+    "fixture": "explain_volatile_generator_merge.jsonl",
+    "entry": 35,
+    "local_variant": "empty_tree",
+    "reason": "CHECK-IN (#211) explain of entry 28: hosted explains gu's reuse (the volatile block, then 'the model query has not changed' with no tolerance line). The local server, which still refuses the reuse pending the maintainer, explains its rebuild with no tree: the decision established and recorded the isolated-generator form (a source-less FULL model, its Target relation as built, whose SQL projects only literals and uniform(1, 100, 1234) with no FROM or other clause; RerunForm::IsolatedGenerator, node_decisions.volatile_rerun_form)."
   }
 ]

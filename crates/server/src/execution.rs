@@ -114,6 +114,11 @@ pub(crate) struct ExecutionEvidence {
     /// submit's is recomputed once its inputs are read through copies
     /// ([`crate::data_test_history::read_through_copies`]).
     pub(crate) data_test_key: Option<String>,
+    /// The genuine inputs that had no confirmed State in scope when their
+    /// producers were resolved (`submit_decision::resolve_producers`): no
+    /// recorded build or copy ever produced them, so they are sources, not
+    /// External modifications of a dbt-built relation (#211). Not persisted.
+    pub(crate) inputs_without_state: Vec<String>,
     sealed: (),
 }
 
@@ -255,6 +260,7 @@ impl ExecutionEvidence {
             clone_source_inputs: None,
             clone_source_execution_id: None,
             data_test_key: None,
+            inputs_without_state: Vec::new(),
             sealed: (),
         }
     }
