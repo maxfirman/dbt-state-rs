@@ -328,11 +328,15 @@ server keeps the conservative behavior described.
       volatile block and `the model query has not changed`, no tolerance
       line). A literal control is reused and `random()` alone is rebuilt.
       This server still refuses `gu` at Reuse qualification and rebuilds,
-      with hosted's map and no Explain tree (only a source-less FULL model
-      without query dependencies whose one rendered call is
-      `uniform(1, 100, 1234)`; every other shape keeps its tree); matching
-      hosted relaxes a Reuse
-      refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
+      with hosted's map and no Explain tree. The empty tree needs the
+      captured form, established from the submitted SQL and recorded with
+      the decision (`RerunForm::IsolatedGenerator`, migration 0037): a FULL
+      model without upstreams or query dependencies, its Target relation
+      physically as built, whose SQL is one query calling only
+      `uniform(1, 100, 1234)`. Another call beside it (even one the map does
+      not show, such as `CURRENT_TIMESTAMP(6)` or `SEQ4()`) or a write to
+      the Target relation keeps the rerun tree. Matching hosted relaxes a
+      Reuse refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
       `replay_gaps.json`. Open: whether hosted's rule is "every call has a
       constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are
       uncaptured) and whether it holds for other kinds and over upstreams.
@@ -341,13 +345,16 @@ server keeps the conservative behavior described.
       its Target relation did not exist (entry 7), and on the two reruns
       refused at Reuse qualification of the previous build: unchanged
       (entry 31) and after the source's data drifted (entry 41). A refusal
-      renders only on physical evidence (`reuse_candidate::sole_source_rerun`,
-      shared with Explain): the Target relation reported once, no newer than
-      the refused build, whatever `ignore_external_modifications` allows,
-      and one upstream recorded as a source at that build and now, its
-      epoch known and at or past the recorded one. A source-less MERGE, an
-      unrecorded or dbt-built producer, several upstreams, or an unknown or
-      moved-back epoch renders nothing. Explain prints
+      renders only in the form its decision established on physical
+      evidence and recorded for Explain (`RerunForm::SoleSourceMerge`,
+      `reuse_candidate::sole_source_rerun`, migration 0037): the Target
+      relation reported once, no newer than the refused build, whatever
+      `ignore_external_modifications` allows, and one source upstream: no
+      confirmed State in scope, recorded with no producer at that build and
+      now, its epoch known and at or past the recorded one. A source-less
+      MERGE, a dbt-built relation (also after an External modification,
+      which records no producer either), an unrecorded producer, several
+      upstreams, or an unknown or moved-back epoch renders nothing. Explain prints
       the model rerun tree on both reruns; after drift with zero Lag
       tolerance it lists the source `<OUTDATED>` with `upstream data is
       outdated` (entries 37, 45). Hosted gave no separate reason for the

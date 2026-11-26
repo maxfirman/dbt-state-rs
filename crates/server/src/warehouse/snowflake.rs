@@ -25,7 +25,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::query_cache::ModelExecutionType::{
         Append, DbtCustom, DbtDataTest, Full, Merge, Snapshot, View,
     };
-    use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
+    use crate::volatile_evaluation::{cell, Call, Outcome, Queries, RerunForm, Rule, Rules, Value};
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
         Rule {
             name,
@@ -257,7 +257,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(
                 Merge,
                 true,
-                Outcome::RefusedVolatileSqlSoleSourceRerun,
+                Outcome::RefusedVolatileSqlIn(RerunForm::SoleSourceMerge),
                 Queries::Own,
             ),
             // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
@@ -295,22 +295,60 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     }
 };
 
-/// How Explain describes the captured volatile decisions beyond the shared
-/// forms (#211, `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`):
-/// a MERGE refusal with zero Lag tolerance over one source table, its Target
-/// relation as built, lists the source against the refused build, fresh
-/// (`explain_volatile_generator_merge.jsonl` entry 37) or after its data
-/// drifted (entry 45); and the refusal of a source-less FULL model whose
-/// only rendered call is `uniform(1, 100, 1234)` prints no tree, since
-/// hosted reuses it (`gu`, entries 28 and 35, pending the maintainer).
-pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
-    use crate::query_cache::ModelExecutionType::Merge;
-    crate::explain::VolatileForms {
-        zero_tolerance_source_refusal: &[Merge],
-        reused_generators: &["UNIFORM(1, 100, 1234)"],
-        ..crate::explain::VolatileForms::NONE
+/// The function texts of generators hosted reuses when one is the only
+/// call in a source-less FULL model (#211, `explain_volatile_generator_merge.jsonl`
+/// `gu`, entries 28 and 35; a maintainer check-in).
+const REUSED_GENERATORS: &[&str] = &["UNIFORM(1, 100, 1234)"];
+
+/// The captured form of a rerun of `refused` that Reuse qualification
+/// refused, with Volatile evaluation requested (#211,
+/// `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`):
+/// - [`RerunForm::SoleSourceMerge`]: a MERGE over one source table, its
+///   Target relation physically as built (`reuse_candidate::sole_source_rerun`;
+///   entries 31 and 41, Explain 37 and 45);
+/// - [`RerunForm::IsolatedGenerator`]: a FULL model without upstreams or
+///   query dependencies, its Target relation physically as built, whose SQL
+///   is one query calling only one of [`REUSED_GENERATORS`] (entry 28,
+///   Explain 35).
+///
+/// [`RerunForm::SoleSourceMerge`]: crate::volatile_evaluation::RerunForm::SoleSourceMerge
+/// [`RerunForm::IsolatedGenerator`]: crate::volatile_evaluation::RerunForm::IsolatedGenerator
+pub(super) fn volatile_rerun_form(
+    req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    evidence: &crate::execution::ExecutionEvidence,
+    refused: &crate::store::ExecutionRow,
+) -> Option<crate::volatile_evaluation::RerunForm> {
+    use crate::query_cache::ModelExecutionType::{Full, Merge};
+    use crate::reuse_candidate::{own_target_as_built, sole_source_rerun};
+    use crate::volatile_evaluation::{calls_only, requested, RerunForm};
+    if !requested(req) {
+        return None;
     }
-};
+    let target = evidence.target_table.as_str();
+    let inputs = &evidence.input_tables;
+    match crate::query_cache::ModelExecutionType::try_from(req.execution_type).ok()? {
+        Merge
+            if sole_source_rerun(
+                req.execution_type,
+                target,
+                inputs,
+                &evidence.inputs_without_state,
+                refused,
+            ) =>
+        {
+            Some(RerunForm::SoleSourceMerge)
+        }
+        Full if req.query_dependencies.is_empty()
+            && inputs.iter().all(|t| t.name == target)
+            && refused.input_tables.iter().all(|t| t.name == target)
+            && own_target_as_built(target, inputs, refused)
+            && calls_only(VOLATILE_RULES, &req.sql, REUSED_GENERATORS) =>
+        {
+            Some(RerunForm::IsolatedGenerator)
+        }
+        _ => None,
+    }
+}
 
 /// Verified live: the same model in two environments shares this identity.
 pub(super) const NAMESPACE_IDENTITY: NamespaceIdentity = NamespaceIdentity::SchemaAbstracted {

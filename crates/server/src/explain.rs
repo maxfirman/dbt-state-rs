@@ -93,8 +93,8 @@ pub struct ExplainNode {
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<TemplateComparison>,
     /// The decision's Volatile evaluation: the values it rendered, as
-    /// returned, and whether the SQL submit requested it. No evidence prints
-    /// no volatile lines.
+    /// returned, whether the SQL submit requested it, and the captured form
+    /// of a refused rerun (#211). No evidence prints no volatile lines.
     pub volatile_evaluation: crate::volatile_evaluation::Evidence,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
@@ -163,15 +163,6 @@ pub(crate) struct VolatileForms {
     /// Kinds whose refusal after an External modification of the sole
     /// input lists that upstream against the refused build.
     pub(crate) input_modified_externally_refusal: &'static [ModelExecutionType],
-    /// Kinds whose refusal with zero Lag tolerance over one source upstream
-    /// lists that source against the refused build, fresh or after its data
-    /// drifted, with the Target relation as built.
-    pub(crate) zero_tolerance_source_refusal: &'static [ModelExecutionType],
-    /// Function texts hosted reuses when one of them is the only value a
-    /// FULL model without upstreams or query dependencies rendered: the
-    /// refused rebuild of that model prints no tree, since hosted has none
-    /// for it.
-    pub(crate) reused_generators: &'static [&'static str],
     /// Whether a reuse with Volatile evaluation requested (a checked
     /// reuse) says its query has not changed, with no tolerance line.
     pub(crate) requested_reuse: bool,
@@ -183,8 +174,6 @@ impl VolatileForms {
         dropped_target_refusal: &[],
         sourceless_refusal: &[],
         input_modified_externally_refusal: &[],
-        zero_tolerance_source_refusal: &[],
-        reused_generators: &[],
         requested_reuse: false,
     };
 }
@@ -1057,9 +1046,9 @@ fn lines_with_source(node: &ExplainNode, source: Option<&CopySourceBuild>) -> Ve
 /// whose definition also rendered values (entry 186, #204: the own values
 /// only), or over an upstream table (entry 195, #206); and for an APPEND
 /// incremental and a snapshot (in `snapshot` wording) over an upstream table
-/// (entries 189 and 190, #205); and, through a Warehouse's
-/// `VolatileForms`, for a Snowflake MERGE incremental with zero Lag
-/// tolerance over one source table (`explain_volatile_generator_merge.jsonl`
+/// (entries 189 and 190, #205); and for a Snowflake MERGE incremental with
+/// zero Lag tolerance whose decision established the rerun as
+/// `RerunForm::SoleSourceMerge` (`explain_volatile_generator_merge.jsonl`
 /// entry 37, #211), which also lists the source `OUTDATED` against the
 /// refused build after its data drifted (entry 45: `upstream data is
 /// outdated`). Every form with an upstream or a query
@@ -1082,19 +1071,16 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     }
     let kind = K::try_from(node.execution_type).ok()?;
     let forms = node.volatile_forms();
-    // #211: hosted reuses a source-less FULL model whose only rendered call
-    // is `uniform(1, 100, 1234)` (`explain_volatile_generator_merge.jsonl`
+    use crate::volatile_evaluation::RerunForm;
+    let rerun_form = node.volatile_evaluation.rerun_form;
+    // #211: hosted reuses a source-less FULL model whose only call is
+    // `uniform(1, 100, 1234)` (`explain_volatile_generator_merge.jsonl`
     // `gu`, entries 28 and 35). This server still refuses it, pending the
     // maintainer, and explains the rebuild with no tree rather than a query
-    // change hosted never reports. Any other shape keeps its tree.
-    if kind == K::Full
-        && node.genuine_upstreams().is_empty()
-        && node.query_dependencies.is_empty()
-        && matches!(
-            node.volatile_evaluation.values.as_slice(),
-            [only] if forms.reused_generators.contains(&only.function.as_str())
-        )
-    {
+    // change hosted never reports. The decision established the form from
+    // its SQL and Target relation (`Warehouse::volatile_rerun_form`); any
+    // other shape keeps its tree.
+    if rerun_form == Some(RerunForm::IsolatedGenerator) {
         return Some(Vec::new());
     }
     // #213: a refusal after a drop may still render its map, while Explain
@@ -1139,9 +1125,7 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
                 && upstreams_fresh_against_anchor(node)
                 || forms.input_modified_externally_refusal.contains(&kind)
                     && sole_upstream_modified_externally(node)
-                || forms.zero_tolerance_source_refusal.contains(&kind)
-                    && node.tolerance_ms == 0
-                    && sole_source_unchanged_or_data_drifted(node) =>
+                || rerun_form == Some(RerunForm::SoleSourceMerge) && node.tolerance_ms == 0 =>
         {
             query.push(upstream_queries_unchanged);
             data_freshness_analysis_against_anchor(node)
@@ -1166,22 +1150,6 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
                 .upstreams
                 .iter()
                 .all(|u| !u.drifted && !u.unprovable && !u.producer_changed)
-    })
-}
-
-/// #211: the rerun as captured for a Snowflake MERGE refusal
-/// (`reuse_candidate::sole_source_rerun`, the predicate its map is rendered
-/// under): the Target relation physically as built and one recorded source,
-/// unchanged or with only its data drifted forward since the anchored build
-/// (`explain_volatile_generator_merge.jsonl` entries 37 and 45).
-fn sole_source_unchanged_or_data_drifted(node: &ExplainNode) -> bool {
-    node.anchor.as_ref().is_some_and(|anchor| {
-        crate::reuse_candidate::sole_source_rerun(
-            node.execution_type,
-            node.target_table.as_deref(),
-            &node.input_tables,
-            anchor,
-        )
     })
 }
 
@@ -3235,6 +3203,7 @@ mod tests {
                     function: "RAND()".into(),
                     value: "0.5".into(),
                 }],
+                rerun_form: None,
             };
             n.anchor = Some(ExecutionRow {
                 dialect: "databricks".into(),
@@ -4927,6 +4896,7 @@ mod tests {
     fn snowflake_volatile_refusal(
         kind: ModelExecutionType,
         functions: &[&str],
+        rerun_form: Option<crate::volatile_evaluation::RerunForm>,
         current: i64,
         recorded: i64,
     ) -> ExplainNode {
@@ -4946,20 +4916,24 @@ mod tests {
                     value: "v".into(),
                 })
                 .collect(),
+            rerun_form,
         };
         n
     }
 
-    /// The MERGE rerun tree prints only as captured: zero Lag tolerance, the
-    /// Target relation as built and one source upstream at or past its
-    /// recorded epoch (`explain_volatile_generator_merge.jsonl` entries 37
-    /// and 45). Every other state keeps the empty tree.
+    /// The MERGE rerun tree prints only for a rerun its decision established
+    /// as `RerunForm::SoleSourceMerge` (the Target relation as built, one
+    /// source at or past its recorded epoch), with zero Lag tolerance
+    /// (`explain_volatile_generator_merge.jsonl` entries 37 and 45). Without
+    /// the form, or with a Lag tolerance, the tree stays empty.
     #[test]
-    fn snowflake_merge_refusal_tree_needs_the_captured_target_and_source_states() {
-        let merge = |current: i64| {
+    fn snowflake_merge_refusal_tree_needs_the_established_form_and_zero_tolerance() {
+        use crate::volatile_evaluation::RerunForm;
+        let merge = |form, current: i64| {
             let mut n = snowflake_volatile_refusal(
                 ModelExecutionType::Merge,
                 &["CURRENT_TIMESTAMP()"],
+                form,
                 current,
                 900,
             );
@@ -4973,82 +4947,58 @@ mod tests {
                 .map(|(_, text, _, _)| text)
                 .find(|t| t.starts_with("upstream data is"))
         };
+        let form = Some(RerunForm::SoleSourceMerge);
         assert_eq!(
-            summary(&merge(900)).as_deref(),
+            summary(&merge(form, 900)).as_deref(),
             Some("upstream data is up to date")
         );
         assert_eq!(
-            summary(&merge(5_000)).as_deref(),
+            summary(&merge(form, 5_000)).as_deref(),
             Some("upstream data is outdated")
         );
-
-        let mut tolerant = merge(900);
+        let mut tolerant = merge(form, 900);
         tolerant.tolerance_ms = 1;
-        let mut written = merge(900);
-        written.input_tables[0].last_modified_epoch = Some(1_001);
-        let mut unknown = merge(900);
-        unknown.input_tables[1].last_modified_epoch = None;
-        let mut built = merge(5_000);
-        built.input_tables[1].producer = Producer::Build("a".into());
-        built.anchor.as_mut().unwrap().input_tables[0].producer = Producer::Build("a".into());
         for (case, n) in [
-            ("source epoch moved back", merge(899)),
+            ("no established form", merge(None, 900)),
+            (
+                "another form",
+                merge(Some(RerunForm::IsolatedGenerator), 900),
+            ),
             ("a Lag tolerance", tolerant),
-            ("Target relation written since the build", written),
-            ("source epoch unknown", unknown),
-            ("a dbt-built upstream", built),
         ] {
-            assert!(explain_lines(&n).is_empty(), "{case}: {:?}", render(&n));
+            assert!(explain_lines(&n).is_empty(), "{case}");
         }
     }
 
-    /// Hosted reuses a source-less FULL model whose only rendered call is
-    /// `uniform(1, 100, 1234)` (`explain_volatile_generator_merge.jsonl`
-    /// entries 28 and 35): the refused rebuild prints no tree. Every other
-    /// shape keeps the rerun tree: other constant-seeded generators
-    /// (uncaptured alone), the generator beside a `RANDOM()`
-    /// (`explain_volatile_cells.jsonl` entries 180 and 181), or beside a
-    /// query dependency's values (entries 59 and 159 with the generator for
-    /// `UUID_STRING()`).
+    /// The refused rebuild its decision established as
+    /// `RerunForm::IsolatedGenerator` (`gu`, `explain_volatile_generator_merge.jsonl`
+    /// entries 28 and 35) prints no tree, since hosted reuses it. The same
+    /// rendered value without the form, as after a Target relation write or
+    /// beside another call the map does not show, keeps the rerun tree.
     #[test]
-    fn snowflake_refusal_of_the_isolated_generator_alone_prints_no_tree() {
-        const TARGET: &str = "\"DB\".\"S\".\"T\"";
-        let sourceless = |functions: &[&str]| {
-            let mut n = snowflake_volatile_refusal(ModelExecutionType::Full, functions, 900, 900);
+    fn snowflake_isolated_generator_refusal_prints_no_tree() {
+        use crate::volatile_evaluation::RerunForm;
+        let sourceless = |form| {
+            let mut n = snowflake_volatile_refusal(
+                ModelExecutionType::Full,
+                &["UNIFORM(1, 100, 1234)"],
+                form,
+                900,
+                900,
+            );
             n.input_tables.truncate(1);
             n.anchor.as_mut().unwrap().input_tables.clear();
             n
         };
-        let changed = |n: &ExplainNode| {
-            render(n)
+        assert!(explain_lines(&sourceless(Some(RerunForm::IsolatedGenerator))).is_empty());
+        let without = sourceless(None);
+        assert!(
+            render(&without)
                 .iter()
-                .any(|(_, text, _, _)| text == "the model query has changed")
-        };
-        assert!(explain_lines(&sourceless(&["UNIFORM(1, 100, 1234)"])).is_empty());
-        for functions in [
-            &["RANDSTR(5, 1234)"][..],
-            &["RANDSTR(5, 1234)", "NORMAL(5, 2, 42)"],
-            &["UNIFORM(1, 100, 1234)", "RANDOM()"],
-        ] {
-            let n = sourceless(functions);
-            assert!(changed(&n), "{functions:?}: {:?}", render(&n));
-        }
-
-        // The generator in the model's own SQL, `CURRENT_TIMESTAMP()` in its
-        // view dependency.
-        const VIEW: &str = "\"DB\".\"S\".\"VW\"";
-        let mut mixed = sourceless(&["UNIFORM(1, 100, 1234)"]);
-        mixed.query_dependencies = vec![VIEW.into()];
-        mixed.volatile_evaluation.values.insert(
-            0,
-            crate::volatile_evaluation::RenderedValue {
-                query: VIEW.into(),
-                function: "CURRENT_TIMESTAMP()".into(),
-                value: "v".into(),
-            },
+                .any(|(_, text, _, _)| text == "the model query has changed"),
+            "{:?}",
+            render(&without)
         );
-        assert_eq!(mixed.volatile_evaluation.values[1].query, TARGET);
-        assert!(changed(&mixed), "{:?}", render(&mixed));
     }
 
     /// A node of `decision`/`reason` that read UP at `current`, anchored on a

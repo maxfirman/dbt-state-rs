@@ -3772,7 +3772,9 @@ mod generator_merge {
     const MV_RERUN_EXPLAIN: usize = 37;
     const MV_DRIFT: usize = 41;
     const MV_DRIFT_EXPLAIN: usize = 45;
-    /// `gu`'s unchanged rerun, which hosted reuses (a Check-in finding).
+    /// `gu`'s first build, and its unchanged rerun, which hosted reuses (a
+    /// Check-in finding).
+    const GU_FIRST: usize = 9;
     const GU_RERUN: usize = 28;
     /// `gr` (`random()` alone): first build and rerun refused at Reuse
     /// qualification.
@@ -3982,5 +3984,100 @@ mod generator_merge {
             texts(&explained).contains(&"the model query has changed".to_owned()),
             "{explained}"
         );
+    }
+
+    /// The empty tree is limited to `gu` as captured: its SQL calling only
+    /// `uniform(1, 100, 1234)`, with its Target relation as built. Another
+    /// Volatile call the map does not show, or a write to the Target
+    /// relation since the build, keeps the rerun tree.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let target = entries[GU_RERUN].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let with_call = |entry: usize, call: &'static str| {
+            captured_submit(&entries[entry].request).with(move |r| {
+                assert!(r.sql.contains(" as u"), "{}", r.sql);
+                r.sql = r.sql.replace(" as u", &format!(" as u, {call} as w"));
+            })
+        };
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let built_epoch = epoch_of(&rerun, &target);
+        for (case, first, rerun) in [
+            (
+                "beside CURRENT_TIMESTAMP(6)",
+                with_call(GU_FIRST, "current_timestamp(6)"),
+                with_call(GU_RERUN, "current_timestamp(6)"),
+            ),
+            (
+                "beside SEQ4()",
+                with_call(GU_FIRST, "seq4()"),
+                with_call(GU_RERUN, "seq4()"),
+            ),
+            (
+                "its Target relation written since the build",
+                first.clone(),
+                rerun.clone().with({
+                    let target = target.clone();
+                    move |r| {
+                        for t in &mut r.tables {
+                            if t.name == target {
+                                t.last_modified_epoch = Some(built_epoch + 1);
+                            }
+                        }
+                    }
+                }),
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(first, built_epoch).await;
+            let rebuilt = sc.expect_execute(rerun).await;
+            assert_eq!(
+                volatile_map_shape(&rendered(&rebuilt)),
+                [(target.clone(), vec!["UNIFORM(1, 100, 1234)".to_owned()])],
+                "{case}"
+            );
+            let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+            assert!(
+                texts(&explained).contains(&"the model query has changed".to_owned()),
+                "{case}: {explained}"
+            );
+        }
+    }
+
+    /// A dbt-built `ms`, modified externally before `mv`'s build, is recorded
+    /// with no producer like a source, but it has a confirmed State in scope:
+    /// it is not the captured source, so `mv`'s rerun renders nothing and
+    /// prints no tree.
+    #[tokio::test]
+    async fn snowflake_merge_over_an_externally_modified_dbt_built_input_renders_nothing() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[MV_FIRST].request);
+        let unchanged = captured_submit(&entries[MV_RERUN].request);
+        let target = entries[MV_DRIFT].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let as_ms = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("GR_000054C3E38D", "MS_000054C3E38D")
+                .replace("gr_000054c3e38d", "ms_000054c3e38d");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        // `ms` is built by dbt, then written outside dbt before `mv` reads it.
+        sc.build(as_ms(GR_FIRST), epoch_of(&first, MS) - 1).await;
+        sc.build(first, epoch_of(&unchanged, &target)).await;
+        let rebuilt = sc.expect_execute(unchanged).await;
+        assert!(rendered(&rebuilt).is_empty(), "{:?}", rendered(&rebuilt));
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
     }
 }

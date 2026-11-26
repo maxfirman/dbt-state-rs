@@ -1002,7 +1002,7 @@ says "empty".
 | Snowflake | data test without a Target relation, values only in a query dependency (the dependency's key) | rendered on a first execution and a rerun | empty, uncaptured | on: cells entries 52, 144 |
 | Snowflake | data test with values in both its own SQL and a query dependency | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | APPEND incremental, snapshot, custom node, root SQL | rendered on a first build and a rerun refused at Reuse qualification | empty, uncaptured | on: cells entries 71/167, 69/165, 24/143 (#205) |
-| Snowflake | keyed MERGE incremental, root SQL | rendered on a first build, and on a rerun refused at Reuse qualification with its Target relation physically as built (whatever `ignore_external_modifications` allows) and one upstream recorded as a source, its epoch known and unchanged or advanced (`reuse_candidate::sole_source_rerun`). Any other refusal (no upstream, several, an unrecorded or dbt-built producer, an unknown or moved-back epoch, a written Target relation) is empty, uncaptured | empty, uncaptured | on: generator-merge entries 7 (first build), 31, 41 (refusals, #211) |
+| Snowflake | keyed MERGE incremental, root SQL | rendered on a first build, and on a rerun refused at Reuse qualification with its Target relation physically as built (whatever `ignore_external_modifications` allows) over one source table: no confirmed State in scope, recorded with no producer at the refused build and now, its epoch known and unchanged or advanced (`RerunForm::SoleSourceMerge`, `reuse_candidate::sole_source_rerun`). Any other refusal (no upstream, several, a dbt-built relation even after an External modification, an unrecorded producer, an unknown or moved-back epoch, a written Target relation) is empty, uncaptured | empty, uncaptured | on: generator-merge entries 7 (first build), 31, 41 (refusals, #211) |
 | Snowflake | those types' other rebuild reasons, their values in a query dependency; INSERT_OVERWRITE, DELETE_INSERT, MICROBATCH | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
@@ -1102,7 +1102,11 @@ rebuilt outside it. With zero Lag tolerance hosted rebuilds it on the rerun
 **Explain** reads the persisted values (`node_decisions.rendered_volatile_values`,
 migration 0027) and whether the submit requested evaluation
 (`node_decisions.volatile_evaluation_requested`, migration 0028). A decision
-recorded before either migration prints no volatile lines. A model's rebuild
+recorded before either migration prints no volatile lines. A Snowflake
+rerun refused for its volatile SQL also records the captured form its
+decision established (`node_decisions.volatile_rerun_form`, migration 0037,
+#211), which selects the MERGE rerun tree and the empty tree of the isolated
+generator. A model's rebuild
 refused at Reuse qualification records the refused build as its Explain
 anchor (`matched_execution_id`), which its upstream listing is judged
 against (ADR 0005 "Amended by #201"). The captured trees are in

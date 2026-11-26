@@ -697,14 +697,18 @@ Databricks checked `rand(42)` reuse:
   - no upstream dependencies                          [SUCCESS]
 ```
 This server still refuses the reuse, pending the maintainer, and explains
-the rebuild with no tree, since hosted never reports that query as changed
-(`VolatileForms::reused_generators`). Only the captured shape is affected:
-a FULL model without upstreams or query dependencies whose one rendered
-value is `UNIFORM(1, 100, 1234)`. Every other shape keeps the
-[model rerun](#execute-rerun-of-a-volatile-model) tree, including other
-constant-seeded generators alone (uncaptured), the generator beside
-`RANDOM()` (`explain_volatile_cells.jsonl` entries 180 and 181) and beside a
-volatile query dependency. The entry is keyed in `replay_gaps.json` as an
+the rebuild with no tree, since hosted never reports that query as changed.
+Only the captured shape is affected, as the decision established it from
+the submitted SQL and recorded it (`RerunForm::IsolatedGenerator`,
+`node_decisions.volatile_rerun_form`, migration 0037): a FULL model without
+upstreams or query dependencies, its Target relation physically as built,
+whose SQL is one query calling only `uniform(1, 100, 1234)`. Every other
+shape keeps the [model rerun](#execute-rerun-of-a-volatile-model) tree:
+other constant-seeded generators alone (uncaptured), the generator beside
+`RANDOM()` (`explain_volatile_cells.jsonl` entries 180 and 181), beside a
+volatile query dependency, or beside a call the map does not show
+(`CURRENT_TIMESTAMP(6)`, `SEQ4()`), and a rerun after a write to the
+Target relation. The entry is keyed in `replay_gaps.json` as an
 `empty_tree` gap.
 
 ### EXECUTE: node query changed (SHAPE 7)
@@ -1100,8 +1104,11 @@ table prints the same tree when its Target relation is as built (reported
 once, no newer than the refused build), the source is recorded as one at
 that build and now, and its epoch is known and at or past the epoch
 recorded at that build (#211, `explain_volatile_generator_merge.jsonl`
-`mv`; `Warehouse::volatile_explain_forms`, `reuse_candidate::sole_source_rerun`,
-the predicate the map renders under). On its unchanged rerun (entry
+`mv`). The decision establishes that form, which also needs the source to
+have no confirmed State in scope, so a dbt-built relation modified
+externally is not one, and records it (`RerunForm::SoleSourceMerge`,
+`node_decisions.volatile_rerun_form`, migration 0037); the map renders
+under the same form. On its unchanged rerun (entry
 37) the source is `<FRESH>` at the epoch recorded at the refused build, so
 `upstream data is up to date` [SUCCESS] follows the listing. After the
 source's data drifted (entry 45) the source is `<OUTDATED>` against the

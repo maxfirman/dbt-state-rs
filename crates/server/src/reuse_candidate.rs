@@ -67,9 +67,6 @@ pub(crate) struct Selection {
     pub unqualified: Option<ExecutionRow>,
     /// Evidence from the latest matching build refused at Reuse qualification.
     pub rerun_evidence: RerunEvidence,
-    /// Whether that refused rerun has the captured Snowflake MERGE shape
-    /// ([`sole_source_rerun`], #211). False for every other selection.
-    pub sole_source_rerun: bool,
     /// The latest ordinary build's producer revision for the same rendered
     /// SQL identity, including builds refused for ambiguous Target evidence.
     pub producer_revision: Option<crate::store::ProducerRevision>,
@@ -98,7 +95,6 @@ impl Selection {
         type_changed: None,
         transition_display: None,
         rerun_evidence: RerunEvidence::Unverified,
-        sole_source_rerun: false,
         producer_revision: None,
     };
 
@@ -162,10 +158,9 @@ impl Selection {
         }
     }
 
-    fn with_rerun_evidence(mut self, rerun: RerunEvidence, sole_source: bool) -> Selection {
+    fn with_rerun_evidence(mut self, rerun: RerunEvidence) -> Selection {
         if self.why_no_candidate == Some(NoCandidate::FailedReuseQualification) {
             self.rerun_evidence = rerun;
-            self.sole_source_rerun = sole_source;
         }
         self
     }
@@ -250,14 +245,6 @@ pub(crate) fn for_model(
         .as_ref()
         .map(|row| rerun_evidence(req, evidence, row))
         .unwrap_or_default();
-    let sole_source = identified.as_ref().is_some_and(|row| {
-        sole_source_rerun(
-            req.execution_type,
-            req.target_table.as_deref(),
-            &evidence.input_tables,
-            row,
-        )
-    });
     let producer_revision = identified
         .as_ref()
         .and_then(|row| row.retained_producer_revision(evidence.node_sql_hash.as_deref()));
@@ -267,7 +254,7 @@ pub(crate) fn for_model(
         |prev| model_rejection(req, evidence, prev),
         Workload::Model { unmatched },
     )
-    .with_rerun_evidence(rerun, sole_source);
+    .with_rerun_evidence(rerun);
     selected.transition_display = transition_display;
     selected.producer_revision = producer_revision;
     Ok(selected)
@@ -463,7 +450,7 @@ pub(crate) fn for_data_test(
         },
         Workload::DataTest,
     )
-    .with_rerun_evidence(rerun, false))
+    .with_rerun_evidence(rerun))
 }
 
 /// Seeds compare values and seed configuration identity, then require the
@@ -787,32 +774,45 @@ fn rerun_evidence(
     }
 }
 
-/// #211: whether a rerun of the build `prev` has the shape hosted was
-/// captured rendering a Snowflake MERGE refusal in, judged on physical
-/// evidence alone: the Target relation reported once with a known epoch no
-/// newer than `prev`'s (a write since the build counts, whatever
-/// `ignore_external_modifications` allows), and exactly one genuine
-/// upstream, recorded as a source (no recorded build produced it) both at
-/// `prev` and now, whose epoch is known and stayed at or moved past the one
-/// recorded at `prev`, with nothing else against its freshness
-/// (`explain_volatile_generator_merge.jsonl` entries 31 and 41). An
-/// unrecorded producer is no evidence of a source. Shared by the rendering
-/// cell and Explain (entries 37 and 45).
-pub(crate) fn sole_source_rerun(
-    execution_type: i32,
-    target: Option<&str>,
+/// Whether `inputs` report the Target relation `target` exactly once, with
+/// a known epoch no newer than the build `prev`'s: physically as built.
+/// `ignore_external_modifications` does not make a write since the build
+/// count as none (#211).
+pub(crate) fn own_target_as_built(
+    target: &str,
     inputs: &[InputTable],
     prev: &ExecutionRow,
 ) -> bool {
-    use crate::store::Producer;
-    let Some(target) = target.filter(|t| !t.is_empty() && *t == prev.target_table) else {
-        return false;
-    };
     let own: Vec<_> = inputs.iter().filter(|t| t.name == target).collect();
-    let as_built = matches!(
-        (own.as_slice(), prev.last_modified_epoch),
-        ([own], Some(built)) if own.last_modified_epoch.is_some_and(|epoch| epoch <= built)
-    );
+    target == prev.target_table
+        && matches!(
+            (own.as_slice(), prev.last_modified_epoch),
+            ([own], Some(built)) if own.last_modified_epoch.is_some_and(|epoch| epoch <= built)
+        )
+}
+
+/// #211: whether a rerun of the build `prev` has the shape hosted was
+/// captured rendering a Snowflake MERGE refusal in, judged on physical
+/// evidence alone: the Target relation physically as built
+/// ([`own_target_as_built`]), and exactly one genuine upstream, a source.
+/// The source has no confirmed State in scope (`without_state`, so no
+/// recorded build ever produced it and its epoch is no External
+/// modification), was recorded with no producer at `prev` and now, and its
+/// epoch is known and stayed at or moved past the one recorded at `prev`,
+/// with nothing else against its freshness
+/// (`explain_volatile_generator_merge.jsonl` entries 31 and 41). An
+/// unrecorded producer is no evidence of a source.
+pub(crate) fn sole_source_rerun(
+    execution_type: i32,
+    target: &str,
+    inputs: &[InputTable],
+    without_state: &[String],
+    prev: &ExecutionRow,
+) -> bool {
+    use crate::store::Producer;
+    if !own_target_as_built(target, inputs, prev) {
+        return false;
+    }
     let freshness = crate::decision::upstream_freshness(
         crate::decision::FreshnessInputs {
             execution_type,
@@ -824,19 +824,19 @@ pub(crate) fn sole_source_rerun(
     let [upstream] = freshness.upstreams.as_slice() else {
         return false;
     };
-    let source = |tables: &[InputTable]| {
+    let recorded_source = |tables: &[InputTable]| {
         let named: Vec<_> = tables.iter().filter(|t| t.name == upstream.name).collect();
         matches!(named.as_slice(), [t] if t.producer == Producer::NoBuild)
     };
-    as_built
-        && freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
+    freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
         && !upstream.unprovable
         && !upstream.producer_changed
         && upstream
             .current_epoch
             .is_some_and(|epoch| epoch >= upstream.anchor_epoch)
-        && source(inputs)
-        && source(&prev.input_tables)
+        && without_state.contains(&upstream.name)
+        && recorded_source(inputs)
+        && recorded_source(&prev.input_tables)
 }
 
 /// Whether the one genuine upstream drifted since `prev` because it was
@@ -936,12 +936,15 @@ mod tests {
 
     /// #211: the captured Snowflake MERGE rerun shape needs physical
     /// evidence: the Target relation reported once at or before the build,
-    /// and one source recorded as such at the build and now, at or past its
-    /// recorded epoch (`explain_volatile_generator_merge.jsonl` entries 31,
-    /// 41). Missing or legacy evidence never stands in for it.
+    /// and one source, with no confirmed State in scope and recorded with no
+    /// producer at the build and now, at or past its recorded epoch
+    /// (`explain_volatile_generator_merge.jsonl` entries 31, 41). Missing or
+    /// legacy evidence never stands in for it, and neither does an External
+    /// modification of a dbt-built relation, which also has no producer.
     #[test]
     fn sole_source_rerun_needs_the_captured_physical_evidence() {
         use crate::store::Producer;
+        const UP2: &str = "\"DB\".\"DEV\".\"UP2\"";
         let merge = ModelExecutionType::Merge as i32;
         let input = |name: &str, epoch: Option<i64>, producer: Producer| InputTable {
             name: name.into(),
@@ -958,14 +961,19 @@ mod tests {
             ..ExecutionRow::default()
         };
         let own = |epoch| input(TARGET, Some(epoch), Producer::Unrecorded);
+        let stateless = vec![UPSTREAM.to_owned(), UP2.to_owned()];
         let rerun = |inputs: &[InputTable], prev: &ExecutionRow| {
-            sole_source_rerun(merge, Some(TARGET), inputs, prev)
+            sole_source_rerun(merge, TARGET, inputs, &stateless, prev)
         };
         let built = prev(vec![source(500)]);
         assert!(rerun(&[own(BUILT), source(500)], &built), "unchanged");
         assert!(
             rerun(&[own(BUILT - 1), source(600)], &built),
             "data drifted"
+        );
+        assert!(
+            !sole_source_rerun(merge, TARGET, &[own(BUILT), source(600)], &[], &built),
+            "a dbt-built relation modified externally: it has State in scope"
         );
 
         for (case, inputs, prev) in [
@@ -1018,12 +1026,9 @@ mod tests {
                 vec![
                     own(BUILT),
                     source(500),
-                    input("\"DB\".\"DEV\".\"UP2\"", Some(5), Producer::NoBuild),
+                    input(UP2, Some(5), Producer::NoBuild),
                 ],
-                prev(vec![
-                    source(500),
-                    input("\"DB\".\"DEV\".\"UP2\"", Some(5), Producer::NoBuild),
-                ]),
+                prev(vec![source(500), input(UP2, Some(5), Producer::NoBuild)]),
             ),
         ] {
             assert!(!rerun(&inputs, &prev), "{case}");

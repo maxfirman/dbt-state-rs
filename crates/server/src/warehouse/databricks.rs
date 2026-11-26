@@ -200,8 +200,6 @@ pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
         dropped_target_refusal: &[Full],
         sourceless_refusal: &[Append, Merge, DeleteInsert],
         input_modified_externally_refusal: &[Full],
-        zero_tolerance_source_refusal: &[],
-        reused_generators: &[],
         requested_reuse: true,
     }
 };

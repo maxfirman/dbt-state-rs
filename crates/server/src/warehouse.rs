@@ -893,12 +893,26 @@ impl Warehouse {
         self == Self::Databricks && databricks::retains_producer_revision(execution_type)
     }
 
+    /// The captured form of a rerun of the build `refused`, which Reuse
+    /// qualification refused (#211): `evidence` is the submit's, with its
+    /// inputs' producers resolved. Snowflake only; checked only after such a
+    /// refusal, and cheap checks first.
+    pub(crate) fn volatile_rerun_form(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+        evidence: &crate::execution::ExecutionEvidence,
+        refused: &ExecutionRow,
+    ) -> Option<crate::volatile_evaluation::RerunForm> {
+        (self == Self::Snowflake)
+            .then(|| snowflake::volatile_rerun_form(req, evidence, refused))
+            .flatten()
+    }
+
     /// The forms, beyond the shared ones, Explain prints for this
     /// Warehouse's captured volatile decisions (#211, #213).
     pub(crate) fn volatile_explain_forms(self) -> crate::explain::VolatileForms {
         match self {
             Self::Databricks => databricks::VOLATILE_EXPLAIN_FORMS,
-            Self::Snowflake => snowflake::VOLATILE_EXPLAIN_FORMS,
             _ => crate::explain::VolatileForms::NONE,
         }
     }
