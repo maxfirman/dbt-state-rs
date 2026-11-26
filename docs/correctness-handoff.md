@@ -322,7 +322,7 @@ server keeps the conservative behavior described.
   - Snowflake, first #211 batch
     (`golden/fixtures/explain_volatile_generator_merge.jsonl`,
     [characterization note](reports/snowflake-volatile-generator-merge-2026-11-24.md)).
-    - **Maintainer decision (#211): implemented.** Hosted reuses a FULL
+    - **Maintainer decision (#211, 2026-11-26): implemented.** Hosted reuses a FULL
       table whose only Volatile call is `uniform(1, 100, 1234)`, with
       evaluation requested (`gu`, entry 28, Explain 35: map
       `UNIFORM(1, 100, 1234) -> 96`, the first build's runtime, the

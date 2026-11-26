@@ -3854,9 +3854,7 @@ mod generator_merge {
             volatile_values(rerun),
             hosted_volatile_values(&entries[GU_RERUN].response)
         );
-        let Some(qc::submit_sql_response::Response::SkipExecution(skip)) = &rerun.response else {
-            panic!("{rerun:?}");
-        };
+        let skip = support::scenario::into_skip(rerun.clone());
         assert_eq!(skip.execution_runtime_ms, Some(4826));
         assert_explains_match_hosted(&database, server, &explains, masked).await;
     }
@@ -4084,7 +4082,8 @@ mod generator_merge {
     /// build, the rerun is rebuilt for that External modification, as a
     /// deterministic model is; that build reason is uncaptured with
     /// evaluation on, so it renders nothing. Ignoring External
-    /// modifications reuses it.
+    /// modifications reuses it, and a dropped Target relation is rebuilt as
+    /// absent.
     #[tokio::test]
     async fn snowflake_generator_rerun_over_a_written_target_follows_the_ordinary_checks() {
         let server = support::start_server().await;
@@ -4097,10 +4096,13 @@ mod generator_merge {
         let first = captured_submit(&entries[GU_FIRST].request);
         let rerun = captured_submit(&entries[GU_RERUN].request);
         let built_epoch = epoch_of(&rerun, &target);
-        let written = rerun.with(move |r| {
-            for t in &mut r.tables {
-                if t.name == target {
-                    t.last_modified_epoch = Some(built_epoch + 1);
+        let written = rerun.clone().with({
+            let target = target.clone();
+            move |r| {
+                for t in &mut r.tables {
+                    if t.name == target {
+                        t.last_modified_epoch = Some(built_epoch + 1);
+                    }
                 }
             }
         });
@@ -4119,10 +4121,24 @@ mod generator_merge {
         assert!(rendered(&rebuilt).is_empty(), "{:?}", rendered(&rebuilt));
 
         let ignored = sc.org("written, External modifications ignored");
-        ignored.build(first, built_epoch).await;
+        ignored.build(first.clone(), built_epoch).await;
         ignored
             .expect_skip(written.ignore_external_modifications())
             .await;
+
+        let dropped = sc.org("dropped");
+        dropped.build(first, built_epoch).await;
+        let rebuilt = dropped
+            .expect_execute(rerun.with(move |r| r.tables.retain(|t| t.name != target)))
+            .await;
+        assert_eq!(
+            rebuilt
+                .explained_decision
+                .as_ref()
+                .unwrap()
+                .decision_description,
+            "model was executed because its table did not exist"
+        );
     }
 
     /// A dbt-built `ms`, modified externally before `mv`'s build, is recorded

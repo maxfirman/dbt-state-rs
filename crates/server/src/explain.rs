@@ -1074,8 +1074,8 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     use crate::volatile_evaluation::RerunForm;
     let rerun_form = node.volatile_evaluation.rerun_form;
     // #211: a source-less FULL model whose only call is
-    // `uniform(1, 100, 1234)` was refused here before the maintainer
-    // decision to reuse it as hosted does (`explain_volatile_generator_merge.jsonl`
+    // `uniform(1, 100, 1234)` was refused at Reuse qualification before the
+    // maintainer decision to reuse it as hosted does (`explain_volatile_generator_merge.jsonl`
     // `gu`, entries 28 and 35). Such a rebuild, recorded with this form,
     // keeps printing no tree rather than a query change hosted never
     // reports. No decision records the form any more

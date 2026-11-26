@@ -265,8 +265,7 @@ pub(crate) fn for_model(
 /// target's existence and External modifications. Volatile SQL qualifies
 /// against an ordinary build under an unchanged template
 /// ([`volatile_sql_compared_by_unrendered_code`]) or in the Warehouse's
-/// checked shape (`Warehouse::checked_volatile_reuse`: Databricks #213,
-/// Snowflake #211).
+/// checked shape (`Warehouse::checked_volatile_reuse`).
 fn model_rejection(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,

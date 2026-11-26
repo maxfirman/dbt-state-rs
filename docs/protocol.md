@@ -696,8 +696,8 @@ and fingerprints.
    requested (`explain_volatile_evaluation.jsonl` entry 31), and the
    maintainer approved this relaxation on the #191 check-in (#194). Only
    Snowflake has a checked detector; every other Warehouse reports all its
-   SQL as volatile, so with evaluation requested it reuses only its checked
-   shape (below). One exception lifts the
+   SQL as volatile, so with evaluation requested it reuses none of it except
+   the Databricks checked shape (below). One exception lifts the
    refusal (maintainer decision 1 on #201, #206,
    [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
    #201"): a Snowflake model under `compare_unrendered_code` whose template

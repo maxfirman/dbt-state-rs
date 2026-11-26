@@ -207,7 +207,7 @@ Before this change the replay differed in seven entries:
 | 7 | `mv`'s first-build map: hosted filled, local `{}` (MERGE was not a Snowflake cell) | rendered: `cell(Merge, true, FIRST_BUILD, Own)` |
 | 31, 41 | `mv`'s map on the two refused reruns | rendered: `cell(Merge, true, RefusedVolatileSqlIn(RerunForm::SoleSourceMerge), Own)`: the Target relation physically as built and one source with no confirmed State in scope, its epoch known and at or past the one recorded at the refused build (`snowflake::volatile_rerun_form`, `reuse_candidate::sole_source_rerun`) |
 | 37, 45 | `mv`'s rerun trees: local empty | `explain.rs::volatile_rebuild_lines` prints the MERGE rerun tree with zero Lag tolerance for the same recorded form (`node_decisions.volatile_rerun_form`, migration 0037) |
-| 28, 35 | `gu`'s reuse | keyed Check-in gaps; the local rebuild has no tree (35 is an `empty_tree` gap) |
+| 28, 35 | `gu`'s reuse | keyed Check-in gaps; the local rebuild has no tree (35 is an `empty_tree` gap). Both replay since the [Resolution](#constant-generator-call-alone-question-1) |
 
 These are response-only changes: no decision, identity or Upstream producer
 rule changed. Uncaptured neighbours keep the conservative behavior. A MERGE
@@ -224,5 +224,7 @@ Lag tolerance is refused and rendered but explained with no tree
 `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`), reading its own
 Target relation, or after a write to that relation keeps the rerun tree
 (`snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form`).
+Since the Resolution above, the write case is rebuilt for the External
+modification instead, and the test is split in two.
 The other #211 cells stay open in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).
