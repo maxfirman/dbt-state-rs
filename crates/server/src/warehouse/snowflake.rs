@@ -295,10 +295,33 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     }
 };
 
-/// The function texts of generators hosted reuses when one is the only
-/// call in a source-less FULL model (#211, `explain_volatile_generator_merge.jsonl`
-/// `gu`, entries 28 and 35; a maintainer check-in).
-const REUSED_GENERATORS: &[&str] = &["UNIFORM(1, 100, 1234)"];
+/// The generator hosted reuses in a source-less FULL model projecting only
+/// it and literals (#211, `explain_volatile_generator_merge.jsonl` `gu`,
+/// entries 28 and 35; a maintainer check-in).
+const REUSED_GENERATOR: (&str, crate::volatile_evaluation::Call) = (
+    "uniform",
+    crate::volatile_evaluation::Call::Arguments("1, 100, 1234"),
+);
+
+/// Whether `sql` has `gu`'s captured shape: one `SELECT` without `FROM` or
+/// any other clause, each projection a number or string literal or
+/// [`REUSED_GENERATOR`], which is called at least once. Any other expression,
+/// whatever its spelling (`CURRENT_USER`, `CURRENT_USER()`, `FLOOR(1.5)`), is
+/// outside it.
+fn isolated_generator_projection(sql: &str) -> bool {
+    use crate::volatile_evaluation::matches_call;
+    use sqlparser::ast::{Expr, Value};
+    let (name, call) = REUSED_GENERATOR;
+    let mut generator = false;
+    let skeleton = super::projection_skeleton(&SnowflakeDialect {}, sql, |expr| {
+        let called = matches_call(expr, name, call);
+        generator |= called;
+        called
+            || matches!(expr, Expr::Value(value)
+                if matches!(value.value, Value::Number(_, false) | Value::SingleQuotedString(_)))
+    });
+    generator && skeleton.is_some_and(|query| query == "SELECT checked_projection")
+}
 
 /// The captured form of a rerun of `refused` that Reuse qualification
 /// refused, with Volatile evaluation requested (#211,
@@ -307,9 +330,9 @@ const REUSED_GENERATORS: &[&str] = &["UNIFORM(1, 100, 1234)"];
 ///   Target relation physically as built (`reuse_candidate::sole_source_rerun`;
 ///   entries 31 and 41, Explain 37 and 45);
 /// - [`RerunForm::IsolatedGenerator`]: a FULL model without upstreams or
-///   query dependencies, its Target relation physically as built, whose SQL
-///   is one query calling only one of [`REUSED_GENERATORS`] (entry 28,
-///   Explain 35).
+///   query dependencies whose SQL reads no relation, its Target relation
+///   physically as built, projecting only literals and [`REUSED_GENERATOR`]
+///   ([`isolated_generator_projection`]; entry 28, Explain 35).
 ///
 /// [`RerunForm::SoleSourceMerge`]: crate::volatile_evaluation::RerunForm::SoleSourceMerge
 /// [`RerunForm::IsolatedGenerator`]: crate::volatile_evaluation::RerunForm::IsolatedGenerator
@@ -320,7 +343,7 @@ pub(super) fn volatile_rerun_form(
 ) -> Option<crate::volatile_evaluation::RerunForm> {
     use crate::query_cache::ModelExecutionType::{Full, Merge};
     use crate::reuse_candidate::{own_target_as_built, sole_source_rerun};
-    use crate::volatile_evaluation::{calls_only, requested, RerunForm};
+    use crate::volatile_evaluation::{requested, RerunForm};
     if !requested(req) {
         return None;
     }
@@ -339,10 +362,11 @@ pub(super) fn volatile_rerun_form(
             Some(RerunForm::SoleSourceMerge)
         }
         Full if req.query_dependencies.is_empty()
+            && evidence.sql_reads_relation == Some(false)
             && inputs.iter().all(|t| t.name == target)
             && refused.input_tables.iter().all(|t| t.name == target)
             && own_target_as_built(target, inputs, refused)
-            && calls_only(VOLATILE_RULES, &req.sql, REUSED_GENERATORS) =>
+            && isolated_generator_projection(&req.sql) =>
         {
             Some(RerunForm::IsolatedGenerator)
         }
@@ -410,4 +434,45 @@ pub(super) fn relation_in_schema(name: &str, parts: [&str; 2]) -> Option<String>
         && canonical_identifier(database) == canonical_identifier(parts[0])
         && canonical_identifier(schema) == canonical_identifier(parts[1]))
     .then(|| canonical_identifier(identifier))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #211: only `gu`'s captured shape counts as the isolated generator:
+    /// literals and `uniform(1, 100, 1234)` in one `SELECT` with no other
+    /// clause. Another expression of any spelling, a `FROM` (also of the
+    /// model's own Target relation) or another clause rules it out.
+    #[test]
+    fn isolated_generator_projection_is_gus_captured_shape_only() {
+        for sql in [
+            "select 1 as id, uniform(1, 100, 1234) as u",
+            "select 1 as id, 'x' as v, UNIFORM(1, 100, 1234) as u",
+            "select uniform(1, 100, 1234)",
+        ] {
+            assert!(isolated_generator_projection(sql), "{sql}");
+        }
+        for sql in [
+            "select 1 as id",
+            "select 1 as id, uniform(1, 100, 1234) as u, current_user as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, current_user() as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, floor(1.5) as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, current_timestamp(6) as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, seq4() as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, random() as w",
+            "select 1 as id, uniform(1, 100, 1234) as u, id as w",
+            "select 1 as id, uniform(1, 100, 1234) + 1 as u",
+            "select 1 as id, uniform(1, 100, 99) as u",
+            "select 1 as id, uniform(1, 100, 1234) as u from \"DB\".\"S\".\"GU\"",
+            "select 1 as id, uniform(1, 100, 1234) as u where 1 = 1",
+            "select 1 as id, uniform(1, 100, 1234) as u limit 1",
+            "with c as (select 1) select uniform(1, 100, 1234) as u",
+            "select uniform(1, 100, 1234) union all select 1",
+            "select uniform(1, 100, 1234); select 1",
+            "not sql",
+        ] {
+            assert!(!isolated_generator_projection(sql), "{sql}");
+        }
+    }
 }

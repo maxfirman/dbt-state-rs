@@ -332,10 +332,13 @@ server keeps the conservative behavior described.
       captured form, established from the submitted SQL and recorded with
       the decision (`RerunForm::IsolatedGenerator`, migration 0037): a FULL
       model without upstreams or query dependencies, its Target relation
-      physically as built, whose SQL is one query calling only
-      `uniform(1, 100, 1234)`. Another call beside it (even one the map does
-      not show, such as `CURRENT_TIMESTAMP(6)` or `SEQ4()`) or a write to
-      the Target relation keeps the rerun tree. Matching hosted relaxes a
+      physically as built, whose SQL is one `SELECT` without `FROM` or
+      another clause projecting only literals and `uniform(1, 100, 1234)`,
+      reading no relation. Any other expression beside it, whatever its
+      spelling (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, `CURRENT_USER` with or
+      without parentheses, `FLOOR(1.5)`), a read of a relation (its own
+      Target relation included) or a write to the Target relation keeps the
+      rerun tree. Matching hosted relaxes a
       Reuse refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
       `replay_gaps.json`. Open: whether hosted's rule is "every call has a
       constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are

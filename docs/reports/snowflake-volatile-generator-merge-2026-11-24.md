@@ -156,8 +156,9 @@ tree, since hosted never reports that query as changed. Only this shape is
 affected, as the decision established it from the submitted SQL and
 recorded it for Explain (`RerunForm::IsolatedGenerator`, migration 0037): a
 FULL model without upstreams or query dependencies, its Target relation
-physically as built, whose SQL is one query calling only
-`uniform(1, 100, 1234)`. Entries 28 (whole response) and
+physically as built, whose SQL is one `SELECT` without `FROM` or another
+clause, projecting only literals and `uniform(1, 100, 1234)`, and reads no
+relation. Entries 28 (whole response) and
 35 (`empty_tree`) are keyed in `golden/replay_gaps.json`, and
 `volatile_evaluation.rs::generator_merge::snowflake_constant_generator_alone_is_still_refused_pending_check_in`
 pins the current local answer.
@@ -207,8 +208,9 @@ Lag tolerance is refused and rendered but explained with no tree
 (`snowflake_merge_rerun_over_uncaptured_upstream_evidence_prints_no_tree`,
 `snowflake_merge_over_an_externally_modified_dbt_built_input_renders_nothing`,
 `reuse_candidate::tests::sole_source_rerun_needs_the_captured_physical_evidence`).
-`gu`'s rerun beside another call (`CURRENT_TIMESTAMP(6)`, `SEQ4()`) or after
-a write to its Target relation keeps the rerun tree
+`gu`'s rerun beside any other expression (`CURRENT_TIMESTAMP(6)`, `SEQ4()`,
+`CURRENT_USER` with or without parentheses, `FLOOR(1.5)`), reading its own
+Target relation, or after a write to that relation keeps the rerun tree
 (`snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form`).
 The other #211 cells stay open in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

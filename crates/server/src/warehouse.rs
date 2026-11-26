@@ -1222,6 +1222,36 @@ pub enum IncrementalCopyContract<'a> {
     Declared { identity: &'a str },
 }
 
+/// Check every projection with `allowed` and substitute one plain projection
+/// (`checked_projection`) when checking
+/// the rest of the statement's grammar.
+pub(super) fn projection_skeleton(
+    dialect: &dyn sqlparser::dialect::Dialect,
+    sql: &str,
+    mut allowed: impl FnMut(&sqlparser::ast::Expr) -> bool,
+) -> Option<String> {
+    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+    let mut statements = sqlparser::parser::Parser::parse_sql(dialect, sql).ok()?;
+    let [Statement::Query(query)] = statements.as_mut_slice() else {
+        return None;
+    };
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return None;
+    };
+    if select.projection.is_empty()
+        || !select.projection.iter().all(|item| match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => allowed(expr),
+            _ => false,
+        })
+    {
+        return None;
+    }
+    select.projection = vec![SelectItem::UnnamedExpr(Expr::Identifier(
+        sqlparser::ast::Ident::new("checked_projection"),
+    ))];
+    Some(query.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CopyIdentity, IncrementalCopyContract, NamespaceIdentity, Warehouse};

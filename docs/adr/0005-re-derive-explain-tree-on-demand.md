@@ -212,7 +212,8 @@ caller already holds this id). Everything else is re-derived.
 > and now, its epoch known and unchanged or advanced), and
 > `isolated_generator` for a FULL model without upstreams or query
 > dependencies, its Target relation physically as built, whose SQL is one
-> query calling only `uniform(1, 100, 1234)`. Both rest on decision-time
+> `SELECT` without `FROM` or another clause, projecting only literals and
+> `uniform(1, 100, 1234)`, and reads no relation. Both rest on decision-time
 > facts the decision row does not keep: the submitted SQL, and whether an
 > input that has no producer is a source or an External modification of a
 > dbt-built relation (both record `Producer::NoBuild`). Explain therefore

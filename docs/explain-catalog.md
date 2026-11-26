@@ -702,13 +702,17 @@ Only the captured shape is affected, as the decision established it from
 the submitted SQL and recorded it (`RerunForm::IsolatedGenerator`,
 `node_decisions.volatile_rerun_form`, migration 0037): a FULL model without
 upstreams or query dependencies, its Target relation physically as built,
-whose SQL is one query calling only `uniform(1, 100, 1234)`. Every other
+whose SQL is one `SELECT` without `FROM` or another clause, projecting
+only number or string literals and `uniform(1, 100, 1234)`, and reads no
+relation (`snowflake::isolated_generator_projection`). Every other
 shape keeps the [model rerun](#execute-rerun-of-a-volatile-model) tree:
 other constant-seeded generators alone (uncaptured), the generator beside
 `RANDOM()` (`explain_volatile_cells.jsonl` entries 180 and 181), beside a
-volatile query dependency, or beside a call the map does not show
-(`CURRENT_TIMESTAMP(6)`, `SEQ4()`), and a rerun after a write to the
-Target relation. The entry is keyed in `replay_gaps.json` as an
+volatile query dependency, or beside any other expression whatever its
+spelling (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, `CURRENT_USER` with or without
+parentheses, `FLOOR(1.5)`, a column), SQL that reads a relation (its own
+Target relation included), and a rerun after a write to the Target
+relation. The entry is keyed in `replay_gaps.json` as an
 `empty_tree` gap.
 
 ### EXECUTE: node query changed (SHAPE 7)

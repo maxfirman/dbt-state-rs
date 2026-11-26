@@ -212,11 +212,12 @@ pub enum RerunForm {
     /// or advanced (`reuse_candidate::sole_source_rerun`;
     /// `explain_volatile_generator_merge.jsonl` entries 31 and 41).
     SoleSourceMerge,
-    /// A Snowflake FULL model without upstreams or query dependencies, its
-    /// Target relation physically as built, whose SQL is one query calling
-    /// exactly one function, a generator hosted reuses
-    /// (`uniform(1, 100, 1234)`, `explain_volatile_generator_merge.jsonl`
-    /// entries 28 and 35; [`calls_only`]).
+    /// A Snowflake FULL model without upstreams or query dependencies whose
+    /// SQL reads no relation, its Target relation physically as built,
+    /// projecting only literals and a generator hosted reuses
+    /// (`uniform(1, 100, 1234)`) in one `SELECT` with no other clause
+    /// (`explain_volatile_generator_merge.jsonl` entries 28 and 35;
+    /// `snowflake::isolated_generator_projection`).
     IsolatedGenerator,
 }
 
@@ -237,15 +238,6 @@ impl RerunForm {
             _ => None,
         }
     }
-}
-
-/// Whether `sql` is one query whose only function call is exactly one of
-/// `rules`' forms whose key is in `keys`: no other function, captured or
-/// not, and no other call of a Volatile form (`CURRENT_TIMESTAMP(6)`,
-/// `SEQ4()`, a parenless clock). SQL that does not parse never is.
-pub(crate) fn calls_only(rules: Rules, sql: &str, keys: &[&str]) -> bool {
-    let calls = called_rules(rules, sql);
-    !calls.unchecked && matches!(calls.rules.as_slice(), [only] if keys.contains(&only.key))
 }
 
 /// The SQL a [`Cell`]'s values come from.
@@ -636,38 +628,4 @@ fn matches_form(actual_name: &str, args: Option<&str>, name: &str, call: Call) -
             }
             _ => false,
         }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// #211: `uniform(1, 100, 1234)` counts as isolated only as the one call
-    /// in one query. Another Volatile form the map does not show
-    /// (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, a parenless clock), any other
-    /// function, or SQL that is not one query rules it out.
-    #[test]
-    fn calls_only_needs_the_one_listed_call_and_nothing_else() {
-        let rules = crate::warehouse::Warehouse::Snowflake
-            .volatile_rules()
-            .unwrap();
-        let only = |sql: &str| calls_only(rules, sql, &["UNIFORM(1, 100, 1234)"]);
-        assert!(only("select 1 as id, uniform(1, 100, 1234) as u"));
-        assert!(only(
-            "select 1 as id, UNIFORM(1, 100, 1234) as u, uniform(1, 100, 1234) as v"
-        ));
-        for sql in [
-            "select 1 as id, uniform(1, 100, 1234) as u, current_timestamp(6) as t",
-            "select 1 as id, uniform(1, 100, 1234) as u, seq4() as s",
-            "select 1 as id, uniform(1, 100, 1234) as u, current_timestamp as t",
-            "select 1 as id, uniform(1, 100, 1234) as u, random() as r",
-            "select 1 as id, uniform(1, 100, 1234) as u, coalesce(1, 2) as c",
-            "select 1 as id, uniform(1, 100, 99) as u",
-            "select 1 as id",
-            "select uniform(1, 100, 1234); select 1",
-            "not sql",
-        ] {
-            assert!(!only(sql), "{sql}");
-        }
-    }
 }

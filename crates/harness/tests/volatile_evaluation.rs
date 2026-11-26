@@ -3986,10 +3986,13 @@ mod generator_merge {
         );
     }
 
-    /// The empty tree is limited to `gu` as captured: its SQL calling only
-    /// `uniform(1, 100, 1234)`, with its Target relation as built. Another
-    /// Volatile call the map does not show, or a write to the Target
-    /// relation since the build, keeps the rerun tree.
+    /// The empty tree is limited to `gu` as captured: its SQL projecting
+    /// only literals and `uniform(1, 100, 1234)` and reading no relation,
+    /// with its Target relation as built. Another expression in any
+    /// spelling, even one the map does not show (`CURRENT_TIMESTAMP(6)`,
+    /// `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
+    /// a read of its own Target relation, or a write to that relation since
+    /// the build keeps the rerun tree.
     #[tokio::test]
     async fn snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form() {
         let server = support::start_server().await;
@@ -3999,12 +4002,14 @@ mod generator_merge {
             .as_str()
             .unwrap()
             .to_owned();
-        let with_call = |entry: usize, call: &'static str| {
+        let with_sql = |entry: usize, tail: String| {
             captured_submit(&entries[entry].request).with(move |r| {
                 assert!(r.sql.contains(" as u"), "{}", r.sql);
-                r.sql = r.sql.replace(" as u", &format!(" as u, {call} as w"));
+                r.sql = r.sql.replace(" as u", &format!(" as u{tail}"));
             })
         };
+        let with_call = |entry: usize, call: &str| with_sql(entry, format!(", {call} as w"));
+        let self_read = |entry: usize| with_sql(entry, format!(" from {target}"));
         let first = captured_submit(&entries[GU_FIRST].request);
         let rerun = captured_submit(&entries[GU_RERUN].request);
         let built_epoch = epoch_of(&rerun, &target);
@@ -4018,6 +4023,26 @@ mod generator_merge {
                 "beside SEQ4()",
                 with_call(GU_FIRST, "seq4()"),
                 with_call(GU_RERUN, "seq4()"),
+            ),
+            (
+                "beside CURRENT_USER",
+                with_call(GU_FIRST, "current_user"),
+                with_call(GU_RERUN, "current_user"),
+            ),
+            (
+                "beside CURRENT_USER()",
+                with_call(GU_FIRST, "current_user()"),
+                with_call(GU_RERUN, "current_user()"),
+            ),
+            (
+                "beside FLOOR(1.5)",
+                with_call(GU_FIRST, "floor(1.5)"),
+                with_call(GU_RERUN, "floor(1.5)"),
+            ),
+            (
+                "reading its own Target relation",
+                self_read(GU_FIRST),
+                self_read(GU_RERUN),
             ),
             (
                 "its Target relation written since the build",

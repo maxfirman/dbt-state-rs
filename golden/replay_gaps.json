@@ -418,6 +418,6 @@
     "fixture": "explain_volatile_generator_merge.jsonl",
     "entry": 35,
     "local_variant": "empty_tree",
-    "reason": "CHECK-IN (#211) explain of entry 28: hosted explains gu's reuse (the volatile block, then 'the model query has not changed' with no tolerance line). The local server, which still refuses the reuse pending the maintainer, explains its rebuild with no tree: the decision established and recorded the isolated-generator form (a source-less FULL model, its Target relation as built, whose SQL calls only uniform(1, 100, 1234); RerunForm::IsolatedGenerator, node_decisions.volatile_rerun_form)."
+    "reason": "CHECK-IN (#211) explain of entry 28: hosted explains gu's reuse (the volatile block, then 'the model query has not changed' with no tolerance line). The local server, which still refuses the reuse pending the maintainer, explains its rebuild with no tree: the decision established and recorded the isolated-generator form (a source-less FULL model, its Target relation as built, whose SQL projects only literals and uniform(1, 100, 1234) with no FROM or other clause; RerunForm::IsolatedGenerator, node_decisions.volatile_rerun_form)."
   }
 ]
