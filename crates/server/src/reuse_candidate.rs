@@ -262,7 +262,11 @@ pub(crate) fn for_model(
 
 /// Why a model's build with the workload's identity is not a reuse
 /// candidate, if anything is against it: reuse qualification, then its own
-/// target's existence and External modifications.
+/// target's existence and External modifications. Volatile SQL qualifies
+/// against an ordinary build under an unchanged template
+/// ([`volatile_sql_compared_by_unrendered_code`]) or in the Warehouse's
+/// checked shape (`Warehouse::checked_volatile_reuse`: Databricks #213,
+/// Snowflake #211).
 fn model_rejection(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
@@ -271,9 +275,9 @@ fn model_rejection(
     let template_qualified = volatile_sql_compared_by_unrendered_code(req)
         && evidence.node_template_hash.is_some()
         && prev.node_template_hash == evidence.node_template_hash;
-    let checked_databricks = crate::copy_lifecycle::ordinary(prev)
+    let checked_volatile = crate::copy_lifecycle::ordinary(prev)
         && crate::warehouse::Warehouse::from_dialect(&req.dialect).checked_volatile_reuse(req);
-    let qualifies = if template_qualified || checked_databricks {
+    let qualifies = if template_qualified || checked_volatile {
         sql_evidence_complete(req, evidence)
     } else {
         sql_qualifies(req, evidence)
@@ -671,7 +675,8 @@ fn sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest, evidence: &Executio
 
 /// Whether the root SQL or a query dependency definition calls a Volatile
 /// function. Warehouses without a general detector report SQL as volatile.
-/// The checked Databricks FULL shape is admitted by model Reuse qualification.
+/// Model Reuse qualification admits each Warehouse's checked FULL shape
+/// (`Warehouse::checked_volatile_reuse`).
 fn calls_volatile_function(req: &qc::SubmitEnrichedSqlRequest) -> bool {
     crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
         &req.sql,
@@ -778,11 +783,7 @@ fn rerun_evidence(
 /// a known epoch no newer than the build `prev`'s: physically as built.
 /// `ignore_external_modifications` does not make a write since the build
 /// count as none (#211).
-pub(crate) fn own_target_as_built(
-    target: &str,
-    inputs: &[InputTable],
-    prev: &ExecutionRow,
-) -> bool {
+fn own_target_as_built(target: &str, inputs: &[InputTable], prev: &ExecutionRow) -> bool {
     let own: Vec<_> = inputs.iter().filter(|t| t.name == target).collect();
     target == prev.target_table
         && matches!(
@@ -1452,6 +1453,59 @@ mod tests {
         }];
         let row = recorded(&evidence(&req));
         assert!(model(&req, Some(row)).candidate.is_some());
+    }
+
+    /// #211 (maintainer decision): a Snowflake FULL model projecting only
+    /// literals and `uniform(1, 100, 1234)`, with evaluation requested and
+    /// no relation but its own Target relation, qualifies for reuse
+    /// (`explain_volatile_generator_merge.jsonl` `gu`, entry 28). Over an
+    /// upstream, with a query dependency, under template comparison, as
+    /// another kind, with other arguments or beside another function, it is
+    /// still refused at Reuse qualification.
+    #[test]
+    fn snowflake_isolated_generator_qualifies_in_the_captured_shape_only() {
+        let mut gu = model_req("select 1 as id, uniform(1, 100, 1234) as u");
+        gu.tolerate_nondeterminism = false;
+        gu.tables.retain(|t| t.name == TARGET);
+        assert!(model(&gu, Some(recorded(&evidence(&gu))))
+            .candidate
+            .is_some());
+
+        type Mutation = fn(&mut qc::SubmitEnrichedSqlRequest);
+        let cases: Vec<(&str, Mutation)> = vec![
+            ("over an upstream table", |r| {
+                r.tables.push(table(UPSTREAM, 500))
+            }),
+            ("with a query dependency", |r| {
+                r.query_dependencies = vec![qc::QueryDependency {
+                    name: "d".into(),
+                    query: "select 1 as id".into(),
+                    ..Default::default()
+                }]
+            }),
+            ("under template comparison", |r| {
+                r.compare_unrendered_code = true
+            }),
+            ("as a MERGE incremental", |r| {
+                r.execution_type = ModelExecutionType::Merge as i32
+            }),
+            ("with another seed", |r| {
+                r.sql = "select 1 as id, uniform(1, 100, 99) as u".into()
+            }),
+            ("beside random()", |r| {
+                r.sql = "select uniform(1, 100, 1234) as u, random() as r".into()
+            }),
+        ];
+        for (why, mutate) in cases {
+            let mut req = gu.clone();
+            mutate(&mut req);
+            let selected = model(&req, Some(recorded(&evidence(&req))));
+            assert_eq!(
+                selected.why_no_candidate,
+                Some(NoCandidate::FailedReuseQualification),
+                "{why}"
+            );
+        }
     }
 
     #[test]

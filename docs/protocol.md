@@ -695,8 +695,9 @@ and fingerprints.
    flag: hosted SKIPs a deterministic Snowflake model with evaluation
    requested (`explain_volatile_evaluation.jsonl` entry 31), and the
    maintainer approved this relaxation on the #191 check-in (#194). Only
-   Snowflake has a checked detector; every other Warehouse, Databricks
-   included, never reuses with evaluation requested. One exception lifts the
+   Snowflake has a checked detector; every other Warehouse reports all its
+   SQL as volatile, so with evaluation requested it reuses only its checked
+   shape (below). One exception lifts the
    refusal (maintainer decision 1 on #201, #206,
    [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
    #201"): a Snowflake model under `compare_unrendered_code` whose template
@@ -706,7 +707,19 @@ and fingerprints.
    `reuse_candidate.rs::volatile_sql_compared_by_unrendered_code`). The
    other qualification checks (complete query dependencies, non-empty SQL, a
    template body) still apply. A changed template, `compare_unrendered_code`
-   off, a data test and every other Warehouse keep the refusal. On Snowflake
+   off, a data test and every other Warehouse keep the refusal. Each
+   Warehouse's checked shape also qualifies against an ordinary build
+   (`Warehouse::checked_volatile_reuse`): a FULL model without query
+   dependencies or template comparison, reporting no relation but its own
+   Target relation, whose SQL is one `SELECT` with no `FROM` or other clause
+   projecting only number or string literals and, on Snowflake,
+   `uniform(1, 100, 1234)` (maintainer decision on #211,
+   `explain_volatile_generator_merge.jsonl` `gu`, entries 28 and 35) or, on
+   Databricks, `rand(42)` (#213). The ordinary identity, Target relation and
+   freshness checks then decide, so a rerun after a write to the Target
+   relation is rebuilt for that External modification. The same call beside
+   any other expression, over an upstream or in another kind, and other
+   generator arguments keep the refusal (uncaptured). On Snowflake
    the Result copy fallback is suppressed for volatile SQL with evaluation
    requested; a deterministic model is still copied (crafted fixture
    `clone_fallback_volatile.jsonl`,
@@ -994,7 +1007,7 @@ says "empty".
 | Warehouse | Case | Evaluation on | Evaluation off | Evidence (client 2.0.11 unless marked crafted) |
 |---|---|---|---|---|
 | Snowflake | FULL model, root SQL, `ready_to_execute` | rendered on a first build, a rerun refused at Reuse qualification and a query-changed rebuild | rendered on a first build and a query-changed rebuild | on: run 1 entries 6, 33; cells entries 21, 23, 26–28, 33, 36 (first builds), 137, 142, 147, 166. Off: run 1 entry 8; cells entries 29, 34, 133 |
-| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the only volatile reuse, an unchanged template under `compare_unrendered_code` (#206) | rendered | on: cells entry 140 (a deterministic reuse has nothing to render, run 1 entry 31). Off: run 1 entries 34, 50 |
+| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the volatile reuses: an unchanged template under `compare_unrendered_code` (#206) and the checked `uniform(1, 100, 1234)` shape (#211) | rendered | on: cells entry 140, generator-merge entry 28 (a deterministic reuse has nothing to render, run 1 entry 31). Off: run 1 entries 34, 50 |
 | Snowflake | view, root SQL | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: cells entries 19, 141. Off: run 1 entries 7, 32; cells entries 22, 127 |
 | Snowflake | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution, a rerun and a logic change | rendered on a first execution and `skip_execution` | on: run 1 entries 16, 37; cells entries 61, 62, 145, 148. Off: cells entries 60, 146 |
 | Snowflake | FULL model, values only in a query dependency definition | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: run 1 entries 10, 35; cells entries 72, 168. Off: cells entries 58, 158 |
@@ -1105,8 +1118,9 @@ migration 0027) and whether the submit requested evaluation
 recorded before either migration prints no volatile lines. A Snowflake
 rerun refused for its volatile SQL also records the captured form its
 decision established (`node_decisions.volatile_rerun_form`, migration 0037,
-#211), which selects the MERGE rerun tree and the empty tree of the isolated
-generator. A model's rebuild
+#211), which selects the MERGE rerun tree. A rebuild of the isolated
+generator recorded before Reuse qualification admitted it keeps its empty
+tree. A model's rebuild
 refused at Reuse qualification records the refused build as its Explain
 anchor (`matched_execution_id`), which its upstream listing is judged
 against (ADR 0005 "Amended by #201"). The captured trees are in
@@ -1123,9 +1137,9 @@ section, its [DATA TEST](explain-catalog.md#data-test) section and its
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
 [testing.md](testing.md#goldenreplay_gapsjson)). Every entry of the three
-Snowflake fixtures replays, and every generator-merge entry but the
-`gu` reuse that waits for the maintainer and its Explain (entries 28 and
-35). Cells entry 146
+Snowflake fixtures and of the generator-merge fixture replays, the `gu`
+reuse and its Explain (entries 28 and 35) since the maintainer decision on
+#211. Cells entry 146
 echoes the runtime of another data test with the same SQL, the
 later-confirmed run of its history key (#200; it was keyed until then,
 decision 2 on #201).

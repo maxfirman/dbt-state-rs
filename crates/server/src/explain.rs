@@ -1073,13 +1073,13 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     let forms = node.volatile_forms();
     use crate::volatile_evaluation::RerunForm;
     let rerun_form = node.volatile_evaluation.rerun_form;
-    // #211: hosted reuses a source-less FULL model whose only call is
-    // `uniform(1, 100, 1234)` (`explain_volatile_generator_merge.jsonl`
-    // `gu`, entries 28 and 35). This server still refuses it, pending the
-    // maintainer, and explains the rebuild with no tree rather than a query
-    // change hosted never reports. The decision established the form from
-    // its SQL and Target relation (`Warehouse::volatile_rerun_form`); any
-    // other shape keeps its tree.
+    // #211: a source-less FULL model whose only call is
+    // `uniform(1, 100, 1234)` was refused here before the maintainer
+    // decision to reuse it as hosted does (`explain_volatile_generator_merge.jsonl`
+    // `gu`, entries 28 and 35). Such a rebuild, recorded with this form,
+    // keeps printing no tree rather than a query change hosted never
+    // reports. No decision records the form any more
+    // (`Warehouse::checked_volatile_reuse`).
     if rerun_form == Some(RerunForm::IsolatedGenerator) {
         return Some(Vec::new());
     }
@@ -4970,11 +4970,12 @@ mod tests {
         }
     }
 
-    /// The refused rebuild its decision established as
-    /// `RerunForm::IsolatedGenerator` (`gu`, `explain_volatile_generator_merge.jsonl`
-    /// entries 28 and 35) prints no tree, since hosted reuses it. The same
-    /// rendered value without the form, as after a Target relation write or
-    /// beside another call the map does not show, keeps the rerun tree.
+    /// A refused rebuild recorded as `RerunForm::IsolatedGenerator` (`gu`,
+    /// `explain_volatile_generator_merge.jsonl` entries 28 and 35), before
+    /// Reuse qualification admitted that shape (#211), keeps printing no
+    /// tree, since hosted reuses it. The same rendered value without the
+    /// form, as beside another call the map does not show, keeps the rerun
+    /// tree.
     #[test]
     fn snowflake_isolated_generator_refusal_prints_no_tree() {
         use crate::volatile_evaluation::RerunForm;

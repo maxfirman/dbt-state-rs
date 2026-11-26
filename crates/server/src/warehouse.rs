@@ -863,11 +863,20 @@ impl Warehouse {
         }
     }
 
+    /// Whether Reuse qualification admits the volatile SQL of `req` in the
+    /// shape this Warehouse was captured reusing: Databricks `rand(42)`
+    /// (#213) and Snowflake `uniform(1, 100, 1234)` (#211), each projected
+    /// alone beside literals in a source-less FULL model. The ordinary
+    /// reuse checks still decide.
     pub(crate) fn checked_volatile_reuse(
         self,
         req: &crate::query_cache::SubmitEnrichedSqlRequest,
     ) -> bool {
-        self == Self::Databricks && databricks::checked_volatile_reuse(req)
+        match self {
+            Self::Databricks => databricks::checked_volatile_reuse(req),
+            Self::Snowflake => snowflake::checked_volatile_reuse(req),
+            _ => false,
+        }
     }
 
     /// #213: a model's rebuild refused at Reuse qualification after its
@@ -913,6 +922,7 @@ impl Warehouse {
     pub(crate) fn volatile_explain_forms(self) -> crate::explain::VolatileForms {
         match self {
             Self::Databricks => databricks::VOLATILE_EXPLAIN_FORMS,
+            Self::Snowflake => snowflake::VOLATILE_EXPLAIN_FORMS,
             _ => crate::explain::VolatileForms::NONE,
         }
     }

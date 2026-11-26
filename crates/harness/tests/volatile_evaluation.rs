@@ -3775,7 +3775,9 @@ mod generator_merge {
     /// `gu`'s first build, and its unchanged rerun, which hosted reuses (a
     /// Check-in finding).
     const GU_FIRST: usize = 9;
+    const GU_FIRST_EXPLAIN: usize = 17;
     const GU_RERUN: usize = 28;
+    const GU_RERUN_EXPLAIN: usize = 35;
     /// `gr` (`random()` alone): first build and rerun refused at Reuse
     /// qualification.
     const GR_FIRST: usize = 10;
@@ -3819,25 +3821,44 @@ mod generator_merge {
         assert_explains_match_hosted(&database, server, &explains, masked).await;
     }
 
-    /// Hosted reuses `gu` (entry 28). Matching it relaxes a Reuse refusal,
-    /// which waits for the maintainer (#211, #201 check-in rule): this
-    /// server still refuses it and renders hosted's map on the rebuild. The
-    /// rebuild prints no tree: hosted never reports this query as changed
-    /// (entry 35, an `empty_tree` replay gap).
+    /// Hosted reuses `gu`'s unchanged rerun (entry 28; maintainer decision
+    /// on #211): a source-less FULL model projecting only literals and
+    /// `uniform(1, 100, 1234)` passes Reuse qualification, and the ordinary
+    /// checks decide. The reuse echoes the first build's runtime (confirm
+    /// entry 11) and hosted's constant value, and Explain says the query has
+    /// not changed, after the volatile block, with no tolerance line (entry
+    /// 35), also after a restart.
     #[tokio::test]
-    async fn snowflake_constant_generator_alone_is_still_refused_pending_check_in() {
-        let server = support::start_server().await;
-        let sc = Scenario::connect(&server).await;
+    async fn snowflake_constant_generator_alone_is_reused_as_hosted() {
+        let database = std::sync::Arc::new(support::TestDatabase::new("volatile_211_gu").await);
+        let server = support::start_server_on_database(database.clone()).await;
         let entries = entries(GENERATOR_MERGE);
-        let responses = replay(&sc, &entries, GU_RERUN).await;
+        let responses = replay(&Scenario::connect(&server).await, &entries, GU_RERUN).await;
+        let explains: Vec<_> = [
+            (GU_FIRST, GU_FIRST_EXPLAIN, "gu first build"),
+            (GU_RERUN, GU_RERUN_EXPLAIN, "gu unchanged rerun"),
+        ]
+        .into_iter()
+        .map(|(submit, explained, case)| {
+            assert_matches_hosted(&responses[&submit], &entries[submit], case);
+            HostedExplain::of_response(
+                case,
+                &entries[explained],
+                &entries[submit],
+                &responses[&submit],
+            )
+        })
+        .collect();
         let rerun = &responses[&GU_RERUN];
-        assert_eq!(variant(rerun), "ready_to_execute");
         assert_eq!(
-            volatile_map_shape(&volatile_values(rerun)),
-            volatile_map_shape(&hosted_volatile_values(&entries[GU_RERUN].response)),
+            volatile_values(rerun),
+            hosted_volatile_values(&entries[GU_RERUN].response)
         );
-        let explained = explain(&sc, &decision_id(rerun)).await;
-        assert!(texts(&explained).is_empty(), "{explained}");
+        let Some(qc::submit_sql_response::Response::SkipExecution(skip)) = &rerun.response else {
+            panic!("{rerun:?}");
+        };
+        assert_eq!(skip.execution_runtime_ms, Some(4826));
+        assert_explains_match_hosted(&database, server, &explains, masked).await;
     }
 
     /// The epoch `submit` reports for `relation`.
@@ -3986,15 +4007,14 @@ mod generator_merge {
         );
     }
 
-    /// The empty tree is limited to `gu` as captured: its SQL projecting
-    /// only literals and `uniform(1, 100, 1234)` and reading no relation,
-    /// with its Target relation as built. Another expression in any
-    /// spelling, even one the map does not show (`CURRENT_TIMESTAMP(6)`,
-    /// `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
-    /// a read of its own Target relation, or a write to that relation since
-    /// the build keeps the rerun tree.
+    /// The reuse is limited to `gu` as captured: its SQL projecting only
+    /// literals and `uniform(1, 100, 1234)` and reading no relation. Beside
+    /// another expression in any spelling, even one the map does not show
+    /// (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, `CURRENT_USER` with or without
+    /// parentheses, `FLOOR(1.5)`), or reading its own Target relation, the
+    /// rerun is refused at Reuse qualification and keeps the rerun tree.
     #[tokio::test]
-    async fn snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form() {
+    async fn snowflake_generator_outside_the_captured_shape_is_still_refused() {
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
         let entries = entries(GENERATOR_MERGE);
@@ -4010,9 +4030,7 @@ mod generator_merge {
         };
         let with_call = |entry: usize, call: &str| with_sql(entry, format!(", {call} as w"));
         let self_read = |entry: usize| with_sql(entry, format!(" from {target}"));
-        let first = captured_submit(&entries[GU_FIRST].request);
-        let rerun = captured_submit(&entries[GU_RERUN].request);
-        let built_epoch = epoch_of(&rerun, &target);
+        let built_epoch = epoch_of(&captured_submit(&entries[GU_RERUN].request), &target);
         for (case, first, rerun) in [
             (
                 "beside CURRENT_TIMESTAMP(6)",
@@ -4044,20 +4062,6 @@ mod generator_merge {
                 self_read(GU_FIRST),
                 self_read(GU_RERUN),
             ),
-            (
-                "its Target relation written since the build",
-                first.clone(),
-                rerun.clone().with({
-                    let target = target.clone();
-                    move |r| {
-                        for t in &mut r.tables {
-                            if t.name == target {
-                                t.last_modified_epoch = Some(built_epoch + 1);
-                            }
-                        }
-                    }
-                }),
-            ),
         ] {
             let sc = sc.org(case);
             sc.build(first, built_epoch).await;
@@ -4073,6 +4077,52 @@ mod generator_merge {
                 "{case}: {explained}"
             );
         }
+    }
+
+    /// Admitting `gu`'s volatile SQL leaves the ordinary Target relation
+    /// checks in charge. After a write to the Target relation since the
+    /// build, the rerun is rebuilt for that External modification, as a
+    /// deterministic model is; that build reason is uncaptured with
+    /// evaluation on, so it renders nothing. Ignoring External
+    /// modifications reuses it.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_over_a_written_target_follows_the_ordinary_checks() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let target = entries[GU_RERUN].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let built_epoch = epoch_of(&rerun, &target);
+        let written = rerun.with(move |r| {
+            for t in &mut r.tables {
+                if t.name == target {
+                    t.last_modified_epoch = Some(built_epoch + 1);
+                }
+            }
+        });
+
+        let modified = sc.org("written");
+        modified.build(first.clone(), built_epoch).await;
+        let rebuilt = modified.expect_execute(written.clone()).await;
+        assert_eq!(
+            rebuilt
+                .explained_decision
+                .as_ref()
+                .unwrap()
+                .decision_description,
+            "model was executed because the table was modified after the cached execution"
+        );
+        assert!(rendered(&rebuilt).is_empty(), "{:?}", rendered(&rebuilt));
+
+        let ignored = sc.org("written, External modifications ignored");
+        ignored.build(first, built_epoch).await;
+        ignored
+            .expect_skip(written.ignore_external_modifications())
+            .await;
     }
 
     /// A dbt-built `ms`, modified externally before `mv`'s build, is recorded

@@ -163,6 +163,18 @@ relation. Entries 28 (whole response) and
 `volatile_evaluation.rs::generator_merge::snowflake_constant_generator_alone_is_still_refused_pending_check_in`
 pins the current local answer.
 
+**Resolution (maintainer decision on #211).** The bounded reuse was
+approved. Reuse qualification admits `gu`'s shape
+(`Warehouse::checked_volatile_reuse`), entries 28 and 35 replay and their
+gaps are removed, and
+`volatile_evaluation.rs::generator_merge::snowflake_constant_generator_alone_is_reused_as_hosted`
+replaced the test above. The other shapes below keep the refusal
+(`snowflake_generator_outside_the_captured_shape_is_still_refused`); a
+rerun after a write to the Target relation is now rebuilt for that
+External modification and renders nothing
+(`snowflake_generator_rerun_over_a_written_target_follows_the_ordinary_checks`).
+Both replace `snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form`.
+
 ## MERGE over upstream data drift (question 2)
 
 **Observed.** `mv` is rebuilt on every run with codes 6 / 6, and every
