@@ -3217,6 +3217,41 @@ mod rebuild_reasons {
         }
     }
 
+    /// `ecu`'s reuse under `compare_unrendered_code` with only its macros
+    /// changed: the unrendered code changed, the compiled SQL did not, so
+    /// its tree says `the model query has not changed`. The volatile block
+    /// belongs to the checked Snowflake reuse alone (#211, compared by its
+    /// rendered SQL), so this reuse prints no volatile lines, as the
+    /// captured `ecu` reuse does (entry 198).
+    #[tokio::test]
+    async fn snowflake_reuse_compared_by_unrendered_code_prints_no_volatile_lines() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await.org("ecu macros changed");
+        let entries = entries(CELLS);
+        sc.build(captured_submit(&entries[ECU_BUILD].request), ECU_BUILT_AT)
+            .await;
+        let rerun = captured_submit(&entries[ECU.0].request)
+            .node_state(|n| n.node_macros_hash = Some("other macros".into()));
+        let reused = sc.expect_skip(rerun).await;
+        assert!(
+            !volatile_values_of(&reused.transformed_nodes_by_query).is_empty(),
+            "the reuse renders"
+        );
+        let explained = explain(&sc, reused.execution_decision_id.as_deref().unwrap()).await;
+        let texts = texts(&explained);
+        assert!(
+            texts.contains(&"the model query has not changed".to_owned()),
+            "{explained}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == "non-deterministic functions detected in query"
+                    || t.contains("rendered with")),
+            "{explained}"
+        );
+    }
+
     /// Submit `rerun` over `history` built in a fresh organization `case`;
     /// require a rebuild refused at Reuse qualification, and return it with
     /// its Explain.
@@ -4138,6 +4173,121 @@ mod generator_merge {
                 .unwrap()
                 .decision_description,
             "model was executed because its table did not exist"
+        );
+    }
+
+    /// The checked reuse needs an ordinary build. Over a confirmed Result
+    /// copy of `gu` (prod built and copied to dev with evaluation off), the
+    /// dev rerun with evaluation on is still refused at Reuse
+    /// qualification: it renders hosted's value and, as for the rebuild of
+    /// this shape before #211, prints no tree.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_over_a_confirmed_copy_is_refused_with_no_tree() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await.org("gu over a copy");
+        let entries = entries(GENERATOR_MERGE);
+        // `gu`'s captured submit `entry` in the dev schema of its namespace.
+        let in_dev = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("PROD_STATE_DEMO", "DEV_STATE_DEMO")
+                .replace("prod_state_demo", "dev_state_demo");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        let target = |s: &Submit| s.clone().build().target_table.unwrap();
+        let built_epoch = epoch_of(
+            &captured_submit(&entries[GU_RERUN].request),
+            &target(&captured_submit(&entries[GU_RERUN].request)),
+        );
+        sc.build(
+            captured_submit(&entries[GU_FIRST].request).tolerate_nondeterminism(true),
+            built_epoch,
+        )
+        .await;
+        let copy = in_dev(GU_FIRST)
+            .tolerate_nondeterminism(true)
+            .own_epoch(None);
+        let copied = sc.expect_clone(copy).await;
+        let copy_epoch = built_epoch + 1_000;
+        assert!(
+            sc.confirm(&copied.request_id, support::scenario::built_at(copy_epoch))
+                .await
+        );
+
+        let rerun = in_dev(GU_RERUN).own_epoch(Some(copy_epoch));
+        let dev_target = target(&rerun);
+        let rebuilt = sc.expect_execute(rerun).await;
+        let decision = rebuilt.explained_decision.as_ref().unwrap();
+        assert_eq!(
+            (
+                decision.skip_rejection_reason,
+                decision.clone_rejection_reason
+            ),
+            (NO_SUITABLE_MATCH, NO_SUITABLE_MATCH)
+        );
+        assert_eq!(
+            rendered(&rebuilt),
+            [(
+                dev_target,
+                [("UNIFORM(1, 100, 1234)".to_owned(), "96".to_owned())].into()
+            )]
+            .into()
+        );
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
+
+    const NO_SUITABLE_MATCH: Option<i32> = Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+
+    /// Reverting to `gu`'s SQL after its Target relation was overwritten by
+    /// other SQL rebuilds with the older-match codes 8 / 7, as the literal
+    /// control does: its overwritten build would still be reusable, since
+    /// the checked qualification admits it.
+    #[tokio::test]
+    async fn snowflake_generator_reverted_over_an_overwritten_build_reports_the_older_match() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let target = rerun.clone().build().target_table.unwrap();
+        let built_epoch = epoch_of(&rerun, &target);
+        let overwritten_epoch = built_epoch + 1_000;
+        let mut codes = Vec::new();
+        for (case, sql) in [
+            ("gu", None),
+            ("literal control", Some("select 1 as id, 66 as u")),
+        ] {
+            let sc = sc.org(case);
+            let as_case = |s: Submit| match sql {
+                Some(sql) => s.sql(sql),
+                None => s,
+            };
+            sc.build(as_case(first.clone()), built_epoch).await;
+            sc.build(
+                rerun.clone().sql("select 2 as id, 'other' as u"),
+                overwritten_epoch,
+            )
+            .await;
+            let reverted = as_case(rerun.clone()).own_epoch(Some(overwritten_epoch));
+            let rebuilt = sc.expect_execute(reverted).await;
+            let decision = rebuilt.explained_decision.unwrap();
+            codes.push((
+                case,
+                decision.skip_rejection_reason,
+                decision.clone_rejection_reason,
+            ));
+        }
+        let older_match = (
+            Some(qc::RejectionReason::LatestQueryHashNotMatch as i32),
+            Some(qc::RejectionReason::TargetTableMatch as i32),
+        );
+        assert_eq!(
+            codes,
+            [
+                ("gu", older_match.0, older_match.1),
+                ("literal control", older_match.0, older_match.1),
+            ]
         );
     }
 

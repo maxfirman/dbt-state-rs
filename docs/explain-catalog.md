@@ -703,7 +703,9 @@ own Target relation, whose SQL is one `SELECT` without `FROM` or another
 clause, projecting only number or string literals and
 `uniform(1, 100, 1234)`. Explain prints the SKIP tree with the volatile
 block above `the model query has not changed`
-(`snowflake::VOLATILE_EXPLAIN_FORMS`). Every other shape is refused at
+(`snowflake::VOLATILE_EXPLAIN_FORMS`). A reuse under template comparison
+prints no volatile lines, even when its macros changed and its tree says
+the compiled SQL has not changed. Every other shape is refused at
 Reuse qualification and keeps the
 [model rerun](#execute-rerun-of-a-volatile-model) tree: other
 constant-seeded generators alone (uncaptured), the generator beside
@@ -714,9 +716,11 @@ parentheses, `FLOOR(1.5)`, a column), and SQL that reads a relation (its
 own Target relation included). After a write to the Target relation the
 rerun is rebuilt for that External modification with its ordinary tree and
 no volatile lines, since nothing renders for that build reason
-(uncaptured). A rebuild of this shape recorded before the reuse, with
-`RerunForm::IsolatedGenerator` (`node_decisions.volatile_rerun_form`,
-migration 0037), keeps printing no tree.
+(uncaptured). The same shape over a confirmed Result copy is not an
+ordinary build, so it is still refused at Reuse qualification. Its decision
+records `RerunForm::IsolatedGenerator` (`node_decisions.volatile_rerun_form`,
+migration 0037), and it prints no tree, as every refusal of this shape did
+before the reuse.
 
 ### EXECUTE: node query changed (SHAPE 7)
 

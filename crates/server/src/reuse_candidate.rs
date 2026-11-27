@@ -274,9 +274,7 @@ fn model_rejection(
     let template_qualified = volatile_sql_compared_by_unrendered_code(req)
         && evidence.node_template_hash.is_some()
         && prev.node_template_hash == evidence.node_template_hash;
-    let checked_volatile = crate::copy_lifecycle::ordinary(prev)
-        && crate::warehouse::Warehouse::from_dialect(&req.dialect).checked_volatile_reuse(req);
-    let qualifies = if template_qualified || checked_volatile {
+    let qualifies = if template_qualified || checked_volatile_sql(req, prev) {
         sql_evidence_complete(req, evidence)
     } else {
         sql_qualifies(req, evidence)
@@ -291,6 +289,15 @@ fn model_rejection(
             OwnTarget::Ambiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
         }
     }
+}
+
+/// Whether `req`'s volatile SQL is the Warehouse's checked shape
+/// (`Warehouse::checked_volatile_reuse`: Databricks #213, Snowflake #211)
+/// and `prev` an ordinary build, so Reuse qualification asks only for
+/// complete SQL evidence ([`sql_evidence_complete`]).
+fn checked_volatile_sql(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> bool {
+    crate::copy_lifecycle::ordinary(prev)
+        && crate::warehouse::Warehouse::from_dialect(&req.dialect).checked_volatile_reuse(req)
 }
 
 /// Whether the target's latest row `latest` has the workload's identity but
@@ -499,15 +506,20 @@ pub(crate) fn for_seed(
 /// Whether an OLDER build of the target (overwritten since) has the workload's
 /// strict identity and the workload qualifies for reuse: the first step of
 /// reporting a rebuild whose earlier build would still be reusable
-/// (LATEST_QUERY_HASH_NOT_MATCH). Freshness is judged by the caller.
+/// (LATEST_QUERY_HASH_NOT_MATCH). The Warehouse's checked volatile shape
+/// qualifies as it does against the latest build ([`checked_volatile_sql`],
+/// #211). Freshness is judged by the caller.
 pub(crate) fn older_build_matches(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
-    row.clone_source_table.is_none()
-        && sql_qualifies(req, evidence)
-        && strict_match(req, evidence, row)
+    let qualifies = if checked_volatile_sql(req, row) {
+        sql_evidence_complete(req, evidence)
+    } else {
+        sql_qualifies(req, evidence)
+    };
+    row.clone_source_table.is_none() && qualifies && strict_match(req, evidence, row)
 }
 
 /// [`older_build_matches`] for a seed.
@@ -782,7 +794,11 @@ fn rerun_evidence(
 /// a known epoch no newer than the build `prev`'s: physically as built.
 /// `ignore_external_modifications` does not make a write since the build
 /// count as none (#211).
-fn own_target_as_built(target: &str, inputs: &[InputTable], prev: &ExecutionRow) -> bool {
+pub(crate) fn own_target_as_built(
+    target: &str,
+    inputs: &[InputTable],
+    prev: &ExecutionRow,
+) -> bool {
     let own: Vec<_> = inputs.iter().filter(|t| t.name == target).collect();
     target == prev.target_table
         && matches!(

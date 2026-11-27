@@ -345,9 +345,13 @@ server keeps the conservative behavior described.
       `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
       or a read of a relation (its own Target relation included) keeps the
       refusal and the rerun tree. Both entries replay; their
-      `replay_gaps.json` keys are removed. A rebuild recorded before this
-      change with `RerunForm::IsolatedGenerator` (migration 0037) keeps its
-      empty tree; no decision records that form now. Open: whether hosted's
+      `replay_gaps.json` keys are removed. The admission needs an ordinary
+      build: over a confirmed Result copy the rerun is still refused (6 / 6),
+      renders `96` and prints no tree (`RerunForm::IsolatedGenerator`,
+      migration 0037). Reverted over a build of other SQL, it rebuilds with
+      the older-match codes 8 / 7, as a literal control does
+      (`reuse_candidate::older_build_matches`). A reuse under template
+      comparison prints no volatile lines. Open: whether hosted's
       rule is "every call has a constant seed" (`randstr(5, 1234)`,
       `normal(5, 2, 42)` alone are uncaptured) and whether it holds for
       other kinds and over upstreams. Until captured those keep the

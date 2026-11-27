@@ -715,7 +715,8 @@ and fingerprints.
    projecting only number or string literals and, on Snowflake,
    `uniform(1, 100, 1234)` (maintainer decision on #211,
    `explain_volatile_generator_merge.jsonl` `gu`, entries 28 and 35) or, on
-   Databricks, `rand(42)` (#213). The ordinary identity, Target relation and
+   Databricks, `rand(42)` (#213), also when an overwritten older build is
+   judged for the 8 / 7 codes. The ordinary identity, Target relation and
    freshness checks then decide, so a rerun after a write to the Target
    relation is rebuilt for that External modification. The same call beside
    any other expression, over an upstream or in another kind, and other
@@ -1102,9 +1103,12 @@ maintainer decision 1 on #201, #206, recorded in
 rendering rules, so `zipf`, `seqN` and the uncaptured forms above also
 rebuild, with an empty map or only the other functions' values. Hosted
 reuses a table whose only Volatile call is the constant generator
-`uniform(1, 100, 1234)` (generator-merge entry 28, Explain 35; #211). This
-server still rebuilds it: matching relaxes a Reuse refusal, which waits for
-the maintainer (keyed in `replay_gaps.json`). A table downstream of a volatile model
+`uniform(1, 100, 1234)` (generator-merge entry 28, Explain 35; #211), and
+so does this server since the maintainer decision on #211: Reuse
+qualification admits that shape against an ordinary build (rule 8,
+`Warehouse::checked_volatile_reuse`), the reuse renders `96` and Explain
+lists it above `the model query has not changed`. Over a Result copy the
+same rerun is still refused, renders `96` and prints no tree. A table downstream of a volatile model
 follows the ordinary
 [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) rules: the
 upstream's rebuild is upstream data drift, not an Upstream producer change,
@@ -1118,9 +1122,9 @@ migration 0027) and whether the submit requested evaluation
 recorded before either migration prints no volatile lines. A Snowflake
 rerun refused for its volatile SQL also records the captured form its
 decision established (`node_decisions.volatile_rerun_form`, migration 0037,
-#211), which selects the MERGE rerun tree. A rebuild of the isolated
-generator recorded before Reuse qualification admitted it keeps its empty
-tree. A model's rebuild
+#211), which selects the MERGE rerun tree and the empty tree of the isolated
+generator, refused only over a Result copy (or recorded before Reuse
+qualification admitted it). A model's rebuild
 refused at Reuse qualification records the refused build as its Explain
 anchor (`matched_execution_id`), which its upstream listing is judged
 against (ADR 0005 "Amended by #201"). The captured trees are in
