@@ -1336,25 +1336,25 @@ async fn judge_registered_copy(
         copy_search::reads_as_recorded(req, evidence, &reads, held)
             .map(|aligned| copy_search::held_inputs(evidence, held, &aligned))
     });
-    let judged_inputs = match proven {
-        Some(inputs) => inputs,
-        None => {
-            selection.refuse_unproven_copy();
-            held.as_ref()
-                .map(crate::copy_lifecycle::upstreams_of)
-                .unwrap_or_default()
-        }
-    };
+    let refused = proven.is_none();
+    let inputs = proven.unwrap_or_else(|| {
+        held.as_ref()
+            .map(crate::copy_lifecycle::upstreams_of)
+            .unwrap_or_default()
+    });
     let copy = selection
         .candidate
         .as_mut()
-        .or(selection.unqualified.as_mut())
-        .expect("the copy is the candidate or the refused build");
-    copy.input_tables = judged_inputs.clone();
-    Ok(JudgedCopy {
+        .expect("a client-requested copy is the reuse candidate");
+    copy.input_tables = inputs.clone();
+    let judged = JudgedCopy {
         id: copy.id,
-        inputs: judged_inputs,
-    })
+        inputs,
+    };
+    if refused {
+        selection.refuse_unproven_copy();
+    }
+    Ok(judged)
 }
 
 /// What the Result copy fallback decided ([`result_copy_fallback`]).

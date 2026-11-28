@@ -661,8 +661,9 @@ pub(crate) enum RegisterLookup<'a> {
 /// The lookup result matching the [`RegisterLookup`] that was requested.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RegisterHistory {
-    /// `None`: no eligible source. `Some(logic)`: eligible, carrying the
-    /// source's logic identity (itself optional).
+    /// `None`: no eligible source. `Some(source)`: eligible, the source
+    /// build at exactly the required epoch, with its logic identity (itself
+    /// optional).
     DuckDbIncrementalSource(Option<crate::store::CopySource>),
     /// The source's current confirmed build, if any.
     SourceLogic(Option<crate::store::CopySourceBuild>),

@@ -612,7 +612,9 @@ from. As the Reuse candidate it is judged as that build
   current build (`clone_source_execution_id`) while the request reports the
   source relation as that build left it: at a known epoch no later than the
   build's confirmation (the rule for a Target relation as built), or at
-  none. The client reports the source's warehouse metadata epoch, a few
+  none. An earlier epoch is no evidence against that build: a copy is made
+  of the relation's current contents, which the current build wrote, and a
+  write after that build shows a later epoch. The client reports the source's warehouse metadata epoch, a few
   hundred milliseconds before the confirmation; before #271 only an equal
   epoch recorded the build, so a copy requested with the metadata epoch
   recorded none (in both captures above).

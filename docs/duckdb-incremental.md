@@ -57,7 +57,10 @@ the `DUCKDB CTAS TABLE` source type, the exact current source epoch and a
 matching initialization identity (`warehouse/duckdb.rs::incremental_copy_contract`).
 Pending registrations, unknown source metadata, External modifications of the
 source and later incompatible overwrites cannot supply this provenance. The
-source must be an ordinary build, not itself a copy.
+source must be an ordinary build, not itself a copy. The copy records that
+build (#271): its next submit reuses it only over the inputs the build
+recorded, at their recorded epochs, not at the copy's epoch
+([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#client-requested-copies)).
 
 The identity (`duckdb-incremental-init-v2:` prefix,
 `incremental.py::initialization_identity`) binds the SQL contract version, node
