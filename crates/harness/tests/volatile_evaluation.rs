@@ -3264,10 +3264,10 @@ mod rebuild_reasons {
     /// `ecu`'s reuse under `compare_unrendered_code` with its macros
     /// changed, its compiled SQL unchanged or changed (`1 as id` to
     /// `2 as id`), its template body and `current_timestamp()` call kept.
-    /// Both reuse by template. The volatile block belongs to the checked
-    /// Snowflake reuse alone (#211, compared by its rendered SQL), so
-    /// neither prints volatile lines, as the captured `ecu` reuse does not
-    /// (entry 198).
+    /// Both reuse by template, and their trees say whether the compiled SQL
+    /// changed. The volatile block belongs to the checked Snowflake reuse
+    /// alone (#211, compared by its rendered SQL), so neither prints
+    /// volatile lines, as the captured `ecu` reuse does not (entry 198).
     #[tokio::test]
     async fn snowflake_reuse_compared_by_unrendered_code_prints_no_volatile_lines() {
         let server = support::start_server().await;
@@ -3277,11 +3277,16 @@ mod rebuild_reasons {
             .node_state(|n| n.node_macros_hash = Some("other macros".into()));
         let compiled = rerun.clone().build().sql;
         assert!(compiled.contains("1 as id"), "{compiled}");
-        for (case, rerun) in [
-            ("macros changed, compiled SQL unchanged", rerun.clone()),
+        for (case, rerun, verdict) in [
+            (
+                "macros changed, compiled SQL unchanged",
+                rerun.clone(),
+                "the model query has not changed",
+            ),
             (
                 "macros and compiled SQL changed",
                 rerun.with(|r| r.sql = r.sql.replace("1 as id", "2 as id")),
+                "the model query has changed",
             ),
         ] {
             let sc = sc.org(case);
@@ -3293,8 +3298,10 @@ mod rebuild_reasons {
                 "{case}: the reuse renders"
             );
             let explained = explain(&sc, reused.execution_decision_id.as_deref().unwrap()).await;
+            let texts = texts(&explained);
+            assert!(texts.contains(&verdict.to_owned()), "{case}: {explained}");
             assert!(
-                !texts(&explained)
+                !texts
                     .iter()
                     .any(|t| t == "non-deterministic functions detected in query"
                         || t.contains("rendered with")
