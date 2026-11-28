@@ -1,0 +1,2855 @@
+[
+ {
+  "label": "hosted dbt State",
+  "service": "hosted",
+  "run": "11172745418a",
+  "scenario": "register_clone_input_origin",
+  "names": {
+   "ri_in": "ri_in_11172745418a",
+   "ri_up": "ri_up_11172745418a",
+   "ri_dm": "ri_dm_11172745418a",
+   "ri_ds": "ri_ds_11172745418a",
+   "rs_in": "rs_in_11172745418a",
+   "rs_up": "rs_up_11172745418a",
+   "rs_fix": "rs_fix_11172745418a",
+   "rs_dm": "rs_dm_11172745418a",
+   "rs_ds": "rs_ds_11172745418a"
+  },
+  "client": {
+   "dbt_version": "2.0.11",
+   "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+   "wire_dbt_run_cache_versions": [
+    "2.0.11"
+   ]
+  },
+  "reference": [
+   {
+    "step": 40,
+    "kind": "Reference",
+    "exit": 0,
+    "state_rpcs": 0,
+    "argv": [
+     "dbt",
+     "build",
+     "--no-manage-state",
+     "--target",
+     "ref_demo",
+     "--select",
+     "ri_up_11172745418a",
+     "ri_dm_11172745418a",
+     "ri_ds_11172745418a",
+     "rs_dm_11172745418a",
+     "rs_ds_11172745418a",
+     "--full-refresh",
+     "--profiles-dir",
+     "<profiles-dir>",
+     "--profile",
+     "snowflake",
+     "--skip-semantic-manifest-validation"
+    ]
+   }
+  ],
+  "state_free_rpcs": 0,
+  "cases": {
+   "i_dm": {
+    "case": "i",
+    "downstream": "dm",
+    "node": "ri_dm_11172745418a",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664704
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-32f7-76ac-bb83-a0e812803ee9",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864672607
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_11172745418A\"",
+      "clone_source_last_modified_epoch": 1795864672228,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864699257
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because either its query didn't match or its upstream data is out of date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864690602
+       }
+      ],
+      "own_target_epoch": 1795864699257,
+      "execution_decision_id": "01a221e0-a48b-7925-802b-f09e5cb3f5ec",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864703349
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "model was executed because either its query didn't match or its upstream data is out of date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "      last updated: 9 seconds ago, 2026-11-28 11:18:10 UTC"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864690602
+       }
+      ],
+      "own_target_epoch": 1795864702743,
+      "execution_decision_id": "01a221e1-3199-75d9-97a4-a3f2f2240514",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_11172745418A\" last executed",
+        "      last updated: 45 seconds ago, 2026-11-28 11:18:10 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "dev",
+     "after_rerun": "dev",
+     "reference": "dev"
+    },
+    "wrong_marker": false
+   },
+   "i_ds": {
+    "case": "i",
+    "downstream": "ds",
+    "node": "ri_ds_11172745418a",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664704
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-3149-7aa4-8e57-4ae50f40f28f",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864673072
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_11172745418A\"",
+      "clone_source_last_modified_epoch": 1795864672868,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864699304
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because either its query didn't match or its upstream data is out of date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864690602
+       }
+      ],
+      "own_target_epoch": 1795864699304,
+      "execution_decision_id": "01a221e0-a5c3-72af-980e-df274072b492",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864707393
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "snapshot was executed because either its query didn't match or its upstream data is out of date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "      last updated: 9 seconds ago, 2026-11-28 11:18:10 UTC"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+        "last_modified_epoch": 1795864690602
+       }
+      ],
+      "own_target_epoch": 1795864707073,
+      "execution_decision_id": "01a221e1-31eb-783a-bcf6-ae6b125321b9",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_11172745418A\" last executed",
+        "      last updated: 45 seconds ago, 2026-11-28 11:18:10 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "dea5d7d372b427bb74b2daa9e380fe7d",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.048",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.048",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "5ec4c433d5b56f7ee549cbbe5ec25da4",
+       "DBT_UPDATED_AT": "2026-11-28T11:18:21.043",
+       "DBT_VALID_FROM": "2026-11-28T11:18:21.043",
+       "DBT_VALID_TO": null
+      },
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "dea5d7d372b427bb74b2daa9e380fe7d",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.048",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.048",
+       "DBT_VALID_TO": "2026-11-28T11:18:21.043"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "5ec4c433d5b56f7ee549cbbe5ec25da4",
+       "DBT_UPDATED_AT": "2026-11-28T11:18:21.043",
+       "DBT_VALID_FROM": "2026-11-28T11:18:21.043",
+       "DBT_VALID_TO": null
+      },
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "dea5d7d372b427bb74b2daa9e380fe7d",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.048",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.048",
+       "DBT_VALID_TO": "2026-11-28T11:18:21.043"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "4f6de338b316b1b6802a66e07b83b7bd",
+       "DBT_UPDATED_AT": "2026-11-28T11:19:27.244",
+       "DBT_VALID_FROM": "2026-11-28T11:19:27.244",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "dev",
+     "after_rerun": "dev",
+     "reference": "dev"
+    },
+    "wrong_marker": false
+   },
+   "i_up": {
+    "node": "ri_up_11172745418a",
+    "dev_builds": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": false,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_11172745418A\"",
+        "last_modified_epoch": 1795864656440
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-7b13-7ed7-b2a6-244dedb2b8b4",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864690820
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "model was executed because its table did not exist",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\")",
+        "  the model table does not exist [2]",
+        "  there is no other table that the model could be cloned from [2]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_11172745418A\"",
+        "last_modified_epoch": 1795864656440
+       }
+      ],
+      "own_target_epoch": 1795864690602,
+      "execution_decision_id": "01a221e0-93a2-7743-9ee4-8a0d3c467d8e",
+      "confirm": null,
+      "explain": null
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_11172745418A\"",
+        "last_modified_epoch": 1795864656440
+       }
+      ],
+      "own_target_epoch": 1795864690602,
+      "execution_decision_id": "01a221e1-2d98-7b9f-be18-6777a0e73244",
+      "confirm": null,
+      "explain": null
+     }
+    ],
+    "rows": {
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "reference_input": [
+     {
+      "ID": 1,
+      "V": "dev"
+     }
+    ]
+   },
+   "s_dm": {
+    "case": "s",
+    "downstream": "dm",
+    "node": "rs_dm_11172745418a",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-30ac-75d8-a93c-b06c1bc7658f",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864672531
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_11172745418A\"",
+      "clone_source_last_modified_epoch": 1795864672179,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864723695
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": 1795864723695,
+      "execution_decision_id": "01a221e1-03c1-7e3d-8225-f1942780f735",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:44 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": 1795864723195,
+      "execution_decision_id": "01a221e1-676a-7679-815e-55bfdcb7540a",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_11172745418A\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:44 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   },
+   "s_ds": {
+    "case": "s",
+    "downstream": "ds",
+    "node": "rs_ds_11172745418a",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-32ff-793e-93d1-7d5d2535791b",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864673748
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_11172745418A\"",
+      "clone_source_last_modified_epoch": 1795864673526,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864724071
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": 1795864724071,
+      "execution_decision_id": "01a221e1-0485-7b14-9d66-f4976167f724",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:44 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\"",
+        "last_modified_epoch": 1795864664022
+       }
+      ],
+      "own_target_epoch": 1795864723543,
+      "execution_decision_id": "01a221e1-67b3-7190-a295-1b182ca0f1dd",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_11172745418A\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_11172745418A\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:44 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "57eb41b8fc2aa69387a381af31d53033",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.811",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.811",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "57eb41b8fc2aa69387a381af31d53033",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.811",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.811",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "57eb41b8fc2aa69387a381af31d53033",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:52.811",
+       "DBT_VALID_FROM": "2026-11-28T11:17:52.811",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "308029f24738dc7dc7db160cb623e4a5",
+       "DBT_UPDATED_AT": "2026-11-28T11:19:25.570",
+       "DBT_VALID_FROM": "2026-11-28T11:19:25.570",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   }
+  }
+ },
+ {
+  "label": "dbt-state-server 03f3087 (before #271)",
+  "service": "dbt-state-server",
+  "run": "111727798fed",
+  "scenario": "register_clone_input_origin",
+  "names": {
+   "ri_in": "ri_in_111727798fed",
+   "ri_up": "ri_up_111727798fed",
+   "ri_dm": "ri_dm_111727798fed",
+   "ri_ds": "ri_ds_111727798fed",
+   "rs_in": "rs_in_111727798fed",
+   "rs_up": "rs_up_111727798fed",
+   "rs_fix": "rs_fix_111727798fed",
+   "rs_dm": "rs_dm_111727798fed",
+   "rs_ds": "rs_ds_111727798fed"
+  },
+  "client": {
+   "dbt_version": "2.0.11",
+   "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+   "wire_dbt_run_cache_versions": [
+    "2.0.11"
+   ]
+  },
+  "reference": [
+   {
+    "step": 40,
+    "kind": "Reference",
+    "exit": 0,
+    "state_rpcs": 0,
+    "argv": [
+     "dbt",
+     "build",
+     "--no-manage-state",
+     "--target",
+     "ref_demo",
+     "--select",
+     "ri_up_111727798fed",
+     "ri_dm_111727798fed",
+     "ri_ds_111727798fed",
+     "rs_dm_111727798fed",
+     "rs_ds_111727798fed",
+     "--full-refresh",
+     "--profiles-dir",
+     "<profiles-dir>",
+     "--profile",
+     "snowflake",
+     "--skip-semantic-manifest-validation"
+    ]
+   }
+  ],
+  "state_free_rpcs": 0,
+  "cases": {
+   "i_dm": {
+    "case": "i",
+    "downstream": "dm",
+    "node": "ri_dm_111727798fed",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662947
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-29ec-7612-9fb2-d39b5630d158",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864670137
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_111727798FED\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_111727798FED\"",
+      "clone_source_last_modified_epoch": 1795864669774,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-a1b3-76d9-bbde-6660104d6bd3",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864700755
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864687180
+       }
+      ],
+      "own_target_epoch": 1795864700755,
+      "execution_decision_id": "01a221e0-a74d-70ed-a3f1-a08f5cfebc98",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_111727798FED\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "      last updated: 1795864687180 (UTC)",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864687180
+       }
+      ],
+      "own_target_epoch": 1795864700546,
+      "execution_decision_id": "01a221e1-0e92-7742-a6b2-98e434958715",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_111727798FED\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "      last updated: 1795864687180 (UTC)",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "dev"
+    },
+    "wrong_marker": true
+   },
+   "i_ds": {
+    "case": "i",
+    "downstream": "ds",
+    "node": "ri_ds_111727798fed",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662947
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-29fd-772c-b8f9-414e5033a3eb",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864670875
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_111727798FED\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_111727798FED\"",
+      "clone_source_last_modified_epoch": 1795864670683,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-8b46-7033-b44a-f48344382d25",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864695616
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864687180
+       }
+      ],
+      "own_target_epoch": 1795864695616,
+      "execution_decision_id": "01a221e0-95bf-73cf-ab8f-10d34d49745c",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_111727798FED\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "      last updated: 1795864687180 (UTC)",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "last_modified_epoch": 1795864687180
+       }
+      ],
+      "own_target_epoch": 1795864695372,
+      "execution_decision_id": "01a221e1-0e3b-707d-b549-330276549e60",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_111727798FED\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+        "      last updated: 1795864687180 (UTC)",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "28cfe88ab69ad7a4498f6b955f5a0585",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.941",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.941",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "28cfe88ab69ad7a4498f6b955f5a0585",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.941",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.941",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "28cfe88ab69ad7a4498f6b955f5a0585",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.941",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.941",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "0f7e0ec36d572c61fa9f42c3921949ba",
+       "DBT_UPDATED_AT": "2026-11-28T11:19:17.159",
+       "DBT_VALID_FROM": "2026-11-28T11:19:17.159",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "dev"
+    },
+    "wrong_marker": true
+   },
+   "i_up": {
+    "node": "ri_up_111727798fed",
+    "dev_builds": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": false,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_111727798FED\"",
+        "last_modified_epoch": 1795864656185
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-6c7f-73c6-80a4-ba0325d444d8",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864687408
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "model was executed because its table did not exist",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\")",
+        "  the model table does not exist [2]",
+        "  there is no other table that the model could be cloned from [2]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_111727798FED\"",
+        "last_modified_epoch": 1795864656185
+       }
+      ],
+      "own_target_epoch": 1795864687180,
+      "execution_decision_id": "01a221e0-8373-74a1-b8c9-155c5b024dbe",
+      "confirm": null,
+      "explain": null
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_111727798FED\"",
+        "last_modified_epoch": 1795864656185
+       }
+      ],
+      "own_target_epoch": 1795864687180,
+      "execution_decision_id": "01a221e1-0af1-7384-9dba-58c78a0f92d3",
+      "confirm": null,
+      "explain": null
+     }
+    ],
+    "rows": {
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "reference_input": [
+     {
+      "ID": 1,
+      "V": "dev"
+     }
+    ]
+   },
+   "s_dm": {
+    "case": "s",
+    "downstream": "dm",
+    "node": "rs_dm_111727798fed",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-29f6-7604-9910-a930e03c6f90",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864670279
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_111727798FED\"",
+      "clone_source_last_modified_epoch": 1795864669921,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-d938-7767-b891-dc432d1e8f65",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864715321
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": 1795864715321,
+      "execution_decision_id": "01a221e0-e21f-7004-a4dd-32aff4b2926a",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\" last executed",
+        "      last updated: 52 seconds ago, 2026-11-28 11:17:42 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": 1795864715132,
+      "execution_decision_id": "01a221e1-42db-765c-9c6f-f5a93ea842f6",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_111727798FED\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:42 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   },
+   "s_ds": {
+    "case": "s",
+    "downstream": "ds",
+    "node": "rs_ds_111727798fed",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-29fb-7121-8b91-cf8499422714",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864670475
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_111727798FED\"",
+      "clone_source_last_modified_epoch": 1795864670203,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a221e0-db69-726c-ab0c-ab06a12561d8",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795864715621
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": 1795864715621,
+      "execution_decision_id": "01a221e0-e454-72b0-a802-fb61c688f177",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\" last executed",
+        "      last updated: 53 seconds ago, 2026-11-28 11:17:42 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\"",
+        "last_modified_epoch": 1795864662944
+       }
+      ],
+      "own_target_epoch": 1795864715435,
+      "execution_decision_id": "01a221e1-42de-709c-bbd4-0e4d9fbf11ed",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_111727798FED\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_111727798FED\" last executed",
+        "      last updated: a minute ago, 2026-11-28 11:17:42 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "8bc5836bfd5b5df48d4e911fda39a1d4",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.475",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.475",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "8bc5836bfd5b5df48d4e911fda39a1d4",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.475",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.475",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "8bc5836bfd5b5df48d4e911fda39a1d4",
+       "DBT_UPDATED_AT": "2026-11-28T11:17:49.475",
+       "DBT_VALID_FROM": "2026-11-28T11:17:49.475",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "5941d962c856b4d26e892c136cbf2146",
+       "DBT_UPDATED_AT": "2026-11-28T11:19:15.705",
+       "DBT_VALID_FROM": "2026-11-28T11:19:15.705",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   }
+  }
+ },
+ {
+  "label": "dbt-state-server 9e5e8d6 (#271)",
+  "service": "dbt-state-server",
+  "run": "121759c0f2d3",
+  "scenario": "register_clone_input_origin",
+  "names": {
+   "ri_in": "ri_in_121759c0f2d3",
+   "ri_up": "ri_up_121759c0f2d3",
+   "ri_dm": "ri_dm_121759c0f2d3",
+   "ri_ds": "ri_ds_121759c0f2d3",
+   "rs_in": "rs_in_121759c0f2d3",
+   "rs_up": "rs_up_121759c0f2d3",
+   "rs_fix": "rs_fix_121759c0f2d3",
+   "rs_dm": "rs_dm_121759c0f2d3",
+   "rs_ds": "rs_ds_121759c0f2d3"
+  },
+  "client": {
+   "dbt_version": "2.0.11",
+   "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+   "wire_dbt_run_cache_versions": [
+    "2.0.11"
+   ]
+  },
+  "reference": [
+   {
+    "step": 40,
+    "kind": "Reference",
+    "exit": 0,
+    "state_rpcs": 0,
+    "argv": [
+     "dbt",
+     "build",
+     "--no-manage-state",
+     "--target",
+     "ref_demo",
+     "--select",
+     "ri_up_121759c0f2d3",
+     "ri_dm_121759c0f2d3",
+     "ri_ds_121759c0f2d3",
+     "rs_dm_121759c0f2d3",
+     "rs_ds_121759c0f2d3",
+     "--full-refresh",
+     "--profiles-dir",
+     "<profiles-dir>",
+     "--profile",
+     "snowflake",
+     "--skip-semantic-manifest-validation"
+    ]
+   }
+  ],
+  "state_free_rpcs": 0,
+  "cases": {
+   "i_dm": {
+    "case": "i",
+    "downstream": "dm",
+    "node": "ri_dm_121759c0f2d3",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297568
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-9c7d-75f9-8326-c2fcc7c766f9",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868304155
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DM_121759C0F2D3\"",
+      "clone_source_last_modified_epoch": 1795868303516,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22218-0049-75fb-9f57-01f7894e859d",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868330167
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because either its query didn't match or its upstream data is out of date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868321080
+       }
+      ],
+      "own_target_epoch": 1795868330167,
+      "execution_decision_id": "01a22218-09d4-772a-9653-148e4bee8469",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868333942
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "model was executed because either its query didn't match or its upstream data is out of date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "      last updated: 9 seconds ago, 2026-11-28 12:18:41 UTC"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868321080
+       }
+      ],
+      "own_target_epoch": 1795868332859,
+      "execution_decision_id": "01a22218-857c-7562-9a2b-8f3335dfb590",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DM_121759C0F2D3\" last executed",
+        "      last updated: 41 seconds ago, 2026-11-28 12:18:41 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "dev",
+     "after_rerun": "dev",
+     "reference": "dev"
+    },
+    "wrong_marker": false
+   },
+   "i_ds": {
+    "case": "i",
+    "downstream": "ds",
+    "node": "ri_ds_121759c0f2d3",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297568
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-9c5c-77d9-985e-25a59e7b5481",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868305045
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RI_DS_121759C0F2D3\"",
+      "clone_source_last_modified_epoch": 1795868304559,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-ffe3-76b0-b958-5569d4e2384a",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868330412
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because either its query didn't match or its upstream data is out of date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868321080
+       }
+      ],
+      "own_target_epoch": 1795868330412,
+      "execution_decision_id": "01a22218-0aa3-76cc-9a4e-92e054c9ba0c",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868336218
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "snapshot was executed because either its query didn't match or its upstream data is out of date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "      last updated: 9 seconds ago, 2026-11-28 12:18:41 UTC"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868321080
+       }
+      ],
+      "own_target_epoch": 1795868335574,
+      "execution_decision_id": "01a22218-83ea-73c8-89da-7ae624818164",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_DS_121759C0F2D3\" last executed",
+        "      last updated: 40 seconds ago, 2026-11-28 12:18:41 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "027d4f835c23f68e9ee9538230b05f2d",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.655",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.655",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "32bfab1121a06ac425184620e5651999",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:51.290",
+       "DBT_VALID_FROM": "2026-11-28T12:18:51.290",
+       "DBT_VALID_TO": null
+      },
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "027d4f835c23f68e9ee9538230b05f2d",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.655",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.655",
+       "DBT_VALID_TO": "2026-11-28T12:18:51.290"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "32bfab1121a06ac425184620e5651999",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:51.290",
+       "DBT_VALID_FROM": "2026-11-28T12:18:51.290",
+       "DBT_VALID_TO": null
+      },
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "027d4f835c23f68e9ee9538230b05f2d",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.655",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.655",
+       "DBT_VALID_TO": "2026-11-28T12:18:51.290"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev",
+       "DBT_SCD_ID": "c461d728ceefa62d130d83c7478ba9f4",
+       "DBT_UPDATED_AT": "2026-11-28T12:19:50.950",
+       "DBT_VALID_FROM": "2026-11-28T12:19:50.950",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "dev",
+     "after_rerun": "dev",
+     "reference": "dev"
+    },
+    "wrong_marker": false
+   },
+   "i_up": {
+    "node": "ri_up_121759c0f2d3",
+    "dev_builds": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": false,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_121759C0F2D3\"",
+        "last_modified_epoch": 1795868290336
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-e071-722e-995c-75f4ce175be6",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868321315
+      },
+      "explain": {
+       "decision": "EXECUTE",
+       "description": "model was executed because its table did not exist",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\")",
+        "  the model table does not exist [2]",
+        "  there is no other table that the model could be cloned from [2]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_121759C0F2D3\"",
+        "last_modified_epoch": 1795868290336
+       }
+      ],
+      "own_target_epoch": 1795868321080,
+      "execution_decision_id": "01a22217-f95e-71e4-ada0-4a36fa283869",
+      "confirm": null,
+      "explain": null
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 1,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_UP_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RI_IN_121759C0F2D3\"",
+        "last_modified_epoch": 1795868290336
+       }
+      ],
+      "own_target_epoch": 1795868321080,
+      "execution_decision_id": "01a22218-80e6-7742-96d1-0d38cf6742b2",
+      "confirm": null,
+      "explain": null
+     }
+    ],
+    "rows": {
+     "served": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "dev"
+      }
+     ]
+    },
+    "reference_input": [
+     {
+      "ID": 1,
+      "V": "dev"
+     }
+    ]
+   },
+   "s_dm": {
+    "case": "s",
+    "downstream": "dm",
+    "node": "rs_dm_121759c0f2d3",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "model was executed because its table did not exist",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-9c49-7574-874e-5dd9c982c7f8",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868304132
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DM_121759C0F2D3\"",
+      "clone_source_last_modified_epoch": 1795868303487,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22218-5080-76d3-844e-06afd7be0ff5",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868350269
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": 1795868350269,
+      "execution_decision_id": "01a22218-5a5f-77fc-ac9d-52471260f0db",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\" last executed",
+        "      last updated: 53 seconds ago, 2026-11-28 12:18:17 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "model was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 3,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 0,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": 1795868350087,
+      "execution_decision_id": "01a22218-b9b7-765e-a110-ba0f9fb6c034",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "model was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\")",
+        "  the model table exists already [1] [8]",
+        "query analysis",
+        "  the model query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DM_121759C0F2D3\" last executed",
+        "      last updated: a minute ago, 2026-11-28 12:18:17 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   },
+   "s_ds": {
+    "case": "s",
+    "downstream": "ds",
+    "node": "rs_ds_121759c0f2d3",
+    "prod_build": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "ready_to_execute",
+      "decision": "EXECUTE",
+      "codes": [
+       6,
+       6
+      ],
+      "description": "snapshot was executed because its table did not exist",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22217-9c43-73b7-93bc-a8a9f8471c41",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868305014
+      },
+      "explain": null
+     }
+    ],
+    "register_clone": [
+     {
+      "method": "RegisterClone",
+      "variant": "ready_to_clone",
+      "decision": "CLONE",
+      "codes": [
+       5,
+       null
+      ],
+      "description": "",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\"",
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_DS_121759C0F2D3\"",
+      "clone_source_last_modified_epoch": 1795868304502,
+      "freshness_tolerance_seconds": null,
+      "allow_clones": null,
+      "inputs": [],
+      "own_target_epoch": null,
+      "execution_decision_id": "01a22218-5223-75b0-8c81-dce5382c7c8a",
+      "confirm": {
+       "success": true,
+       "failed_to_clone": false,
+       "last_modified_epoch": 1795868350776
+      },
+      "explain": null
+     }
+    ],
+    "dev_submits": [
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": 1795868350776,
+      "execution_decision_id": "01a22218-5b1f-753c-a88d-5c897eab0b20",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\" last executed",
+        "      last updated: 53 seconds ago, 2026-11-28 12:18:17 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     },
+     {
+      "method": "SubmitEnrichedSQL",
+      "variant": "skip_execution",
+      "decision": "SKIP",
+      "codes": [
+       null,
+       null
+      ],
+      "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+      "execution_type": 7,
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\"",
+      "clone_source_table": null,
+      "clone_source_last_modified_epoch": null,
+      "freshness_tolerance_seconds": 2700,
+      "allow_clones": true,
+      "inputs": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\"",
+        "last_modified_epoch": 1795868297561
+       }
+      ],
+      "own_target_epoch": 1795868350590,
+      "execution_decision_id": "01a22218-b9bb-755b-8c70-f3456cd3f5ae",
+      "confirm": null,
+      "explain": {
+       "decision": "SKIP",
+       "description": "snapshot was a no-op because both its query and its upstream data are up to date",
+       "lines": [
+        "table analysis (\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\")",
+        "  the snapshot table exists already [1] [8]",
+        "query analysis",
+        "  the snapshot query has not changed [1] [5]",
+        "  upstream model queries have not changed [1]",
+        "data freshness analysis",
+        "  upstream dependencies",
+        "    \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RS_UP_121759C0F2D3\" [1]",
+        "      no updates since \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RS_DS_121759C0F2D3\" last executed",
+        "      last updated: a minute ago, 2026-11-28 12:18:17 UTC",
+        "  upstream data is up to date [1]"
+       ]
+      }
+     }
+    ],
+    "rows": {
+     "prod": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "a280cd038ca88c6f567f9c7c44ee1668",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.769",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.769",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "served": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "a280cd038ca88c6f567f9c7c44ee1668",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.769",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.769",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "after_rerun": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "a280cd038ca88c6f567f9c7c44ee1668",
+       "DBT_UPDATED_AT": "2026-11-28T12:18:23.769",
+       "DBT_VALID_FROM": "2026-11-28T12:18:23.769",
+       "DBT_VALID_TO": null
+      }
+     ],
+     "reference": [
+      {
+       "ID": 1,
+       "V": "prod",
+       "DBT_SCD_ID": "4fcf626d14e39408f44febff5e734de0",
+       "DBT_UPDATED_AT": "2026-11-28T12:19:49.871",
+       "DBT_VALID_FROM": "2026-11-28T12:19:49.871",
+       "DBT_VALID_TO": null
+      }
+     ]
+    },
+    "markers": {
+     "prod": "prod",
+     "served": "prod",
+     "after_rerun": "prod",
+     "reference": "prod"
+    },
+    "wrong_marker": false
+   }
+  }
+ }
+]

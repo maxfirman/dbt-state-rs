@@ -185,6 +185,10 @@ pub struct ExplainEvidence {
     /// Whether a view's SQL reads a relation (#117): client 2.0.11 reports
     /// no upstreams for a view, so Explain words its freshness from it.
     pub reads_relation: Option<bool>,
+    /// The inputs the decision judged its anchor with, when that anchor is a
+    /// client-requested copy, which records none of its own
+    /// ([`judge_registered_copy`], #271). `None` for every other anchor.
+    pub anchor_input_tables: Option<Vec<crate::store::InputTable>>,
 }
 
 impl ExplainEvidence {
@@ -254,6 +258,7 @@ impl ExplainEvidence {
             reads_relation: (req.execution_type == ModelExecutionType::View as i32)
                 .then_some(evidence.sql_reads_relation)
                 .flatten(),
+            anchor_input_tables: None,
         }
     }
 }
@@ -453,7 +458,8 @@ async fn decide_sql(
     resolve_producers(store, &mut evidence).await?;
     crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
     let mut selection = select_sql(store, org_id, req, &evidence).await?;
-    revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
+    let judged_copy =
+        revalidate_copy_candidate(store, org_id, req, &evidence, &mut selection).await?;
     judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
     // Only a refusal at Reuse qualification can have a captured rerun form,
@@ -470,7 +476,12 @@ async fn decide_sql(
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
-        explain: ExplainEvidence::of(req, &evidence, &outcome),
+        explain: ExplainEvidence {
+            anchor_input_tables: judged_copy
+                .filter(|copy| outcome.record().matched_execution_id == Some(copy.id))
+                .map(|copy| copy.inputs),
+            ..ExplainEvidence::of(req, &evidence, &outcome)
+        },
         outcome,
         rendered: None,
         rerun_evidence,
@@ -1244,23 +1255,29 @@ async fn latest_data_test_of_unique_id(
 /// tolerance are those of the rows it holds: a copy an earlier server
 /// granted over other inputs, or recorded at newer epochs than its rows
 /// were computed from, is refused at Reuse qualification and rebuilds
-/// (#264). A client-requested copy and a
-/// Databricks submit copy keep their own adoption rules.
+/// (#264). A client-requested copy is judged over the build it holds
+/// ([`judge_registered_copy`]); a Databricks submit copy keeps its own
+/// adoption rules.
 async fn revalidate_copy_candidate(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     selection: &mut reuse_candidate::Selection,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<Option<JudgedCopy>> {
     let Some(candidate) = selection.candidate.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
+    if crate::copy_lifecycle::registered_without_inputs(candidate) {
+        return judge_registered_copy(store, org_id, req, evidence, selection)
+            .await
+            .map(Some);
+    }
     let submit_copy = candidate.clone_source_table.is_some()
         && !crate::copy_lifecycle::is_copy_registration(candidate)
         && Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks;
     if !submit_copy {
-        return Ok(());
+        return Ok(None);
     }
     let reads = crate::stand_in::input_reads(store, evidence).await?;
     let proven = store
@@ -1274,7 +1291,70 @@ async fn revalidate_copy_candidate(
     if !proven {
         selection.refuse_unproven_copy();
     }
-    Ok(())
+    Ok(None)
+}
+
+/// A client-requested copy the decision judged ([`judge_registered_copy`]):
+/// its `executions.id` and the inputs it was judged with.
+struct JudgedCopy {
+    id: i64,
+    inputs: Vec<crate::store::InputTable>,
+}
+
+/// The reuse candidate is a client-requested copy (RegisterClone), which
+/// records no inputs of its own. It holds the rows of the build it was
+/// copied from ([`Store::held_build`]), so it is judged exactly as that build
+/// would be: only when the build read what the submit reads, each input by
+/// name or as its Stand-in at the exact recorded epoch
+/// ([`copy_search::reads_as_recorded`]), and over the epochs the build
+/// recorded ([`copy_search::held_inputs`]). Its copy time proves nothing
+/// about them. A copy whose held build is unknown (registered before
+/// migration 0029, or a broken chain) or read other inputs is refused at
+/// Reuse qualification and kept as the rebuild's Explain anchor, with the
+/// inputs that build recorded, as it named them (#271).
+///
+/// VERIFIED LIVE 2026-11-28 (explain_register_clone_input_origin.jsonl):
+/// hosted rebuilds a post-copy MERGE incremental and snapshot over a dev
+/// upstream built independently before the copy, and reuses them over the
+/// physical upstream the copied build read. It reuses a copy over a dev
+/// upstream that is itself a copy of the one the copied build read
+/// (explain_post_copy_identity.jsonl `c93st`, `c93it`: a Stand-in).
+async fn judge_registered_copy(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    selection: &mut reuse_candidate::Selection,
+) -> sqlx::Result<JudgedCopy> {
+    let copy = selection
+        .candidate
+        .as_ref()
+        .expect("a client-requested copy is the reuse candidate");
+    let held = store.held_build(org_id, copy.clone()).await?;
+    let reads = crate::stand_in::input_reads(store, evidence).await?;
+    let proven = held.as_ref().and_then(|held| {
+        copy_search::reads_as_recorded(req, evidence, &reads, held)
+            .map(|aligned| copy_search::held_inputs(evidence, held, &aligned))
+    });
+    let refused = proven.is_none();
+    let inputs = proven.unwrap_or_else(|| {
+        held.as_ref()
+            .map(crate::copy_lifecycle::upstreams_of)
+            .unwrap_or_default()
+    });
+    let copy = selection
+        .candidate
+        .as_mut()
+        .expect("a client-requested copy is the reuse candidate");
+    copy.input_tables = inputs.clone();
+    let judged = JudgedCopy {
+        id: copy.id,
+        inputs,
+    };
+    if refused {
+        selection.refuse_unproven_copy();
+    }
+    Ok(judged)
 }
 
 /// What the Result copy fallback decided ([`result_copy_fallback`]).

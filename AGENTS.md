@@ -97,7 +97,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      Stand-in at the exact recorded epoch, and on Snowflake the submit has
      that build's Physical binding (each reference resolved to the relation
      it reads); it is then judged like a Reuse candidate, and an existing
-     copy is revalidated the same way before reuse (#264, ADR 0007). DuckDB has
+     copy is revalidated the same way before reuse (#264, ADR 0007). A
+     client-requested copy (RegisterClone) is reused only over the inputs of
+     the build it holds, at that build's recorded epochs, never because of
+     its copy time (#271). DuckDB has
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other
      dialects keep exact SQL and do no automatic cross-target reuse. A namespace
      alone never justifies SKIP.

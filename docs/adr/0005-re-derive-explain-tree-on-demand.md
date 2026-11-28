@@ -332,6 +332,13 @@ matched no prior row:
   > **Amended by #201:** so does a model's rebuild refused at Reuse
   > qualification, anchored on the refused build (Explain only; see the
   > amendment under [Decision](#decision)).
+  > **Amended by #271:** the decision judges a client-requested copy with
+  > the inputs of the build it holds, which depend on the copy chain and on
+  > Stand-ins the row does not keep, so it persists them
+  > (`node_decisions.anchor_input_tables`, migration 0038) and Explain reads
+  > them back. The shared copy-time rule (now
+  > `copy_lifecycle::adopt_current_inputs`) remains for a decision recorded
+  > before, and for a copy the decision did not judge for freshness.
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
 

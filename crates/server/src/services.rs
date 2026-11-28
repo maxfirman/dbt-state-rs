@@ -257,6 +257,7 @@ fn submit_capture(
         // freshness anchor (ADR 0005 / ticket #30). `None` for a first-build /
         // fingerprint-miss Execute and for a Copy.
         matched_execution_id: record.matched_execution_id,
+        anchor_input_tables: None,
         freshness_tolerance_ms: Some(record.tolerance_ms).filter(|t| *t > 0),
         build_age_ms: record.build_age_ms,
         skip_rejection_reason: record.skip_rejection_reason,
@@ -288,6 +289,7 @@ fn capture_submit(
         input_tables: explain.input_tables,
         query_dependencies: explain.query_dependencies,
         reads_relation: explain.reads_relation,
+        anchor_input_tables: explain.anchor_input_tables,
         volatile_evaluation: crate::volatile_evaluation::Evidence::of_submit(
             req,
             decided.rendered.as_ref(),
@@ -355,6 +357,7 @@ fn capture_register(
             // CLONE registration matches no prior `executions` row to anchor
             // freshness against (ADR 0005): NULL.
             matched_execution_id: None,
+            anchor_input_tables: None,
             freshness_tolerance_ms: None,
             build_age_ms: None,
             skip_rejection_reason: None,

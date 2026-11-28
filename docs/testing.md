@@ -343,7 +343,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `legacy::forget_volatile_evaluation_flag` make a captured decision look
   recorded before migration 0027 or 0028, and
   `legacy::forget_data_test_history_keys` makes State history look recorded
-  before migration 0029 (#200).
+  before migration 0029 (#200), and
+  `legacy::forget_copy_source_execution` a RegisterClone copy registered
+  before it, without the build it was copied from (#271).
   `legacy::record_history_before_principals(&database, org)` migrates a
   `TestDatabase` only to the migration before `principals` and records a
   decision and an execution there, for upgrade tests of migration 0032

@@ -175,10 +175,28 @@ Do not weaken these without new evidence.
   the upgrade each is copied from only once rebuilt, and a copy of one
   rebuilds once. Function and sequence names, which also resolve through
   the session's schema, are not bound (uncaptured).
-  **Open:** a RegisterClone copy adopted by its own Target relation (#93)
-  keeps the clone-age anchor; whether hosted reuses a `dbt clone` copy of
-  prod's downstream over an independently built dev upstream is not
-  captured.
+- **RegisterClone copies are judged over the build they hold (#271).** A
+  client-requested copy records no inputs. Before #271 its post-copy submit
+  was judged with its own inputs at the copy's epoch, so this server reused
+  a dev MERGE incremental and snapshot copied from prod over a dev upstream
+  built independently before the copy, and served prod's marker (native
+  run `111727798fed` on `03f3087`). Hosted rebuilds them (6 / 6) and serves
+  dev's rows, and reuses copies over the upstream the copied build read
+  (`explain_register_clone_input_origin.jsonl`,
+  [report](reports/snowflake-register-clone-input-origin-2026-11-28.md)).
+  The copy is now reused only when the build it holds
+  (`clone_source_execution_id`) read the submit's inputs, by name or as
+  Stand-ins, and judged over that build's recorded epochs
+  (`submit_decision::judge_registered_copy`,
+  [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#client-requested-copies)).
+  Registration records the source build when the request's source epoch is
+  no later than its confirmation, as the client's metadata epoch is. A copy
+  without a recorded build (registered before migration 0029) rebuilds once
+  over upstreams. Regressions: `register_clone_inputs.rs`.
+  **Open:** whether hosted reuses a copy whose source's upstream changed
+  between the source build and the copy (this server rebuilds it: the
+  copy's rows predate the change; `register_clone_inputs.rs::a_copy_is_judged_against_the_inputs_of_the_build_it_holds`,
+  uncaptured), and a `dbt clone` copy outside the pre-step.
 - **Copy adoption needs the copy's logic.** A later submit reuses a
   RegisterClone copy only when its schema-abstracted logic equals the logic
   the copy inherited from its source build, directly or with the submit's
@@ -462,9 +480,12 @@ server keeps the conservative behavior described.
   gives a FRESH verdict only to an upstream the copy's source build recorded,
   and lists a per-target upstream with its `last updated` line only
   (`explain_post_copy_identity.jsonl` `c93st`, `c93it`). The server keeps the
-  source build's upstream names on the copy and renders the same. Not
-  isolated: in that capture the per-target upstream was itself a submit-time
-  copy, so "the upstream is a copy" fits the capture too.
+  source build's upstream names on the copy and renders the same. Isolated
+  since (#271): in that capture the per-target upstream was itself a
+  submit-time copy. Over an independently built dev upstream hosted
+  rebuilds instead, listing that upstream with its `last updated` line only
+  and no summary (`explain_register_clone_input_origin.jsonl` entries 36,
+  37).
 - **An older build of the submit's type that would qualify (#83, #90).**
   Hosted judges a submit whose latest build has its identity under another
   execution type against the latest build of its own type, RecordExecutions

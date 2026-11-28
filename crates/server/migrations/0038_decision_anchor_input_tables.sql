@@ -1,0 +1,14 @@
+-- Client-requested copies (#271): the inputs a decision judged a
+-- RegisterClone copy anchor with. Such a copy records no inputs of its own;
+-- the decision takes those of the build it holds (the build it was copied
+-- from, `clone_source_execution_id`), in the submit's spelling when they
+-- are what the submit reads, else as that build recorded them. They depend
+-- on the copy chain and on which inputs were Stand-ins at the decision,
+-- neither of which the decision row keeps, so Explain cannot re-derive them.
+--
+-- Explain evidence only: reuse never reads it. Read by Explain with the
+-- decision, scoped by organization. NULL for every other decision and for
+-- every decision recorded before this migration; Explain then substitutes
+-- the decision-time inputs at the copy's epoch, as those decisions did.
+-- No backfill.
+ALTER TABLE node_decisions ADD COLUMN anchor_input_tables JSONB;

@@ -661,9 +661,10 @@ pub(crate) enum RegisterLookup<'a> {
 /// The lookup result matching the [`RegisterLookup`] that was requested.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RegisterHistory {
-    /// `None`: no eligible source. `Some(logic)`: eligible, carrying the
-    /// source's logic identity (itself optional).
-    DuckDbIncrementalSource(Option<Option<String>>),
+    /// `None`: no eligible source. `Some(source)`: eligible, the source
+    /// build at exactly the required epoch, with its logic identity (itself
+    /// optional).
+    DuckDbIncrementalSource(Option<crate::store::CopySource>),
     /// The source's current confirmed build, if any.
     SourceLogic(Option<crate::store::CopySourceBuild>),
     DatabricksSource(Option<Box<crate::store::ExecutionRow>>),
@@ -676,6 +677,9 @@ pub(crate) struct RegisterPlan {
     pub direct: Option<DirectRegistration>,
     /// What the copy inherits from its source's current build (Snowflake).
     pub source_build: Option<crate::store::CopySourceBuild>,
+    /// DuckDB only: the source build at exactly the required epoch, which
+    /// the copy holds (#271).
+    pub source_execution_id: Option<i64>,
     pub clone_sqls: Vec<String>,
     /// The source's logic identity, stamped on the copy's pending row. Without
     /// it a later submit for the target falls back to EXECUTE (safe: no skip
@@ -763,15 +767,19 @@ pub(crate) fn plan_register(
     req: &qc::CloneRequest,
     history: RegisterHistory,
 ) -> Result<RegisterPlan, RegisterRefusal> {
-    let (mut direct, mut source_build) = (None, None);
+    let (mut direct, mut source_build, mut source_execution_id) = (None, None, None);
     let (inherited_ns_logic, required_source_epoch) = match history {
         RegisterHistory::DuckDbIncrementalSource(None) => {
             return Err(RegisterRefusal::Reject(
                 RegisterRejection::ForcedNotEligible,
             ))
         }
-        RegisterHistory::DuckDbIncrementalSource(Some(logic)) => {
-            (logic, req.clone_source_last_modified_epoch)
+        RegisterHistory::DuckDbIncrementalSource(Some(source)) => {
+            source_execution_id = Some(source.execution_id);
+            (
+                source.node_namespace_logic_hash,
+                req.clone_source_last_modified_epoch,
+            )
         }
         RegisterHistory::SourceLogic(build) => {
             let logic = build
@@ -791,6 +799,7 @@ pub(crate) fn plan_register(
     Ok(RegisterPlan {
         direct,
         source_build,
+        source_execution_id,
         clone_sqls: register_ddl(req)?,
         inherited_ns_logic,
         required_source_epoch,
@@ -2079,7 +2088,13 @@ mod tests {
             ))
         );
         assert!(matches!(
-            plan_register(&duck, RegisterHistory::DuckDbIncrementalSource(Some(None))),
+            plan_register(
+                &duck,
+                RegisterHistory::DuckDbIncrementalSource(Some(crate::store::CopySource {
+                    node_namespace_logic_hash: None,
+                    execution_id: 1,
+                }))
+            ),
             Err(RegisterRefusal::Unsupported(_))
         ));
     }
@@ -2095,10 +2110,18 @@ mod tests {
         );
         let plan = plan_register(
             &req,
-            RegisterHistory::DuckDbIncrementalSource(Some(Some("logic".into()))),
+            RegisterHistory::DuckDbIncrementalSource(Some(crate::store::CopySource {
+                node_namespace_logic_hash: Some("logic".into()),
+                execution_id: 9,
+            })),
         )
         .expect("registered copy");
         assert_eq!(plan.inherited_ns_logic.as_deref(), Some("logic"));
+        assert_eq!(
+            plan.source_execution_id,
+            Some(9),
+            "the build the copy holds"
+        );
         assert_eq!(plan.required_source_epoch, Some(7));
         assert_eq!(
             plan.clone_sqls,

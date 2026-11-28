@@ -80,6 +80,9 @@ pub(crate) async fn register(
         plan.source_build.as_ref(),
         plan.direct,
     );
+    if let Some(id) = plan.source_execution_id {
+        evidence.clone_source_execution_id = Some(id);
+    }
     evidence.principal = principal.cloned();
     store
         .insert_execution(&evidence.pending(&ids.request_id, &ids.execution_decision_id))

@@ -94,6 +94,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         query_dependencies: Vec::new(),
         execution_runtime_ms: None,
         matched_execution_id: Some(matched),
+        anchor_input_tables: None,
         freshness_tolerance_ms: None,
         build_age_ms: None,
         skip_rejection_reason: None,
