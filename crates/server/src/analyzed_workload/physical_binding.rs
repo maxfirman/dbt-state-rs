@@ -40,8 +40,17 @@
 //! normalized as Snowflake identity is (`sql_norm::normalize_sql`), so an
 //! unquoted identifier's case does not matter.
 //!
-//! Function and sequence names, which also resolve through the session's
-//! schema, are not bound (uncaptured).
+//! Function calls also resolve through the session's schema (#272). An
+//! unquoted, unqualified call of a Snowflake built-in
+//! (`snowflake_builtin_functions.txt`) is that built-in: Snowflake refuses a
+//! user function of a built-in's name. Any other unqualified call (a quoted
+//! name, or a name off the list) goes through the search path and leaves
+//! no binding. A qualified call is bound in full, a schema-relative one in
+//! the session's database (the view's inside a view), so two targets bind
+//! alike only when they call the same named function. Nothing binds a
+//! function's definition: no request carries one, so a function replaced
+//! after a build is not seen, and two targets' equal definitions are not
+//! recognized. Sequence names are not bound (uncaptured).
 
 use crate::query_cache as qc;
 use crate::sql_norm::{canonical_identifier, split_object_name_components};
@@ -52,7 +61,9 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::SnowflakeDialect;
 use sqlparser::parser::Parser;
+use std::collections::HashSet;
 use std::ops::ControlFlow;
+use std::sync::LazyLock;
 
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
@@ -66,6 +77,15 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
 ];
+
+/// Snowflake's built-in function names (`snowflake_builtin_functions.txt`):
+/// an unquoted, unqualified call of one is that built-in (#272).
+static BUILTIN_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    include_str!("snowflake_builtin_functions.txt")
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+});
 
 /// Snowflake context functions (`functions-context`) whose value the
 /// request does not identify: the session, statement and transaction, the
@@ -276,6 +296,7 @@ impl Binder<'_> {
             frames: Vec::new(),
             resolved: Vec::new(),
             context: Context::default(),
+            table_functions: Vec::new(),
             unbound: false,
         };
         let _ = query.visit(&mut references);
@@ -382,6 +403,9 @@ struct References<'a> {
     resolved: Vec<Relation>,
     /// The context values the SQL reads.
     context: Context,
+    /// Each pure table function's call (`TABLE(FLATTEN(...))`), judged as
+    /// a FROM item, not as a scalar function.
+    table_functions: Vec<*const Expr>,
     unbound: bool,
 }
 
@@ -423,6 +447,33 @@ impl References<'_> {
             .iter()
             .any(|f| f.ctes.iter().any(|(_, cte)| cte == name));
         (!later).then_some(false)
+    }
+
+    /// A qualified function `name` as its three canonical components,
+    /// quoted; `None` when it cannot be completed.
+    fn qualified_function(&self, name: &ObjectName) -> Option<ObjectName> {
+        let parts: Vec<String> = name
+            .0
+            .iter()
+            .map(|p| match p {
+                ObjectNamePart::Identifier(id) => Some(ident_key(id)),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let full = match parts.as_slice() {
+            [_, _] if !self.catalog.is_empty() => {
+                let mut full = vec![self.catalog.clone()];
+                full.extend(parts);
+                full
+            }
+            [_, _, _] => parts,
+            _ => return None,
+        };
+        Some(ObjectName(
+            full.into_iter()
+                .map(|p| ObjectNamePart::Identifier(Ident::with_quote('"', p)))
+                .collect(),
+        ))
     }
 
     /// Record `relation` and rewrite the reference to its placeholder.
@@ -541,6 +592,9 @@ impl VisitorMut for References<'_> {
     }
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+        if self.table_functions.contains(&(&*expr as *const Expr)) {
+            return ControlFlow::Continue(());
+        }
         let f = match expr {
             Expr::Function(f) => f,
             // `CURRENT_USER` may be called without parentheses.
@@ -561,7 +615,17 @@ impl VisitorMut for References<'_> {
             }
             _ => return ControlFlow::Continue(()),
         };
+        // A qualified call names its function: bound in full, a
+        // schema-relative one in the session's (or the view's) database.
+        if f.name.0.len() > 1 {
+            match self.qualified_function(&f.name) {
+                Some(name) => f.name = name,
+                None => self.unbound = true,
+            }
+            return ControlFlow::Continue(());
+        }
         let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() else {
+            self.unbound = true;
             return ControlFlow::Continue(());
         };
         match id.value.to_ascii_uppercase().as_str() {
@@ -587,6 +651,11 @@ impl VisitorMut for References<'_> {
                     Some("SCHEMA") if self.known.is_some() => self.context.schema = true,
                     _ => self.unbound = true,
                 }
+            }
+            // Any other function the search path resolves: a built-in, or a
+            // user function that may differ between schemas (#272).
+            name if id.quote_style.is_some() || !BUILTIN_FUNCTIONS.contains(name) => {
+                self.unbound = true
             }
             _ => {}
         }
@@ -651,7 +720,10 @@ impl VisitorMut for References<'_> {
                 }
             }
             TableFactor::TableFunction { expr, alias } => match table_function(expr) {
-                Ok(None) => return ControlFlow::Continue(()),
+                Ok(None) => {
+                    self.table_functions.push(&*expr);
+                    return ControlFlow::Continue(());
+                }
                 Ok(Some(literal)) => self.resolve(canonical_name(literal)).map(|relation| {
                     let name = self.placeholder(relation);
                     (name, alias.take())
@@ -999,6 +1071,71 @@ mod tests {
             root("select sys_context('SNOWFLAKE$SESSION', $$DATABASE$$) as v from db.raw.u")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn an_unqualified_user_function_has_no_binding() {
+        // `my_udf` resolves through the session's search path, which no
+        // request carries: two schemas can hold different functions of the
+        // name (#272).
+        let root = |sql: &str| binding(&request(sql, "PROD", &["DB.RAW.U"]));
+        assert_eq!(root("select my_udf(v) as v from db.raw.u"), None);
+        assert_eq!(
+            root("select v from db.raw.u where my_udf(v) > 0"),
+            None,
+            "a call anywhere in the query"
+        );
+        // A quoted name is not taken for a built-in.
+        assert_eq!(root("select \"COALESCE\"(v, 0) as v from db.raw.u"), None);
+        // Inside a view too: its schema could hold a different function.
+        let mut req = request("select v from db.prod.v", "PROD", &["DB.RAW.U"]);
+        req.query_dependencies = vec![view(
+            "DB.PROD.V",
+            "select my_udf(v) as v from db.raw.u",
+            "PROD",
+        )];
+        assert_eq!(binding(&req), None);
+    }
+
+    #[test]
+    fn built_in_functions_keep_the_binding() {
+        let root = |sql: &str| binding(&request(sql, "PROD", &["DB.RAW.U"]));
+        for sql in [
+            "select coalesce(v, 0) as v from db.raw.u",
+            "select upper(trim(v)) as v from db.raw.u",
+            "select count(*) as n, sum(v) as s from db.raw.u group by all",
+            "select row_number() over (order by v) as n from db.raw.u",
+            "select iff(v > 0, dateadd(day, 1, current_date()), null) as d from db.raw.u",
+            "select f.value from db.raw.u, lateral flatten(input => parse_json(v)) f",
+        ] {
+            assert!(root(sql).is_some(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_qualified_function_is_bound_in_full() {
+        let hash = |sql: &str, catalog: &str| {
+            let mut req = request(sql, "PROD", &["DB.RAW.U"]);
+            req.default_catalog = catalog.into();
+            binding(&req).map(|b| b.hash)
+        };
+        let partly = "select s.my_udf(v) as v from db.raw.u";
+        // A schema-relative call resolves in the session's database.
+        assert_ne!(hash(partly, "DB"), hash(partly, "DB2"));
+        assert_eq!(
+            hash(partly, "DB"),
+            hash("select db.s.my_udf(v) as v from db.raw.u", "DB2")
+        );
+        assert_eq!(
+            hash(partly, "DB"),
+            hash("select \"DB\".\"S\".\"MY_UDF\"(v) as v from db.raw.u", "DB")
+        );
+        assert_ne!(
+            hash("select db.s.my_udf(v) as v from db.raw.u", "DB"),
+            hash("select db.t.my_udf(v) as v from db.raw.u", "DB")
+        );
+        // Without a session database a schema-relative call is unknown.
+        assert_eq!(hash(partly, ""), None);
     }
 
     #[test]
