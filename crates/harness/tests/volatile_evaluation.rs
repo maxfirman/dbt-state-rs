@@ -1934,6 +1934,50 @@ async fn databricks_checked_reuse_refuses_unproven_sql() {
     }
 }
 
+/// The checked `rand(42)` model built at A, then submitted for the first
+/// time at the absent B in the same namespace, clones allowed with a zero
+/// copy depth. B has no build of its own: its first build keeps 6 / 6, says
+/// its table did not exist and renders the captured constant. The checked
+/// qualification of an older build of the submit's own Target relation
+/// (#211) does not make A an equivalent under another name.
+#[tokio::test]
+async fn databricks_checked_reuse_first_build_under_another_name_is_a_first_build() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org("rand(42) at a, then b");
+    let a = "`c`.`s`.`a`";
+    let b = "`c`.`s`.`b`";
+    let submit = captured_submit(&request(DATABRICKS_EVALUATION, DB_TABLE_FIRST))
+        .sql("SELECT rand(42) AS r")
+        .allow_clones(true)
+        .clone_chain_depth_limit(0);
+    sc.build(submit.clone().target(a).own_epoch(None), OWN_EPOCH)
+        .await;
+    let first = sc.expect_execute(submit.target(b).own_epoch(None)).await;
+    let decision = first.explained_decision.as_ref().unwrap();
+    let no_suitable_match = Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+    assert_eq!(
+        (
+            decision.skip_rejection_reason,
+            decision.clone_rejection_reason
+        ),
+        (no_suitable_match, no_suitable_match)
+    );
+    assert_eq!(
+        decision.decision_description,
+        "model was executed because its table did not exist"
+    );
+    assert_eq!(
+        rendered(&first),
+        [(
+            b.to_owned(),
+            [("RAND(42)".to_owned(), "0.6394267984578837".to_owned())].into()
+        )]
+        .into()
+    );
+}
+
 // ── Databricks producer history (#213) ──────────────────────────────────────
 //
 // Evidence: `golden/fixtures/databricks_volatile_producer.jsonl`
@@ -3217,39 +3261,47 @@ mod rebuild_reasons {
         }
     }
 
-    /// `ecu`'s reuse under `compare_unrendered_code` with only its macros
-    /// changed: the unrendered code changed, the compiled SQL did not, so
-    /// its tree says `the model query has not changed`. The volatile block
-    /// belongs to the checked Snowflake reuse alone (#211, compared by its
-    /// rendered SQL), so this reuse prints no volatile lines, as the
-    /// captured `ecu` reuse does (entry 198).
+    /// `ecu`'s reuse under `compare_unrendered_code` with its macros
+    /// changed, its compiled SQL unchanged or changed (`1 as id` to
+    /// `2 as id`), its template body and `current_timestamp()` call kept.
+    /// Both reuse by template. The volatile block belongs to the checked
+    /// Snowflake reuse alone (#211, compared by its rendered SQL), so
+    /// neither prints volatile lines, as the captured `ecu` reuse does not
+    /// (entry 198).
     #[tokio::test]
     async fn snowflake_reuse_compared_by_unrendered_code_prints_no_volatile_lines() {
         let server = support::start_server().await;
-        let sc = Scenario::connect(&server).await.org("ecu macros changed");
+        let sc = Scenario::connect(&server).await;
         let entries = entries(CELLS);
-        sc.build(captured_submit(&entries[ECU_BUILD].request), ECU_BUILT_AT)
-            .await;
         let rerun = captured_submit(&entries[ECU.0].request)
             .node_state(|n| n.node_macros_hash = Some("other macros".into()));
-        let reused = sc.expect_skip(rerun).await;
-        assert!(
-            !volatile_values_of(&reused.transformed_nodes_by_query).is_empty(),
-            "the reuse renders"
-        );
-        let explained = explain(&sc, reused.execution_decision_id.as_deref().unwrap()).await;
-        let texts = texts(&explained);
-        assert!(
-            texts.contains(&"the model query has not changed".to_owned()),
-            "{explained}"
-        );
-        assert!(
-            !texts
-                .iter()
-                .any(|t| t == "non-deterministic functions detected in query"
-                    || t.contains("rendered with")),
-            "{explained}"
-        );
+        let compiled = rerun.clone().build().sql;
+        assert!(compiled.contains("1 as id"), "{compiled}");
+        for (case, rerun) in [
+            ("macros changed, compiled SQL unchanged", rerun.clone()),
+            (
+                "macros and compiled SQL changed",
+                rerun.with(|r| r.sql = r.sql.replace("1 as id", "2 as id")),
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(captured_submit(&entries[ECU_BUILD].request), ECU_BUILT_AT)
+                .await;
+            let reused = sc.expect_skip(rerun).await;
+            assert!(
+                !volatile_values_of(&reused.transformed_nodes_by_query).is_empty(),
+                "{case}: the reuse renders"
+            );
+            let explained = explain(&sc, reused.execution_decision_id.as_deref().unwrap()).await;
+            assert!(
+                !texts(&explained)
+                    .iter()
+                    .any(|t| t == "non-deterministic functions detected in query"
+                        || t.contains("rendered with")
+                        || t.contains("not tolerated by config")),
+                "{case}: {explained}"
+            );
+        }
     }
 
     /// Submit `rerun` over `history` built in a fresh organization `case`;

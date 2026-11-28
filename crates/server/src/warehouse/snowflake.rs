@@ -354,7 +354,7 @@ pub(super) fn checked_volatile_reuse(req: &crate::query_cache::SubmitEnrichedSql
 /// evaluation requested, a reuse compared by its rendered SQL is only ever
 /// that one. A reuse under template comparison (#206) prints no volatile
 /// lines (`explain_volatile_cells.jsonl` entry 198), also when its macros
-/// changed and its tree reports the compiled SQL unchanged.
+/// changed, whether its compiled SQL changed or not.
 pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms =
     crate::explain::VolatileForms {
         requested_reuse: true,
@@ -371,8 +371,10 @@ pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms =
 ///   query dependencies whose SQL reads no relation, its Target relation
 ///   physically as built, projecting only literals and [`REUSED_GENERATOR`]
 ///   ([`isolated_generator_projection`]; entry 28, Explain 35). Against an
-///   ordinary build this shape qualifies ([`checked_volatile_reuse`]); it is
-///   still refused against a Result copy and under template comparison.
+///   ordinary build this shape qualifies ([`checked_volatile_reuse`]), so
+///   the decision keeps the form only for a rerun refused over a confirmed
+///   Result copy (a refusal under template comparison is not one for
+///   volatile SQL alone, and keeps no form).
 ///
 /// [`RerunForm::SoleSourceMerge`]: crate::volatile_evaluation::RerunForm::SoleSourceMerge
 /// [`RerunForm::IsolatedGenerator`]: crate::volatile_evaluation::RerunForm::IsolatedGenerator

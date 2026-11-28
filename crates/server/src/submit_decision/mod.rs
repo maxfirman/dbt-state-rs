@@ -587,7 +587,7 @@ async fn decide_resolved_sql(
             .map(|built| now_ms.saturating_sub(built));
     }
     let older = older_match(store, evidence, &freshness, &record, |row| {
-        reuse_candidate::older_build_matches(req, evidence, row)
+        reuse_candidate::older_target_build_matches(req, evidence, row)
     })
     .await?;
     let mut candidate = candidate;

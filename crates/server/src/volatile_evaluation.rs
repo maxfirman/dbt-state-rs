@@ -220,8 +220,9 @@ pub enum RerunForm {
     /// `snowflake::isolated_generator_projection`). Against an ordinary
     /// build Reuse qualification admits this shape
     /// (`Warehouse::checked_volatile_reuse`, maintainer decision on #211),
-    /// so it is recorded only for a refusal against a Result copy or under
-    /// template comparison.
+    /// so a decision records it only for a rerun refused over a confirmed
+    /// Result copy. Rows recorded before that change also carry it for
+    /// refused reruns over an ordinary build.
     IsolatedGenerator,
 }
 

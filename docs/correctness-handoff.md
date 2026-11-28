@@ -350,8 +350,13 @@ server keeps the conservative behavior described.
       renders `96` and prints no tree (`RerunForm::IsolatedGenerator`,
       migration 0037). Reverted over a build of other SQL, it rebuilds with
       the older-match codes 8 / 7, as a literal control does
-      (`reuse_candidate::older_build_matches`). A reuse under template
-      comparison prints no volatile lines. Open: whether hosted's
+      (`reuse_candidate::older_target_build_matches`). That applies to an
+      older build of its own Target relation only: a build of the same SQL
+      under another name keeps the earlier predicate, so the checked
+      Databricks `rand(42)` model's first build at another name stays a
+      first build (6 / 6). A reuse under template
+      comparison prints no volatile lines, whether its compiled SQL changed
+      or not. Open: whether hosted's
       rule is "every call has a constant seed" (`randstr(5, 1234)`,
       `normal(5, 2, 42)` alone are uncaptured) and whether it holds for
       other kinds and over upstreams. Until captured those keep the

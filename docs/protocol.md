@@ -555,7 +555,7 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 |---|---|---|---|
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
-| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_target_build_matches, older_seed_matches}` |
 | EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type and recorded the workload's genuine upstream names, and the target relation has no build of the workload's type (rule 1 below). Other upstream names are another identity: 6 / 6, or 8 / 7 (`explain_reason_kind_cells.jsonl` `vc`, `cv`). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies; for a Snowflake seed, a load to copy exists but the submit has `allow_clones: false` (`explain_seed_copy_disabled.jsonl`) | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise), `DecisionRecord::with_seed_copy_refused` (seed) |
@@ -715,8 +715,9 @@ and fingerprints.
    projecting only number or string literals and, on Snowflake,
    `uniform(1, 100, 1234)` (maintainer decision on #211,
    `explain_volatile_generator_merge.jsonl` `gu`, entries 28 and 35) or, on
-   Databricks, `rand(42)` (#213), also when an overwritten older build is
-   judged for the 8 / 7 codes. The ordinary identity, Target relation and
+   Databricks, `rand(42)` (#213), also when an overwritten older build of
+   its own Target relation is judged for the 8 / 7 codes (a build under
+   another name is not judged this way). The ordinary identity, Target relation and
    freshness checks then decide, so a rerun after a write to the Target
    relation is rebuilt for that External modification. The same call beside
    any other expression, over an upstream or in another kind, and other

@@ -704,8 +704,8 @@ clause, projecting only number or string literals and
 `uniform(1, 100, 1234)`. Explain prints the SKIP tree with the volatile
 block above `the model query has not changed`
 (`snowflake::VOLATILE_EXPLAIN_FORMS`). A reuse under template comparison
-prints no volatile lines, even when its macros changed and its tree says
-the compiled SQL has not changed. Every other shape is refused at
+prints no volatile lines, even when its macros changed, whether its
+compiled SQL changed or not. Every other shape is refused at
 Reuse qualification and keeps the
 [model rerun](#execute-rerun-of-a-volatile-model) tree: other
 constant-seeded generators alone (uncaptured), the generator beside

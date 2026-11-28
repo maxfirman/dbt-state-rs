@@ -506,20 +506,34 @@ pub(crate) fn for_seed(
 /// Whether an OLDER build of the target (overwritten since) has the workload's
 /// strict identity and the workload qualifies for reuse: the first step of
 /// reporting a rebuild whose earlier build would still be reusable
-/// (LATEST_QUERY_HASH_NOT_MATCH). The Warehouse's checked volatile shape
-/// qualifies as it does against the latest build ([`checked_volatile_sql`],
-/// #211). Freshness is judged by the caller.
+/// (LATEST_QUERY_HASH_NOT_MATCH). Freshness is judged by the caller. The
+/// diagnostics for builds under another name use it as it is; an older
+/// build of the submit's own Target relation is judged by
+/// [`older_target_build_matches`].
 pub(crate) fn older_build_matches(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
-    let qualifies = if checked_volatile_sql(req, row) {
-        sql_evidence_complete(req, evidence)
-    } else {
-        sql_qualifies(req, evidence)
-    };
-    row.clone_source_table.is_none() && qualifies && strict_match(req, evidence, row)
+    row.clone_source_table.is_none()
+        && sql_qualifies(req, evidence)
+        && strict_match(req, evidence, row)
+}
+
+/// [`older_build_matches`] for an older build of the submit's own Target
+/// relation, where the Warehouse's checked volatile shape qualifies as it
+/// does against the latest build ([`checked_volatile_sql`], #211):
+/// reverting it over a build of other SQL reports
+/// LATEST_QUERY_HASH_NOT_MATCH as a deterministic model does.
+pub(crate) fn older_target_build_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    if !(row.target_table == evidence.target_table && checked_volatile_sql(req, row)) {
+        return older_build_matches(req, evidence, row);
+    }
+    sql_evidence_complete(req, evidence) && strict_match(req, evidence, row)
 }
 
 /// [`older_build_matches`] for a seed.

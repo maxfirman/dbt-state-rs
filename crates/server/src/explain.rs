@@ -1200,10 +1200,12 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     }
     let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
+        // A reuse under template comparison reuses by its unrendered code
+        // and prints no volatile lines, whether or not its compiled SQL
+        // changed (`explain_volatile_cells.jsonl` entry 198, #206).
+        Some(true) if node.decision == DecisionKind::Skip && compares_templates(node) => return,
         Some(true)
-            if node.decision == DecisionKind::Skip
-                && node.volatile_forms().requested_reuse
-                && !compares_templates(node) =>
+            if node.decision == DecisionKind::Skip && node.volatile_forms().requested_reuse =>
         {
             (
                 format!("the {noun} query has not changed"),
