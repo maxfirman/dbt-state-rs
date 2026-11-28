@@ -322,27 +322,45 @@ server keeps the conservative behavior described.
   - Snowflake, first #211 batch
     (`golden/fixtures/explain_volatile_generator_merge.jsonl`,
     [characterization note](reports/snowflake-volatile-generator-merge-2026-11-24.md)).
-    - **Check-in, open.** Hosted reuses a FULL table whose only Volatile
-      call is `uniform(1, 100, 1234)`, with evaluation requested (`gu`,
-      entry 28, Explain 35: map `UNIFORM(1, 100, 1234) -> 96`, the
+    - **Maintainer decision (#211, 2026-11-26): implemented.** Hosted reuses a FULL
+      table whose only Volatile call is `uniform(1, 100, 1234)`, with
+      evaluation requested (`gu`, entry 28, Explain 35: map
+      `UNIFORM(1, 100, 1234) -> 96`, the first build's runtime, the
       volatile block and `the model query has not changed`, no tolerance
       line). A literal control is reused and `random()` alone is rebuilt.
-      This server still refuses `gu` at Reuse qualification and rebuilds,
-      with hosted's map and no Explain tree. The empty tree needs the
-      captured form, established from the submitted SQL and recorded with
-      the decision (`RerunForm::IsolatedGenerator`, migration 0037): a FULL
-      model without upstreams or query dependencies, its Target relation
-      physically as built, whose SQL is one `SELECT` without `FROM` or
-      another clause projecting only literals and `uniform(1, 100, 1234)`,
-      reading no relation. Any other expression beside it, whatever its
-      spelling (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, `CURRENT_USER` with or
-      without parentheses, `FLOOR(1.5)`), a read of a relation (its own
-      Target relation included) or a write to the Target relation keeps the
-      rerun tree. Matching hosted relaxes a
-      Reuse refusal, so it waits for the maintainer (#201 check-in rule). Both entries are keyed in
-      `replay_gaps.json`. Open: whether hosted's rule is "every call has a
-      constant seed" (`randstr(5, 1234)`, `normal(5, 2, 42)` alone are
-      uncaptured) and whether it holds for other kinds and over upstreams.
+      The maintainer approved the bounded reuse, and this server now
+      matches it: Reuse qualification admits the captured shape through
+      the path of the Databricks `rand(42)` reuse
+      (`Warehouse::checked_volatile_reuse`,
+      `snowflake::isolated_generator_projection`): an ordinary FULL model
+      without query dependencies or template comparison, reporting no
+      relation but its own Target relation, whose SQL is one `SELECT`
+      without `FROM` or another clause projecting only literals and
+      `uniform(1, 100, 1234)`. The ordinary scope, identity, Target
+      relation and freshness checks still decide: after a write to the
+      Target relation the rerun is rebuilt for that External modification
+      and renders nothing (uncaptured), and under
+      `ignore_external_modifications` it is reused. Any other expression
+      beside the call, whatever its spelling (`CURRENT_TIMESTAMP(6)`,
+      `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
+      or a read of a relation (its own Target relation included) keeps the
+      refusal and the rerun tree. Both entries replay; their
+      `replay_gaps.json` keys are removed. The admission needs an ordinary
+      build: over a confirmed Result copy the rerun is still refused (6 / 6),
+      renders `96` and prints no tree (`RerunForm::IsolatedGenerator`,
+      migration 0037). Reverted over a build of other SQL, it rebuilds with
+      the older-match codes 8 / 7, as a literal control does
+      (`reuse_candidate::older_target_build_matches`). That applies to an
+      older build of its own Target relation only: a build of the same SQL
+      under another name keeps the earlier predicate, so the checked
+      Databricks `rand(42)` model's first build at another name stays a
+      first build (6 / 6). A reuse under template
+      comparison prints no volatile lines, whether its compiled SQL changed
+      or not. Open: whether hosted's
+      rule is "every call has a constant seed" (`randstr(5, 1234)`,
+      `normal(5, 2, 42)` alone are uncaptured) and whether it holds for
+      other kinds and over upstreams. Until captured those keep the
+      refusal.
     - Implemented: a keyed MERGE incremental with `current_timestamp()`
       over a source table renders its own values on its first build, where
       its Target relation did not exist (entry 7), and on the two reruns
@@ -381,7 +399,8 @@ server keeps the conservative behavior described.
       dependency, MERGE with evaluation off, and the INSERT_OVERWRITE,
       DELETE_INSERT and MICROBATCH strategies;
     - any build for another decision reason: upstream data or Upstream
-      producer changes, an External modification with evaluation off, an
+      producer changes, an External modification with evaluation off or of
+      the checked `uniform(1, 100, 1234)` table's Target relation, an
       execution type change;
     - a Result copy over an existing Target relation or with values in a
       query dependency, and the chain-limit build;
@@ -405,7 +424,9 @@ server keeps the conservative behavior described.
     drifted or changed producer since the refused build (except a MERGE
     with zero Lag tolerance after its source's data drifted, entry 45), or
     over both an upstream table and a query dependency; a MERGE rerun after
-    drift within a Lag tolerance; the model rerun tree of a custom
+    drift within a Lag tolerance; the rebuild of the checked
+    `uniform(1, 100, 1234)` table after a write to its Target relation
+    (its ordinary tree, no volatile lines); the model rerun tree of a custom
     node with upstreams, of an APPEND incremental or snapshot without
     upstreams, of any non-FULL kind with query dependencies, and of a view
     over a `ref`; the volatile-dependency tree of another node kind; the

@@ -163,8 +163,11 @@ pub(crate) struct VolatileForms {
     /// Kinds whose refusal after an External modification of the sole
     /// input lists that upstream against the refused build.
     pub(crate) input_modified_externally_refusal: &'static [ModelExecutionType],
-    /// Whether a reuse with Volatile evaluation requested (a checked
-    /// reuse) says its query has not changed, with no tolerance line.
+    /// Whether a reuse with Volatile evaluation requested, compared by its
+    /// rendered SQL, says its query has not changed, with no tolerance
+    /// line. Only the Warehouse's checked reuse
+    /// (`Warehouse::checked_volatile_reuse`) is one: a reuse of volatile SQL
+    /// under template comparison prints no volatile lines.
     pub(crate) requested_reuse: bool,
 }
 
@@ -1075,11 +1078,13 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     let rerun_form = node.volatile_evaluation.rerun_form;
     // #211: hosted reuses a source-less FULL model whose only call is
     // `uniform(1, 100, 1234)` (`explain_volatile_generator_merge.jsonl`
-    // `gu`, entries 28 and 35). This server still refuses it, pending the
-    // maintainer, and explains the rebuild with no tree rather than a query
-    // change hosted never reports. The decision established the form from
-    // its SQL and Target relation (`Warehouse::volatile_rerun_form`); any
-    // other shape keeps its tree.
+    // `gu`, entries 28 and 35), and so does this server against an ordinary
+    // build (`Warehouse::checked_volatile_reuse`). A rebuild of that shape
+    // still refused at Reuse qualification (over a Result copy, or recorded
+    // before the reuse) prints no tree rather than a query change hosted
+    // never reports. The decision established the form from its SQL and
+    // Target relation (`Warehouse::volatile_rerun_form`); any other shape
+    // keeps its tree.
     if rerun_form == Some(RerunForm::IsolatedGenerator) {
         return Some(Vec::new());
     }
@@ -1195,6 +1200,10 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     }
     let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
+        // A reuse under template comparison reuses by its unrendered code
+        // and prints no volatile lines, whether or not its compiled SQL
+        // changed (`explain_volatile_cells.jsonl` entry 198, #206).
+        Some(true) if node.decision == DecisionKind::Skip && compares_templates(node) => return,
         Some(true)
             if node.decision == DecisionKind::Skip && node.volatile_forms().requested_reuse =>
         {
@@ -4970,11 +4979,12 @@ mod tests {
         }
     }
 
-    /// The refused rebuild its decision established as
-    /// `RerunForm::IsolatedGenerator` (`gu`, `explain_volatile_generator_merge.jsonl`
-    /// entries 28 and 35) prints no tree, since hosted reuses it. The same
-    /// rendered value without the form, as after a Target relation write or
-    /// beside another call the map does not show, keeps the rerun tree.
+    /// A refused rebuild recorded as `RerunForm::IsolatedGenerator` (`gu`,
+    /// `explain_volatile_generator_merge.jsonl` entries 28 and 35), now
+    /// only over a Result copy or recorded before Reuse qualification
+    /// admitted that shape (#211), prints no tree, since hosted reuses it.
+    /// The same rendered value without the form, as beside another call the
+    /// map does not show, keeps the rerun tree.
     #[test]
     fn snowflake_isolated_generator_refusal_prints_no_tree() {
         use crate::volatile_evaluation::RerunForm;

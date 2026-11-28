@@ -376,9 +376,11 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
    detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
-   (#191 cell 3, maintainer decision, #194). Databricks also qualifies the
-   checked source-less FULL literal projection shape with an ordinary matching
-   build, including `rand(42)` (#213). A Snowflake model under
+   (#191 cell 3, maintainer decision, #194). Each Warehouse's checked
+   source-less FULL literal projection shape also qualifies with an ordinary
+   matching build (`Warehouse::checked_volatile_reuse`): `rand(42)` on
+   Databricks (#213), `uniform(1, 100, 1234)` on Snowflake (maintainer
+   decision on #211). A Snowflake model under
    `compare_unrendered_code` whose template identity equals the row's is not
    refused for volatile SQL (maintainer decision 1 on #201, #206; ADR 0005
    "Amended by #201"). A model's rebuild refused at Reuse qualification keeps

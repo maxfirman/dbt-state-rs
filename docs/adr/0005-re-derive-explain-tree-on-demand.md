@@ -227,6 +227,14 @@ caller already holds this id). Everything else is re-derived.
 > it, and it is part of no identity. NULL, including every decision recorded
 > before the migration, prints neither form.
 
+> **Amended by #211 (maintainer decision).** Reuse qualification now admits
+> the `isolated_generator` shape (`Warehouse::checked_volatile_reuse`), so
+> its unchanged rerun is reused as hosted does and Explain prints the SKIP
+> tree with the volatile block (entry 35), unless it is compared by
+> templates. The admission needs an ordinary build, so a rerun over a
+> Result copy is still refused, records `isolated_generator` and prints no
+> tree.
+
 ## Why re-derive (not persist the tree)
 
 ### Explain visibility amendment (Databricks #132)

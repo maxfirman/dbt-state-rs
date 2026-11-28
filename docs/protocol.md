@@ -555,7 +555,7 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 |---|---|---|---|
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
-| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_target_build_matches, older_seed_matches}` |
 | EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type and recorded the workload's genuine upstream names, and the target relation has no build of the workload's type (rule 1 below). Other upstream names are another identity: 6 / 6, or 8 / 7 (`explain_reason_kind_cells.jsonl` `vc`, `cv`). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies; for a Snowflake seed, a load to copy exists but the submit has `allow_clones: false` (`explain_seed_copy_disabled.jsonl`) | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise), `DecisionRecord::with_seed_copy_refused` (seed) |
@@ -695,8 +695,9 @@ and fingerprints.
    flag: hosted SKIPs a deterministic Snowflake model with evaluation
    requested (`explain_volatile_evaluation.jsonl` entry 31), and the
    maintainer approved this relaxation on the #191 check-in (#194). Only
-   Snowflake has a checked detector; every other Warehouse, Databricks
-   included, never reuses with evaluation requested. One exception lifts the
+   Snowflake has a checked detector; every other Warehouse reports all its
+   SQL as volatile, so with evaluation requested it reuses none of it except
+   the Databricks checked shape (below). One exception lifts the
    refusal (maintainer decision 1 on #201, #206,
    [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
    #201"): a Snowflake model under `compare_unrendered_code` whose template
@@ -706,7 +707,21 @@ and fingerprints.
    `reuse_candidate.rs::volatile_sql_compared_by_unrendered_code`). The
    other qualification checks (complete query dependencies, non-empty SQL, a
    template body) still apply. A changed template, `compare_unrendered_code`
-   off, a data test and every other Warehouse keep the refusal. On Snowflake
+   off, a data test and every other Warehouse keep the refusal. Each
+   Warehouse's checked shape also qualifies against an ordinary build
+   (`Warehouse::checked_volatile_reuse`): a FULL model without query
+   dependencies or template comparison, reporting no relation but its own
+   Target relation, whose SQL is one `SELECT` with no `FROM` or other clause
+   projecting only number or string literals and, on Snowflake,
+   `uniform(1, 100, 1234)` (maintainer decision on #211,
+   `explain_volatile_generator_merge.jsonl` `gu`, entries 28 and 35) or, on
+   Databricks, `rand(42)` (#213), also when an overwritten older build of
+   its own Target relation is judged for the 8 / 7 codes (a build under
+   another name is not judged this way). The ordinary identity, Target relation and
+   freshness checks then decide, so a rerun after a write to the Target
+   relation is rebuilt for that External modification. The same call beside
+   any other expression, over an upstream or in another kind, and other
+   generator arguments keep the refusal (uncaptured). On Snowflake
    the Result copy fallback is suppressed for volatile SQL with evaluation
    requested; a deterministic model is still copied (crafted fixture
    `clone_fallback_volatile.jsonl`,
@@ -994,7 +1009,7 @@ says "empty".
 | Warehouse | Case | Evaluation on | Evaluation off | Evidence (client 2.0.11 unless marked crafted) |
 |---|---|---|---|---|
 | Snowflake | FULL model, root SQL, `ready_to_execute` | rendered on a first build, a rerun refused at Reuse qualification and a query-changed rebuild | rendered on a first build and a query-changed rebuild | on: run 1 entries 6, 33; cells entries 21, 23, 26–28, 33, 36 (first builds), 137, 142, 147, 166. Off: run 1 entry 8; cells entries 29, 34, 133 |
-| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the only volatile reuse, an unchanged template under `compare_unrendered_code` (#206) | rendered | on: cells entry 140 (a deterministic reuse has nothing to render, run 1 entry 31). Off: run 1 entries 34, 50 |
+| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the volatile reuses: an unchanged template under `compare_unrendered_code` (#206) and the checked `uniform(1, 100, 1234)` shape (#211) | rendered | on: cells entry 140, generator-merge entry 28 (a deterministic reuse has nothing to render, run 1 entry 31). Off: run 1 entries 34, 50 |
 | Snowflake | view, root SQL | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: cells entries 19, 141. Off: run 1 entries 7, 32; cells entries 22, 127 |
 | Snowflake | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution, a rerun and a logic change | rendered on a first execution and `skip_execution` | on: run 1 entries 16, 37; cells entries 61, 62, 145, 148. Off: cells entries 60, 146 |
 | Snowflake | FULL model, values only in a query dependency definition | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: run 1 entries 10, 35; cells entries 72, 168. Off: cells entries 58, 158 |
@@ -1089,9 +1104,12 @@ maintainer decision 1 on #201, #206, recorded in
 rendering rules, so `zipf`, `seqN` and the uncaptured forms above also
 rebuild, with an empty map or only the other functions' values. Hosted
 reuses a table whose only Volatile call is the constant generator
-`uniform(1, 100, 1234)` (generator-merge entry 28, Explain 35; #211). This
-server still rebuilds it: matching relaxes a Reuse refusal, which waits for
-the maintainer (keyed in `replay_gaps.json`). A table downstream of a volatile model
+`uniform(1, 100, 1234)` (generator-merge entry 28, Explain 35; #211), and
+so does this server since the maintainer decision on #211: Reuse
+qualification admits that shape against an ordinary build (rule 8,
+`Warehouse::checked_volatile_reuse`), the reuse renders `96` and Explain
+lists it above `the model query has not changed`. Over a Result copy the
+same rerun is still refused, renders `96` and prints no tree. A table downstream of a volatile model
 follows the ordinary
 [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) rules: the
 upstream's rebuild is upstream data drift, not an Upstream producer change,
@@ -1106,7 +1124,8 @@ recorded before either migration prints no volatile lines. A Snowflake
 rerun refused for its volatile SQL also records the captured form its
 decision established (`node_decisions.volatile_rerun_form`, migration 0037,
 #211), which selects the MERGE rerun tree and the empty tree of the isolated
-generator. A model's rebuild
+generator, refused only over a Result copy (or recorded before Reuse
+qualification admitted it). A model's rebuild
 refused at Reuse qualification records the refused build as its Explain
 anchor (`matched_execution_id`), which its upstream listing is judged
 against (ADR 0005 "Amended by #201"). The captured trees are in
@@ -1123,9 +1142,9 @@ section, its [DATA TEST](explain-catalog.md#data-test) section and its
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
 [testing.md](testing.md#goldenreplay_gapsjson)). Every entry of the three
-Snowflake fixtures replays, and every generator-merge entry but the
-`gu` reuse that waits for the maintainer and its Explain (entries 28 and
-35). Cells entry 146
+Snowflake fixtures and of the generator-merge fixture replays, the `gu`
+reuse and its Explain (entries 28 and 35) since the maintainer decision on
+#211. Cells entry 146
 echoes the runtime of another data test with the same SQL, the
 later-confirmed run of its history key (#200; it was keyed until then,
 decision 2 on #201).

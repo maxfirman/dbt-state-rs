@@ -1934,6 +1934,50 @@ async fn databricks_checked_reuse_refuses_unproven_sql() {
     }
 }
 
+/// The checked `rand(42)` model built at A, then submitted for the first
+/// time at the absent B in the same namespace, clones allowed with a zero
+/// copy depth. B has no build of its own: its first build keeps 6 / 6, says
+/// its table did not exist and renders the captured constant. The checked
+/// qualification of an older build of the submit's own Target relation
+/// (#211) does not make A an equivalent under another name.
+#[tokio::test]
+async fn databricks_checked_reuse_first_build_under_another_name_is_a_first_build() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org("rand(42) at a, then b");
+    let a = "`c`.`s`.`a`";
+    let b = "`c`.`s`.`b`";
+    let submit = captured_submit(&request(DATABRICKS_EVALUATION, DB_TABLE_FIRST))
+        .sql("SELECT rand(42) AS r")
+        .allow_clones(true)
+        .clone_chain_depth_limit(0);
+    sc.build(submit.clone().target(a).own_epoch(None), OWN_EPOCH)
+        .await;
+    let first = sc.expect_execute(submit.target(b).own_epoch(None)).await;
+    let decision = first.explained_decision.as_ref().unwrap();
+    let no_suitable_match = Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+    assert_eq!(
+        (
+            decision.skip_rejection_reason,
+            decision.clone_rejection_reason
+        ),
+        (no_suitable_match, no_suitable_match)
+    );
+    assert_eq!(
+        decision.decision_description,
+        "model was executed because its table did not exist"
+    );
+    assert_eq!(
+        rendered(&first),
+        [(
+            b.to_owned(),
+            [("RAND(42)".to_owned(), "0.6394267984578837".to_owned())].into()
+        )]
+        .into()
+    );
+}
+
 // ── Databricks producer history (#213) ──────────────────────────────────────
 //
 // Evidence: `golden/fixtures/databricks_volatile_producer.jsonl`
@@ -3217,6 +3261,56 @@ mod rebuild_reasons {
         }
     }
 
+    /// `ecu`'s reuse under `compare_unrendered_code` with its macros
+    /// changed, its compiled SQL unchanged or changed (`1 as id` to
+    /// `2 as id`), its template body and `current_timestamp()` call kept.
+    /// Both reuse by template, and their trees say whether the compiled SQL
+    /// changed. The volatile block belongs to the checked Snowflake reuse
+    /// alone (#211, compared by its rendered SQL), so neither prints
+    /// volatile lines, as the captured `ecu` reuse does not (entry 198).
+    #[tokio::test]
+    async fn snowflake_reuse_compared_by_unrendered_code_prints_no_volatile_lines() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        let rerun = captured_submit(&entries[ECU.0].request)
+            .node_state(|n| n.node_macros_hash = Some("other macros".into()));
+        let compiled = rerun.clone().build().sql;
+        assert!(compiled.contains("1 as id"), "{compiled}");
+        for (case, rerun, verdict) in [
+            (
+                "macros changed, compiled SQL unchanged",
+                rerun.clone(),
+                "the model query has not changed",
+            ),
+            (
+                "macros and compiled SQL changed",
+                rerun.with(|r| r.sql = r.sql.replace("1 as id", "2 as id")),
+                "the model query has changed",
+            ),
+        ] {
+            let sc = sc.org(case);
+            sc.build(captured_submit(&entries[ECU_BUILD].request), ECU_BUILT_AT)
+                .await;
+            let reused = sc.expect_skip(rerun).await;
+            assert!(
+                !volatile_values_of(&reused.transformed_nodes_by_query).is_empty(),
+                "{case}: the reuse renders"
+            );
+            let explained = explain(&sc, reused.execution_decision_id.as_deref().unwrap()).await;
+            let texts = texts(&explained);
+            assert!(texts.contains(&verdict.to_owned()), "{case}: {explained}");
+            assert!(
+                !texts
+                    .iter()
+                    .any(|t| t == "non-deterministic functions detected in query"
+                        || t.contains("rendered with")
+                        || t.contains("not tolerated by config")),
+                "{case}: {explained}"
+            );
+        }
+    }
+
     /// Submit `rerun` over `history` built in a fresh organization `case`;
     /// require a rebuild refused at Reuse qualification, and return it with
     /// its Explain.
@@ -3775,7 +3869,9 @@ mod generator_merge {
     /// `gu`'s first build, and its unchanged rerun, which hosted reuses (a
     /// Check-in finding).
     const GU_FIRST: usize = 9;
+    const GU_FIRST_EXPLAIN: usize = 17;
     const GU_RERUN: usize = 28;
+    const GU_RERUN_EXPLAIN: usize = 35;
     /// `gr` (`random()` alone): first build and rerun refused at Reuse
     /// qualification.
     const GR_FIRST: usize = 10;
@@ -3819,25 +3915,42 @@ mod generator_merge {
         assert_explains_match_hosted(&database, server, &explains, masked).await;
     }
 
-    /// Hosted reuses `gu` (entry 28). Matching it relaxes a Reuse refusal,
-    /// which waits for the maintainer (#211, #201 check-in rule): this
-    /// server still refuses it and renders hosted's map on the rebuild. The
-    /// rebuild prints no tree: hosted never reports this query as changed
-    /// (entry 35, an `empty_tree` replay gap).
+    /// Hosted reuses `gu`'s unchanged rerun (entry 28; maintainer decision
+    /// on #211): a source-less FULL model projecting only literals and
+    /// `uniform(1, 100, 1234)` passes Reuse qualification, and the ordinary
+    /// checks decide. The reuse echoes the first build's runtime (confirm
+    /// entry 11) and hosted's constant value, and Explain says the query has
+    /// not changed, after the volatile block, with no tolerance line (entry
+    /// 35), also after a restart.
     #[tokio::test]
-    async fn snowflake_constant_generator_alone_is_still_refused_pending_check_in() {
-        let server = support::start_server().await;
-        let sc = Scenario::connect(&server).await;
+    async fn snowflake_constant_generator_alone_is_reused_as_hosted() {
+        let database = std::sync::Arc::new(support::TestDatabase::new("volatile_211_gu").await);
+        let server = support::start_server_on_database(database.clone()).await;
         let entries = entries(GENERATOR_MERGE);
-        let responses = replay(&sc, &entries, GU_RERUN).await;
+        let responses = replay(&Scenario::connect(&server).await, &entries, GU_RERUN).await;
+        let explains: Vec<_> = [
+            (GU_FIRST, GU_FIRST_EXPLAIN, "gu first build"),
+            (GU_RERUN, GU_RERUN_EXPLAIN, "gu unchanged rerun"),
+        ]
+        .into_iter()
+        .map(|(submit, explained, case)| {
+            assert_matches_hosted(&responses[&submit], &entries[submit], case);
+            HostedExplain::of_response(
+                case,
+                &entries[explained],
+                &entries[submit],
+                &responses[&submit],
+            )
+        })
+        .collect();
         let rerun = &responses[&GU_RERUN];
-        assert_eq!(variant(rerun), "ready_to_execute");
         assert_eq!(
-            volatile_map_shape(&volatile_values(rerun)),
-            volatile_map_shape(&hosted_volatile_values(&entries[GU_RERUN].response)),
+            volatile_values(rerun),
+            hosted_volatile_values(&entries[GU_RERUN].response)
         );
-        let explained = explain(&sc, &decision_id(rerun)).await;
-        assert!(texts(&explained).is_empty(), "{explained}");
+        let skip = support::scenario::into_skip(rerun.clone());
+        assert_eq!(skip.execution_runtime_ms, Some(4826));
+        assert_explains_match_hosted(&database, server, &explains, masked).await;
     }
 
     /// The epoch `submit` reports for `relation`.
@@ -3986,15 +4099,14 @@ mod generator_merge {
         );
     }
 
-    /// The empty tree is limited to `gu` as captured: its SQL projecting
-    /// only literals and `uniform(1, 100, 1234)` and reading no relation,
-    /// with its Target relation as built. Another expression in any
-    /// spelling, even one the map does not show (`CURRENT_TIMESTAMP(6)`,
-    /// `SEQ4()`, `CURRENT_USER` with or without parentheses, `FLOOR(1.5)`),
-    /// a read of its own Target relation, or a write to that relation since
-    /// the build keeps the rerun tree.
+    /// The reuse is limited to `gu` as captured: its SQL projecting only
+    /// literals and `uniform(1, 100, 1234)` and reading no relation. Beside
+    /// another expression in any spelling, even one the map does not show
+    /// (`CURRENT_TIMESTAMP(6)`, `SEQ4()`, `CURRENT_USER` with or without
+    /// parentheses, `FLOOR(1.5)`), or reading its own Target relation, the
+    /// rerun is refused at Reuse qualification and keeps the rerun tree.
     #[tokio::test]
-    async fn snowflake_generator_rerun_keeps_its_tree_outside_the_captured_form() {
+    async fn snowflake_generator_outside_the_captured_shape_is_still_refused() {
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
         let entries = entries(GENERATOR_MERGE);
@@ -4010,9 +4122,7 @@ mod generator_merge {
         };
         let with_call = |entry: usize, call: &str| with_sql(entry, format!(", {call} as w"));
         let self_read = |entry: usize| with_sql(entry, format!(" from {target}"));
-        let first = captured_submit(&entries[GU_FIRST].request);
-        let rerun = captured_submit(&entries[GU_RERUN].request);
-        let built_epoch = epoch_of(&rerun, &target);
+        let built_epoch = epoch_of(&captured_submit(&entries[GU_RERUN].request), &target);
         for (case, first, rerun) in [
             (
                 "beside CURRENT_TIMESTAMP(6)",
@@ -4044,20 +4154,6 @@ mod generator_merge {
                 self_read(GU_FIRST),
                 self_read(GU_RERUN),
             ),
-            (
-                "its Target relation written since the build",
-                first.clone(),
-                rerun.clone().with({
-                    let target = target.clone();
-                    move |r| {
-                        for t in &mut r.tables {
-                            if t.name == target {
-                                t.last_modified_epoch = Some(built_epoch + 1);
-                            }
-                        }
-                    }
-                }),
-            ),
         ] {
             let sc = sc.org(case);
             sc.build(first, built_epoch).await;
@@ -4073,6 +4169,185 @@ mod generator_merge {
                 "{case}: {explained}"
             );
         }
+    }
+
+    /// Admitting `gu`'s volatile SQL leaves the ordinary Target relation
+    /// checks in charge. After a write to the Target relation since the
+    /// build, the rerun is rebuilt for that External modification, as a
+    /// deterministic model is; that build reason is uncaptured with
+    /// evaluation on, so it renders nothing. Ignoring External
+    /// modifications reuses it, and a dropped Target relation is rebuilt as
+    /// absent.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_over_a_written_target_follows_the_ordinary_checks() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let target = entries[GU_RERUN].request["target_table"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let built_epoch = epoch_of(&rerun, &target);
+        let written = rerun.clone().with({
+            let target = target.clone();
+            move |r| {
+                for t in &mut r.tables {
+                    if t.name == target {
+                        t.last_modified_epoch = Some(built_epoch + 1);
+                    }
+                }
+            }
+        });
+
+        let modified = sc.org("written");
+        modified.build(first.clone(), built_epoch).await;
+        let rebuilt = modified.expect_execute(written.clone()).await;
+        assert_eq!(
+            rebuilt
+                .explained_decision
+                .as_ref()
+                .unwrap()
+                .decision_description,
+            "model was executed because the table was modified after the cached execution"
+        );
+        assert!(rendered(&rebuilt).is_empty(), "{:?}", rendered(&rebuilt));
+
+        let ignored = sc.org("written, External modifications ignored");
+        ignored.build(first.clone(), built_epoch).await;
+        ignored
+            .expect_skip(written.ignore_external_modifications())
+            .await;
+
+        let dropped = sc.org("dropped");
+        dropped.build(first, built_epoch).await;
+        let rebuilt = dropped
+            .expect_execute(rerun.with(move |r| r.tables.retain(|t| t.name != target)))
+            .await;
+        assert_eq!(
+            rebuilt
+                .explained_decision
+                .as_ref()
+                .unwrap()
+                .decision_description,
+            "model was executed because its table did not exist"
+        );
+    }
+
+    /// The checked reuse needs an ordinary build. Over a confirmed Result
+    /// copy of `gu` (prod built and copied to dev with evaluation off), the
+    /// dev rerun with evaluation on is still refused at Reuse
+    /// qualification: it renders hosted's value and, as for the rebuild of
+    /// this shape before #211, prints no tree.
+    #[tokio::test]
+    async fn snowflake_generator_rerun_over_a_confirmed_copy_is_refused_with_no_tree() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await.org("gu over a copy");
+        let entries = entries(GENERATOR_MERGE);
+        // `gu`'s captured submit `entry` in the dev schema of its namespace.
+        let in_dev = |entry: usize| {
+            let json = serde_json::to_string(&entries[entry].request)
+                .unwrap()
+                .replace("PROD_STATE_DEMO", "DEV_STATE_DEMO")
+                .replace("prod_state_demo", "dev_state_demo");
+            captured_submit(&serde_json::from_str(&json).unwrap())
+        };
+        let target = |s: &Submit| s.clone().build().target_table.unwrap();
+        let built_epoch = epoch_of(
+            &captured_submit(&entries[GU_RERUN].request),
+            &target(&captured_submit(&entries[GU_RERUN].request)),
+        );
+        sc.build(
+            captured_submit(&entries[GU_FIRST].request).tolerate_nondeterminism(true),
+            built_epoch,
+        )
+        .await;
+        let copy = in_dev(GU_FIRST)
+            .tolerate_nondeterminism(true)
+            .own_epoch(None);
+        let copied = sc.expect_clone(copy).await;
+        let copy_epoch = built_epoch + 1_000;
+        assert!(
+            sc.confirm(&copied.request_id, support::scenario::built_at(copy_epoch))
+                .await
+        );
+
+        let rerun = in_dev(GU_RERUN).own_epoch(Some(copy_epoch));
+        let dev_target = target(&rerun);
+        let rebuilt = sc.expect_execute(rerun).await;
+        let decision = rebuilt.explained_decision.as_ref().unwrap();
+        assert_eq!(
+            (
+                decision.skip_rejection_reason,
+                decision.clone_rejection_reason
+            ),
+            (NO_SUITABLE_MATCH, NO_SUITABLE_MATCH)
+        );
+        assert_eq!(
+            rendered(&rebuilt),
+            [(
+                dev_target,
+                [("UNIFORM(1, 100, 1234)".to_owned(), "96".to_owned())].into()
+            )]
+            .into()
+        );
+        let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(texts(&explained).is_empty(), "{explained}");
+    }
+
+    const NO_SUITABLE_MATCH: Option<i32> = Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+
+    /// Reverting to `gu`'s SQL after its Target relation was overwritten by
+    /// other SQL rebuilds with the older-match codes 8 / 7, as the literal
+    /// control does: its overwritten build would still be reusable, since
+    /// the checked qualification admits it.
+    #[tokio::test]
+    async fn snowflake_generator_reverted_over_an_overwritten_build_reports_the_older_match() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(GENERATOR_MERGE);
+        let first = captured_submit(&entries[GU_FIRST].request);
+        let rerun = captured_submit(&entries[GU_RERUN].request);
+        let target = rerun.clone().build().target_table.unwrap();
+        let built_epoch = epoch_of(&rerun, &target);
+        let overwritten_epoch = built_epoch + 1_000;
+        let mut codes = Vec::new();
+        for (case, sql) in [
+            ("gu", None),
+            ("literal control", Some("select 1 as id, 66 as u")),
+        ] {
+            let sc = sc.org(case);
+            let as_case = |s: Submit| match sql {
+                Some(sql) => s.sql(sql),
+                None => s,
+            };
+            sc.build(as_case(first.clone()), built_epoch).await;
+            sc.build(
+                rerun.clone().sql("select 2 as id, 'other' as u"),
+                overwritten_epoch,
+            )
+            .await;
+            let reverted = as_case(rerun.clone()).own_epoch(Some(overwritten_epoch));
+            let rebuilt = sc.expect_execute(reverted).await;
+            let decision = rebuilt.explained_decision.unwrap();
+            codes.push((
+                case,
+                decision.skip_rejection_reason,
+                decision.clone_rejection_reason,
+            ));
+        }
+        let older_match = (
+            Some(qc::RejectionReason::LatestQueryHashNotMatch as i32),
+            Some(qc::RejectionReason::TargetTableMatch as i32),
+        );
+        assert_eq!(
+            codes,
+            [
+                ("gu", older_match.0, older_match.1),
+                ("literal control", older_match.0, older_match.1),
+            ]
+        );
     }
 
     /// A dbt-built `ms`, modified externally before `mv`'s build, is recorded

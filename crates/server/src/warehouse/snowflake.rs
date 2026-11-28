@@ -208,10 +208,12 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, true, FIRST_BUILD, Queries::Own),
             cell(Full, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(Full, true, QUERY_CHANGED, Queries::Own),
-            // Evaluation on, a table's reuse: only an unchanged template
-            // under `compare_unrendered_code` reuses volatile SQL (#206,
+            // Evaluation on, a table's reuse: volatile SQL is reused under
+            // `compare_unrendered_code` with an unchanged template (#206,
             // maintainer decision 1 on #201; `explain_volatile_cells.jsonl`
-            // `ecu`, entry 140).
+            // `ecu`, entry 140) and in the checked `uniform(1, 100, 1234)`
+            // shape (`checked_volatile_reuse`, maintainer decision on
+            // #211; `explain_volatile_generator_merge.jsonl` entry 28).
             cell(Full, true, Outcome::Reuse, Queries::Own),
             // A table over a volatile view, first build and rerun (run 1
             // entries 10 and 35; `explain_volatile_cells.jsonl` entries 72
@@ -297,7 +299,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
 
 /// The generator hosted reuses in a source-less FULL model projecting only
 /// it and literals (#211, `explain_volatile_generator_merge.jsonl` `gu`,
-/// entries 28 and 35; a maintainer check-in).
+/// entries 28 and 35; maintainer decision on #211).
 const REUSED_GENERATOR: (&str, crate::volatile_evaluation::Call) = (
     "uniform",
     crate::volatile_evaluation::Call::Arguments("1, 100, 1234"),
@@ -323,6 +325,42 @@ fn isolated_generator_projection(sql: &str) -> bool {
     generator && skeleton.is_some_and(|query| query == "SELECT checked_projection")
 }
 
+/// Whether Reuse qualification admits `req`'s volatile SQL (maintainer
+/// decision on #211): hosted reuses the unchanged rerun of `gu`, an ordinary
+/// FULL model with Volatile evaluation requested and template comparison
+/// off, without query dependencies, reporting no relation but its own Target
+/// relation, whose SQL is [`isolated_generator_projection`] and so reads no
+/// relation (`explain_volatile_generator_merge.jsonl` entries 28 and 35).
+/// The ordinary scope, identity, Target relation and freshness checks still
+/// decide the reuse. Any other shape, the same call over an upstream or in
+/// another node kind, and other generator arguments keep the refusal
+/// (uncaptured).
+pub(super) fn checked_volatile_reuse(req: &crate::query_cache::SubmitEnrichedSqlRequest) -> bool {
+    req.execution_type == crate::query_cache::ModelExecutionType::Full as i32
+        && crate::volatile_evaluation::requested(req)
+        && !req.compare_unrendered_code
+        && req.query_dependencies.is_empty()
+        && req
+            .tables
+            .iter()
+            .all(|table| Some(&table.name) == req.target_table.as_ref())
+        && isolated_generator_projection(&req.sql)
+}
+
+/// How Explain describes Snowflake's captured volatile decisions beyond the
+/// shared forms: the checked reuse ([`checked_volatile_reuse`]) lists its
+/// rendered values above `the model query has not changed`, with no
+/// tolerance line (`explain_volatile_generator_merge.jsonl` entry 35). With
+/// evaluation requested, a reuse compared by its rendered SQL is only ever
+/// that one. A reuse under template comparison (#206) prints no volatile
+/// lines (`explain_volatile_cells.jsonl` entry 198), also when its macros
+/// changed, whether its compiled SQL changed or not.
+pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms =
+    crate::explain::VolatileForms {
+        requested_reuse: true,
+        ..crate::explain::VolatileForms::NONE
+    };
+
 /// The captured form of a rerun of `refused` that Reuse qualification
 /// refused, with Volatile evaluation requested (#211,
 /// `docs/reports/snowflake-volatile-generator-merge-2026-11-24.md`):
@@ -332,7 +370,11 @@ fn isolated_generator_projection(sql: &str) -> bool {
 /// - [`RerunForm::IsolatedGenerator`]: a FULL model without upstreams or
 ///   query dependencies whose SQL reads no relation, its Target relation
 ///   physically as built, projecting only literals and [`REUSED_GENERATOR`]
-///   ([`isolated_generator_projection`]; entry 28, Explain 35).
+///   ([`isolated_generator_projection`]; entry 28, Explain 35). Against an
+///   ordinary build this shape qualifies ([`checked_volatile_reuse`]), so
+///   the decision keeps the form only for a rerun refused over a confirmed
+///   Result copy (a refusal under template comparison is not one for
+///   volatile SQL alone, and keeps no form).
 ///
 /// [`RerunForm::SoleSourceMerge`]: crate::volatile_evaluation::RerunForm::SoleSourceMerge
 /// [`RerunForm::IsolatedGenerator`]: crate::volatile_evaluation::RerunForm::IsolatedGenerator

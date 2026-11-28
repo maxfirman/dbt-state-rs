@@ -217,7 +217,12 @@ pub enum RerunForm {
     /// projecting only literals and a generator hosted reuses
     /// (`uniform(1, 100, 1234)`) in one `SELECT` with no other clause
     /// (`explain_volatile_generator_merge.jsonl` entries 28 and 35;
-    /// `snowflake::isolated_generator_projection`).
+    /// `snowflake::isolated_generator_projection`). Against an ordinary
+    /// build Reuse qualification admits this shape
+    /// (`Warehouse::checked_volatile_reuse`, maintainer decision on #211),
+    /// so a decision records it only for a rerun refused over a confirmed
+    /// Result copy. Rows recorded before that change also carry it for
+    /// refused reruns over an ordinary build.
     IsolatedGenerator,
 }
 
