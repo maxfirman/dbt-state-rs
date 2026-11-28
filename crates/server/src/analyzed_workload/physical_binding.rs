@@ -40,8 +40,18 @@
 //! normalized as Snowflake identity is (`sql_norm::normalize_sql`), so an
 //! unquoted identifier's case does not matter.
 //!
-//! Function and sequence names, which also resolve through the session's
-//! schema, are not bound (uncaptured).
+//! Function calls resolve like relation names (#272). An unqualified call
+//! of a Snowflake built-in's name (`snowflake_builtin_functions.txt`; a
+//! quoted name as spelled) is that built-in: Snowflake refuses a user
+//! function of a built-in's name. Any other call names a user function and
+//! is bound in full: in the root SQL an unqualified one goes through the
+//! search path and leaves no binding, inside a view it resolves in the
+//! view's schema, and a schema-relative one resolves in the session's or
+//! the view's database. So two targets bind alike only when they call the
+//! same named functions. Nothing binds a
+//! function's definition: no request carries one, so a function replaced
+//! after a build is not seen, and two targets' equal definitions are not
+//! recognized. Sequence names are not bound (uncaptured).
 
 use crate::query_cache as qc;
 use crate::sql_norm::{canonical_identifier, split_object_name_components};
@@ -52,11 +62,15 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::SnowflakeDialect;
 use sqlparser::parser::Parser;
+use std::collections::HashSet;
 use std::ops::ControlFlow;
+use std::sync::LazyLock;
 
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
-/// frames.
+/// frames. Binding function calls (#272) kept v5: it only removes bindings
+/// and rewrites a user function's name to the function it names in full,
+/// so where a v5 hash equals a later one, both name the same functions.
 const VERSION: &[u8] = b"dbt-state-physical-binding-v5";
 
 /// Table functions that read no relation.
@@ -66,6 +80,15 @@ const PURE_TABLE_FUNCTIONS: &[&str] = &[
     "SPLIT_TO_TABLE",
     "STRTOK_SPLIT_TO_TABLE",
 ];
+
+/// Snowflake's built-in function names (`snowflake_builtin_functions.txt`):
+/// an unquoted, unqualified call of one is that built-in (#272).
+static BUILTIN_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    include_str!("snowflake_builtin_functions.txt")
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+});
 
 /// Snowflake context functions (`functions-context`) whose value the
 /// request does not identify: the session, statement and transaction, the
@@ -276,6 +299,7 @@ impl Binder<'_> {
             frames: Vec::new(),
             resolved: Vec::new(),
             context: Context::default(),
+            table_functions: Vec::new(),
             unbound: false,
         };
         let _ = query.visit(&mut references);
@@ -382,32 +406,48 @@ struct References<'a> {
     resolved: Vec<Relation>,
     /// The context values the SQL reads.
     context: Context,
+    /// Each pure table function's call (`TABLE(FLATTEN(...))`), judged as
+    /// a FROM item, not as a scalar function.
+    table_functions: Vec<*const Expr>,
     unbound: bool,
 }
 
 impl References<'_> {
     fn resolve(&self, parts: Vec<String>) -> Option<Relation> {
-        let resolved = match parts.len() {
-            1 if !self.catalog.is_empty() && !self.schema.is_empty() => {
-                let resolved = vec![self.catalog.clone(), self.schema.clone(), parts[0].clone()];
-                // In the root SQL, through `SEARCH_PATH`: only when the one
-                // relation of that name the workload reports or defines is
-                // the default schema's. A view's are its schema's only.
-                if let Some(known) = self.known {
-                    let mut named = known.iter().filter(|known| known.last() == parts.last());
-                    if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
-                        return None;
-                    }
-                }
-                resolved
+        let one_part = parts.len() == 1;
+        let resolved = self.complete(parts)?;
+        // In the root SQL, a one-part name goes through `SEARCH_PATH`: only
+        // when the one relation of that name the workload reports or
+        // defines is the default schema's. A view's are its schema's only.
+        if let (true, Some(known)) = (one_part, self.known) {
+            let mut named = known.iter().filter(|known| known.last() == resolved.last());
+            if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
+                return None;
             }
-            2 if !self.catalog.is_empty() => {
-                vec![self.catalog.clone(), parts[0].clone(), parts[1].clone()]
-            }
-            3 => parts,
+        }
+        Some(resolved)
+    }
+
+    /// The user function a call of `parts` resolves to (#272): a one-part
+    /// name only inside a view, in the view's schema, since in the root SQL
+    /// it goes through `SEARCH_PATH`, which no request carries.
+    fn function(&self, parts: Vec<String>) -> Option<Relation> {
+        if parts.len() == 1 && self.known.is_some() {
+            return None;
+        }
+        self.complete(parts)
+    }
+
+    /// `parts` completed in this query's catalog and schema; `None` when a
+    /// component is unknown.
+    fn complete(&self, parts: Vec<String>) -> Option<Relation> {
+        let full = match parts.as_slice() {
+            [name] => vec![self.catalog.clone(), self.schema.clone(), name.clone()],
+            [schema, name] => vec![self.catalog.clone(), schema.clone(), name.clone()],
+            [_, _, _] => parts,
             _ => return None,
         };
-        resolved.iter().all(|p| !p.is_empty()).then_some(resolved)
+        full.iter().all(|p| !p.is_empty()).then_some(full)
     }
 
     /// What a one-part name means here: a CTE in scope (`Some(true)`), a
@@ -433,6 +473,18 @@ impl References<'_> {
             '"', name,
         ))])
     }
+}
+
+/// `name`'s components as canonical keys; `None` when one is not an
+/// identifier.
+fn object_parts(name: &ObjectName) -> Option<Vec<String>> {
+    name.0
+        .iter()
+        .map(|p| match p {
+            ObjectNamePart::Identifier(id) => Some(ident_key(id)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn ident_key(id: &Ident) -> String {
@@ -541,6 +593,9 @@ impl VisitorMut for References<'_> {
     }
 
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
+        if self.table_functions.contains(&(&*expr as *const Expr)) {
+            return ControlFlow::Continue(());
+        }
         let f = match expr {
             Expr::Function(f) => f,
             // `CURRENT_USER` may be called without parentheses.
@@ -561,14 +616,15 @@ impl VisitorMut for References<'_> {
             }
             _ => return ControlFlow::Continue(()),
         };
-        let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() else {
-            return ControlFlow::Continue(());
+        let key = match f.name.0.as_slice() {
+            [ObjectNamePart::Identifier(id)] => Some(ident_key(id)),
+            _ => None,
         };
-        match id.value.to_ascii_uppercase().as_str() {
-            "CURRENT_DATABASE" => self.context.database = true,
-            "CURRENT_SCHEMA" => self.context.schema = true,
-            name if UNKNOWN_CONTEXT_FUNCTIONS.contains(&name) => self.unbound = true,
-            "SYS_CONTEXT" => {
+        match key.as_deref() {
+            Some("CURRENT_DATABASE") => self.context.database = true,
+            Some("CURRENT_SCHEMA") => self.context.schema = true,
+            Some(name) if UNKNOWN_CONTEXT_FUNCTIONS.contains(&name) => self.unbound = true,
+            Some("SYS_CONTEXT") => {
                 // The session's database or schema, in the root SQL. Any
                 // other property, namespace or call, or one inside a view,
                 // reads a context the request does not identify.
@@ -588,7 +644,21 @@ impl VisitorMut for References<'_> {
                     _ => self.unbound = true,
                 }
             }
-            _ => {}
+            // Snowflake refuses a user function of a built-in's name.
+            Some(name) if BUILTIN_FUNCTIONS.contains(name) => {}
+            // A user function, bound in full; one the context leaves
+            // unknown has no binding (#272).
+            _ => match object_parts(&f.name).and_then(|parts| self.function(parts)) {
+                Some(function) => {
+                    f.name = ObjectName(
+                        function
+                            .into_iter()
+                            .map(|p| ObjectNamePart::Identifier(Ident::with_quote('"', p)))
+                            .collect(),
+                    )
+                }
+                None => self.unbound = true,
+            },
         }
         ControlFlow::Continue(())
     }
@@ -620,13 +690,7 @@ impl VisitorMut for References<'_> {
                     {
                         identifier_literal(&f.args).map(canonical_name)
                     }
-                    parts => parts
-                        .iter()
-                        .map(|p| match p {
-                            ObjectNamePart::Identifier(id) => Some(ident_key(id)),
-                            _ => None,
-                        })
-                        .collect(),
+                    _ => object_parts(name),
                 };
                 let Some(parts) = parts else {
                     self.unbound = true;
@@ -651,7 +715,10 @@ impl VisitorMut for References<'_> {
                 }
             }
             TableFactor::TableFunction { expr, alias } => match table_function(expr) {
-                Ok(None) => return ControlFlow::Continue(()),
+                Ok(None) => {
+                    self.table_functions.push(&*expr);
+                    return ControlFlow::Continue(());
+                }
                 Ok(Some(literal)) => self.resolve(canonical_name(literal)).map(|relation| {
                     let name = self.placeholder(relation);
                     (name, alias.take())
@@ -999,6 +1066,98 @@ mod tests {
             root("select sys_context('SNOWFLAKE$SESSION', $$DATABASE$$) as v from db.raw.u")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn an_unqualified_user_function_has_no_binding() {
+        // `my_udf` resolves through the session's search path, which no
+        // request carries: two schemas can hold different functions of the
+        // name (#272).
+        let root = |sql: &str| binding(&request(sql, "PROD", &["DB.RAW.U"]));
+        assert_eq!(root("select my_udf(v) as v from db.raw.u"), None);
+        assert_eq!(
+            root("select v from db.raw.u where my_udf(v) > 0"),
+            None,
+            "a call anywhere in the query"
+        );
+        // A quoted name is its exact identifier: `"COALESCE"` is the
+        // built-in, `"coalesce"` is not.
+        assert!(root("select \"COALESCE\"(v, 0) as v from db.raw.u").is_some());
+        assert_eq!(root("select \"coalesce\"(v, 0) as v from db.raw.u"), None);
+    }
+
+    #[test]
+    fn a_views_unqualified_function_resolves_in_its_own_schema() {
+        // Snowflake resolves a view's unqualified names in the view's own
+        // schema, never through the search path.
+        let bound = |view_schema: &str, definition: &str| {
+            let sql = format!("select v from db.{view_schema}.v");
+            let mut req = request(&sql, "ZZZ", &["DB.RAW.U"]);
+            req.query_dependencies = vec![view(
+                &format!("DB.{view_schema}.V"),
+                definition,
+                view_schema,
+            )];
+            binding(&req).map(|b| b.hash)
+        };
+        let unqualified = "select my_udf(v) as v from db.raw.u";
+        assert_ne!(bound("P", unqualified), bound("Q", unqualified));
+        assert_eq!(
+            bound("P", unqualified),
+            bound("Q", "select db.p.my_udf(v) as v from db.raw.u")
+        );
+        // A schema-relative call, in the view's database.
+        let mut req = request("select v from db2.p.v", "ZZZ", &["DB.RAW.U"]);
+        req.query_dependencies = vec![view(
+            "DB2.P.V",
+            "select s.my_udf(v) as v from db.raw.u",
+            "P",
+        )];
+        assert_eq!(
+            binding(&req).map(|b| b.hash),
+            bound("Q", "select db2.s.my_udf(v) as v from db.raw.u")
+        );
+    }
+
+    #[test]
+    fn built_in_functions_keep_the_binding() {
+        let root = |sql: &str| binding(&request(sql, "PROD", &["DB.RAW.U"]));
+        for sql in [
+            "select coalesce(v, 0) as v from db.raw.u",
+            "select upper(trim(v)) as v from db.raw.u",
+            "select count(*) as n, sum(v) as s from db.raw.u group by all",
+            "select row_number() over (order by v) as n from db.raw.u",
+            "select iff(v > 0, dateadd(day, 1, current_date()), null) as d from db.raw.u",
+            "select f.value from db.raw.u, lateral flatten(input => parse_json(v)) f",
+        ] {
+            assert!(root(sql).is_some(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_qualified_function_is_bound_in_full() {
+        let hash = |sql: &str, catalog: &str| {
+            let mut req = request(sql, "PROD", &["DB.RAW.U"]);
+            req.default_catalog = catalog.into();
+            binding(&req).map(|b| b.hash)
+        };
+        let partly = "select s.my_udf(v) as v from db.raw.u";
+        // A schema-relative call resolves in the session's database.
+        assert_ne!(hash(partly, "DB"), hash(partly, "DB2"));
+        assert_eq!(
+            hash(partly, "DB"),
+            hash("select db.s.my_udf(v) as v from db.raw.u", "DB2")
+        );
+        assert_eq!(
+            hash(partly, "DB"),
+            hash("select \"DB\".\"S\".\"MY_UDF\"(v) as v from db.raw.u", "DB")
+        );
+        assert_ne!(
+            hash("select db.s.my_udf(v) as v from db.raw.u", "DB"),
+            hash("select db.t.my_udf(v) as v from db.raw.u", "DB")
+        );
+        // Without a session database a schema-relative call is unknown.
+        assert_eq!(hash(partly, ""), None);
     }
 
     #[test]
