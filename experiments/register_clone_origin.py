@@ -181,6 +181,9 @@ def record(rows, steps, reads):
                 "dev_builds": _decisions(rows, up, DEV, ("SubmitEnrichedSQL",), confirms,
                                          explains),
                 "rows": _reads(steps, reads, up),
+                # Dev's input, copied into the Reference schema before the
+                # Reference ran over it.
+                "reference_input": _reads(steps, reads, names["ri_in"]).get("reference"),
             }
     return out
 
