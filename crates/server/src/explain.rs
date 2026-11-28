@@ -930,6 +930,22 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         {
             Shape::CopyLogicChanged
         }
+        // A rebuild over a RegisterClone copy whose held build read other
+        // inputs than the submit (#271): the SKIP-shaped tree against the
+        // copy, judged with the inputs of the build it holds, so an
+        // upstream that build did not read has no verdict and no summary
+        // follows. Captured for a MERGE incremental and a snapshot over one
+        // dev upstream built independently before the copy (VERIFIED LIVE
+        // 2026-11-28, explain_register_clone_input_origin.jsonl).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
+            if matches!(
+                kind,
+                Some(ModelExecutionType::Merge | ModelExecutionType::Snapshot)
+            ) && !node.own_target_absent()
+                && copy_held_other_inputs(node) =>
+        {
+            Shape::OwnTargetModified
+        }
         (DecisionKind::Clone, R::ResultCopy)
             if node.anchor.is_some() && !node.own_target_absent() =>
         {
@@ -2206,6 +2222,18 @@ fn anchor_records(node: &ExplainNode, name: &str) -> bool {
     node.anchor
         .as_ref()
         .is_none_or(|prev| prev.input_tables.iter().any(|t| t.name == name))
+}
+
+/// Whether the anchor is a client-requested copy judged with the inputs of
+/// the build it holds (#271), and that build read at least one input but
+/// not every genuine upstream of the node.
+fn copy_held_other_inputs(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|copy| {
+        crate::copy_lifecycle::registered_without_inputs(copy) && !copy.input_tables.is_empty()
+    }) && node
+        .genuine_upstreams()
+        .iter()
+        .any(|up| !anchor_records(node, &up.name))
 }
 
 /// The FRESH first child: `no updates since «FQN» last executed` (model anchor)

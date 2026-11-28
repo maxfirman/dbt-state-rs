@@ -187,7 +187,8 @@ SCENARIO = Scenario(
 - `Sql(*statements, target="prod_demo")`: one `dbt run-operation` of a
   temporary macro that refuses a target database other than `CDO_DEMO_DB`.
   Every statement must name only three-part per-run objects in
-  `CDO_DEMO_DB.PROD_STATE_DEMO` or `CDO_DEMO_DB.DEV_CLONE_DEMO`. A statement
+  `CDO_DEMO_DB.PROD_STATE_DEMO`, `CDO_DEMO_DB.DEV_CLONE_DEMO` or
+  `CDO_DEMO_DB.REF_STATE_DEMO` (independent-schema Reference executions, #271). A statement
   must be `create [or replace] table`, `insert into`, `update`, `delete from`,
   `truncate table`, `drop table [if exists]` or `drop view [if exists]`
   followed by the per-run relation it writes. Unqualified names are allowed; two- or four-part names,

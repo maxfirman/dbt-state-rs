@@ -987,7 +987,7 @@ impl Store {
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
                    unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
                    rendered_volatile_values, volatile_evaluation_requested,
-                   volatile_rerun_form,
+                   volatile_rerun_form, anchor_input_tables,
                    (SELECT jsonb_build_object(
                        'target_table', held.target_table,
                        'input_tables', held.input_tables
@@ -1106,6 +1106,10 @@ pub struct ExplainDecisionRow {
     /// Migration 0037: the captured form of a rerun refused for its
     /// volatile SQL (#211). NULL otherwise, and before the migration.
     pub volatile_rerun_form: Option<String>,
+    /// Migration 0038: the inputs the decision judged a client-requested
+    /// copy anchor with (#271). NULL for every other anchor, and before the
+    /// migration.
+    pub anchor_input_tables: Option<serde_json::Value>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -1145,10 +1149,19 @@ impl ExplainDecisionRow {
     /// anchor-independent tree.
     pub fn anchor(&self) -> Option<ExecutionRow> {
         let mut anchor = self.matched_execution.clone()?;
-        // Re-derive against the same recorded inputs the decision used: the
-        // persisted decision-time inputs stand in exactly when the decision
-        // substituted the submit's inputs (one shared rule).
-        crate::copy_lifecycle::adopt_current_inputs(&mut anchor, &self.input_tables());
+        // Re-derive against the same inputs the decision judged it with. A
+        // client-requested copy records none: the decision persisted those
+        // of the build it holds (#271). A decision recorded before then
+        // substituted the decision-time inputs (one shared rule).
+        let judged = self
+            .anchor_input_tables
+            .as_ref()
+            .filter(|_| crate::copy_lifecycle::registered_without_inputs(&anchor))
+            .and_then(|value| serde_json::from_value::<Vec<InputTable>>(value.clone()).ok());
+        match judged {
+            Some(inputs) => anchor.input_tables = inputs,
+            None => crate::copy_lifecycle::adopt_current_inputs(&mut anchor, &self.input_tables()),
+        }
         Some(anchor)
     }
 
@@ -1175,6 +1188,7 @@ mod tests {
             rendered_volatile_values: None,
             volatile_evaluation_requested: None,
             volatile_rerun_form: None,
+            anchor_input_tables: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),
@@ -1220,6 +1234,25 @@ mod tests {
 
         let sql_copy = decision_row(Some("h")).anchor().unwrap();
         assert!(sql_copy.input_tables.is_empty());
+    }
+
+    /// A client-requested copy anchor the decision judged with the inputs of
+    /// the build it holds (#271) is re-derived with exactly those, not with
+    /// the decision-time inputs at the copy's epoch.
+    #[test]
+    fn explain_anchor_reads_the_inputs_a_copy_was_judged_with() {
+        let mut row = decision_row(None);
+        row.anchor_input_tables =
+            Some(serde_json::json!([{ "name": "PROD.UP", "last_modified_epoch": 3 }]));
+        let judged = row.anchor().unwrap();
+        assert_eq!(judged.input_tables.len(), 1);
+        assert_eq!(judged.input_tables[0].name, "PROD.UP");
+        assert_eq!(judged.input_tables[0].last_modified_epoch, Some(3));
+
+        // Only a client-requested copy records none of its own.
+        let mut sql_copy = decision_row(Some("h"));
+        sql_copy.anchor_input_tables = row.anchor_input_tables.clone();
+        assert!(sql_copy.anchor().unwrap().input_tables.is_empty());
     }
 
     /// The same rule for the unmatched latest build SHAPE 7 is judged

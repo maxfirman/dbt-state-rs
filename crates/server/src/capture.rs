@@ -164,6 +164,10 @@ pub struct CaptureInput {
     /// the decision exactly. Best-effort and separate from the `executions`
     /// write — the column is intrinsically nullable.
     pub matched_execution_id: Option<i64>,
+    /// The inputs a client-requested copy anchor (`matched_execution_id`) was
+    /// judged with: those of the build it holds (migration 0038, #271).
+    /// `None` for every other anchor.
+    pub anchor_input_tables: Option<Vec<InputTable>>,
     /// The node's Lag tolerance and the reuse candidate's build age at
     /// decision time (ADR 0007), for the Explain tolerance line.
     pub freshness_tolerance_ms: Option<i64>,
@@ -320,11 +324,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
             reads_relation, display_submitted_at_ms, template_comparison,
             rendered_volatile_values, volatile_evaluation_requested, principal_id, copy_source_build_id,
-            volatile_rerun_form
+            volatile_rerun_form, anchor_input_tables
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
                 $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,
-                $37,$38,$39,$40)
+                $37,$38,$39,$40,$41)
         "#,
     )
     .bind(&i.org_id)
@@ -374,6 +378,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
         i.volatile_evaluation
             .rerun_form
             .map(crate::volatile_evaluation::RerunForm::as_str),
+    )
+    .bind(
+        i.anchor_input_tables
+            .as_ref()
+            .map(|inputs| serde_json::to_value(inputs).unwrap_or_default()),
     )
     .execute(pool)
     .await?;

@@ -1496,6 +1496,55 @@ mod tests {
         assert_eq!(e.values_hash, None);
     }
 
+    /// The copy is made from the source's current build while the request
+    /// reports the source relation as that build left it: at its warehouse
+    /// metadata epoch, no later than the build's confirmation, or at no
+    /// epoch (#271). A later epoch is a modification since the build.
+    #[test]
+    fn copy_registration_records_the_build_its_source_relation_holds() {
+        let source = CopySourceBuild {
+            node_namespace_logic_hash: Some("logic".into()),
+            execution_runtime_ms: None,
+            input_names: Vec::new(),
+            execution_id: 7,
+            last_modified_epoch: Some(1_795_864_672_607),
+        };
+        let copied_from = |epoch: Option<i64>| {
+            let req = qc::CloneRequest {
+                clone_source_last_modified_epoch: epoch,
+                ..clone_request()
+            };
+            ExecutionEvidence::copy_registration("org", &req, None, Some(&source), None)
+                .clone_source_execution_id
+        };
+        assert_eq!(
+            copied_from(Some(1_795_864_672_228)),
+            Some(7),
+            "metadata epoch"
+        );
+        assert_eq!(
+            copied_from(Some(1_795_864_672_607)),
+            Some(7),
+            "confirmed epoch"
+        );
+        assert_eq!(copied_from(None), Some(7));
+        assert_eq!(copied_from(Some(1_795_864_672_608)), None, "modified since");
+        let unknown = CopySourceBuild {
+            last_modified_epoch: None,
+            ..source.clone()
+        };
+        let req = qc::CloneRequest {
+            clone_source_last_modified_epoch: Some(1),
+            ..clone_request()
+        };
+        assert_eq!(
+            ExecutionEvidence::copy_registration("org", &req, None, Some(&unknown), None)
+                .clone_source_execution_id,
+            None,
+            "an unknown build epoch proves nothing"
+        );
+    }
+
     #[test]
     fn copy_registration_without_source_logic_inherits_nothing() {
         let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None, None);

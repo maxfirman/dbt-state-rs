@@ -438,3 +438,11 @@ pub async fn record_history_before_principals(database: &super::TestDatabase, or
     }
     pool.close().await;
 }
+
+/// A client-requested copy at `target` as registered before migration 0029:
+/// without the build it was copied from (`clone_source_execution_id`).
+pub async fn forget_copy_source_execution(db: &impl Db, target: &str) -> u64 {
+    Rows::ConfirmedTarget(target)
+        .update(db, "clone_source_execution_id = NULL", &[])
+        .await
+}

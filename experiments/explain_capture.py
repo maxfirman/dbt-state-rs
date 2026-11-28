@@ -61,7 +61,8 @@ SCENARIO_DIR = os.path.join(HERE, "capture_scenarios")
 PROXY_BIN = os.path.join(REPO, "target", "debug", "record-proxy")
 PROBE_BIN = os.path.join(REPO, "target", "debug", "state-probe")
 DEMO_DB = "CDO_DEMO_DB"
-DEMO_SCHEMAS = {"PROD_STATE_DEMO", "DEV_CLONE_DEMO"}
+# REF_STATE_DEMO holds independent-schema Reference executions (#271).
+DEMO_SCHEMAS = {"PROD_STATE_DEMO", "DEV_CLONE_DEMO", "REF_STATE_DEMO"}
 PROFILE = "snowflake"
 
 # Methods the generic conformance replay handles (crates/harness/tests/conformance.rs).

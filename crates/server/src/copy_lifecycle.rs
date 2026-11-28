@@ -39,6 +39,12 @@ pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
     source_inputs(row, "databricks")
 }
 
+/// The inputs `build` recorded, less its own Target relation: what the rows
+/// it wrote were computed from, as it named them.
+pub(crate) fn upstreams_of(build: &ExecutionRow) -> Vec<InputTable> {
+    source_inputs(build, &build.dialect)
+}
+
 fn complete_inputs(inputs: &[InputTable]) -> bool {
     inputs.iter().all(|t| {
         t.last_modified_epoch.is_some_and(|e| e > 0) && !matches!(t.producer, Producer::Unrecorded)
@@ -301,12 +307,18 @@ impl ExecutionEvidence {
         evidence.node_namespace_logic_hash = inherited_ns_logic;
         evidence.inherited_runtime_ms = source.and_then(|s| s.execution_runtime_ms);
         evidence.clone_source_inputs = source.map(|s| s.input_names.clone());
-        // The build the copy is made from (#200): the source's current build,
-        // unless the request names another epoch for it.
+        // The build the copy is made from (#200, #271): the source's current
+        // build, while the request reports the source relation as that build
+        // left it, at a known epoch no later than the build's confirmation
+        // (the rule for a Target relation as built, AGENTS.md reuse
+        // invariant 3), or reports no epoch. The client reads the source's
+        // warehouse metadata epoch, slightly before the confirmation
+        // (explain_register_clone_input_origin.jsonl: 1795864672228 against
+        // the build's 1795864672607); a later epoch is a modification since.
         evidence.clone_source_execution_id = source
             .filter(|s| {
                 req.clone_source_last_modified_epoch
-                    .is_none_or(|epoch| s.last_modified_epoch == Some(epoch))
+                    .is_none_or(|epoch| s.last_modified_epoch.is_some_and(|built| epoch <= built))
             })
             .map(|s| s.execution_id);
         evidence.node_unique_id = req.labels.get("dbt_node_unique_id").cloned();
@@ -345,24 +357,27 @@ impl ExecutionEvidence {
 }
 
 /// A client-requested copy (RegisterClone) records NO upstream evidence: it
-/// is clone-origin, carries no rendered identity and no inputs. When such a
-/// row is the freshness anchor, the submit's CURRENT inputs stand in as the
-/// recorded set, each recorded at the copy's own build epoch (or at its
-/// current epoch, if earlier), so an upstream counts as drifted exactly when
-/// it is newer than the copy (clone-age anchor, verified live). Their
-/// producers are unrecorded: a copy is never an upstream query change.
+/// is clone-origin, carries no rendered identity and no inputs. This
+/// stand-in set is the submit's CURRENT inputs, each recorded at the copy's
+/// own build epoch (or at its current epoch, if earlier), so an upstream
+/// counts as drifted exactly when it is newer than the copy (the clone-age
+/// anchor). Their producers are unrecorded: a copy is never an upstream
+/// query change.
+///
+/// The copy time proves nothing about the inputs of the rows a copy holds,
+/// so a copy is never reused over this set: the submit decision replaces it
+/// with the inputs of the build the copy holds, or refuses the copy
+/// (`submit_decision::judge_registered_copy`, #271), and Explain reads the
+/// inputs the decision judged it with (`ExplainDecisionRow::anchor`). This
+/// set only describes a copy the decision did not judge for freshness (one
+/// it could not adopt, or whose own Target relation it rejected), and
+/// decisions recorded before #271.
 ///
 /// Every other row keeps exactly what it recorded. In particular a copy made
 /// by the SQL-submit fallback recorded that submit's inputs; an EMPTY list
 /// there means "no upstreams", and a later submit with upstreams must rebuild.
-///
-/// The single rule for both the decision (here) and its explanation
-/// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
 pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if is_copy_registration(anchor)
-        && anchor.direct_copy_provenance.is_none()
-        && anchor.input_tables.is_empty()
-    {
+    if registered_without_inputs(anchor) && anchor.input_tables.is_empty() {
         let built = anchor.last_modified_epoch;
         anchor.input_tables = current
             .iter()
@@ -384,6 +399,13 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
 /// identity and is not one.
 pub(crate) fn is_copy_registration(row: &ExecutionRow) -> bool {
     row.clone_source_table.is_some() && row.node_sql_hash.is_none()
+}
+
+/// A client-requested copy that recorded no inputs of its own: every one but
+/// a Databricks direct registration, which froze its source's
+/// ([`freeze_direct`]).
+pub(crate) fn registered_without_inputs(row: &ExecutionRow) -> bool {
+    is_copy_registration(row) && row.direct_copy_provenance.is_none()
 }
 
 /// Copy adoption without the execution type: a clone-origin row whose logic
