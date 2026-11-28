@@ -289,15 +289,15 @@ other reason is in [Decision reason coverage](#decision-reason-coverage). The ev
 capture metadata. The current table includes the Databricks identity, freshness,
 deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-24) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-28) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 360 (220 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6), SKIP 290 (170 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 25 (18 crafted, 6 client 2.0.11, 1 client 2.0.6) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 361 (221 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6), SKIP 290 (170 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 25 (18 crafted, 6 client 2.0.11, 1 client 2.0.6) |
 | 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 33 (29 client 2.0.11, 4 crafted), SKIP 19 (18 client 2.0.11, 1 crafted) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 49 (47 client 2.0.11, 2 crafted), SKIP 29 (29 client 2.0.11) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 50 (48 client 2.0.11, 2 crafted), SKIP 32 (32 client 2.0.11) |
 | 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 32 (28 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 27 (25 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 39 (33 client 2.0.11, 6 crafted), SKIP 28 (27 client 2.0.11, 1 crafted) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 40 (34 client 2.0.11, 6 crafted), SKIP 31 (30 client 2.0.11, 1 crafted) |
 | 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | —¹⁵ | S E | EXECUTE 59 (57 client 2.0.11, 2 crafted), SKIP 88 (65 client 2.0.11, 22 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 112 (92 crafted, 20 client 2.0.11), SKIP 43 (30 crafted, 12 client 2.0.11, 1 client 2.0.6) |
@@ -469,25 +469,25 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-24 (1380 trees in 167 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-28 (1389 trees in 168 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
 | FULL | SKIP | 290 | 170 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 360 | 220 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | EXECUTE | 361 | 221 client 2.0.11, 138 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 25 | 18 crafted, 6 client 2.0.11, 1 client 2.0.6 |
 | APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 33 | 29 client 2.0.11, 4 crafted |
-| MERGE | SKIP | 29 | 29 client 2.0.11 |
-| MERGE | EXECUTE | 49 | 47 client 2.0.11, 2 crafted |
+| MERGE | SKIP | 32 | 32 client 2.0.11 |
+| MERGE | EXECUTE | 50 | 48 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 17 | 16 client 2.0.11, 1 crafted |
 | INSERT_OVERWRITE | EXECUTE | 32 | 28 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |
 | DELETE_INSERT | EXECUTE | 27 | 25 client 2.0.11, 2 crafted |
 | MICROBATCH | SKIP | 16 | 16 client 2.0.11 |
 | MICROBATCH | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
-| SNAPSHOT | SKIP | 28 | 27 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 39 | 33 client 2.0.11, 6 crafted |
+| SNAPSHOT | SKIP | 31 | 30 client 2.0.11, 1 crafted |
+| SNAPSHOT | EXECUTE | 40 | 34 client 2.0.11, 6 crafted |
 | DBT_DATA_TEST | SKIP | 88 | 65 client 2.0.11, 22 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 59 | 57 client 2.0.11, 2 crafted |
 | VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
@@ -980,10 +980,46 @@ changed.
 | a custom node over an append copy, same SQL (`kc4`) | EXECUTE, 6 / 6 (a custom node sends other semantic extras) | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 against the copy, as above |
 | a view over an append copy, same SQL (`kv4`) | EXECUTE, 6 / 6 (a view sends other semantic extras) | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 with an empty `data freshness analysis` section: the view reports no upstreams, but the copy's source build read one |
 
-The copy records no inputs of its own. As for a reused copy, the submit's
-inputs stand in, each at the copy's epoch or earlier
-(`reuse_candidate::adopt_current_inputs`, applied to the unmatched build in
-`ExplainDecisionRow::unmatched`).
+The copy records no inputs of its own. For a copy the submit cannot adopt,
+the submit's inputs stand in, each at the copy's epoch or earlier
+(`copy_lifecycle::adopt_current_inputs`, applied to the unmatched build in
+`ExplainDecisionRow::unmatched`). A copy the submit adopts is judged with the
+inputs of the build it holds instead ([below](#execute-registerclone-copy-over-other-inputs)).
+
+### EXECUTE: RegisterClone copy over other inputs
+
+`explain_register_clone_input_origin.jsonl` (client 2.0.11, #271, entries 36
+and 37). Prod builds a MERGE incremental (`ri_dm`) and a snapshot (`ri_ds`)
+over its upstream table; dev builds its own upstream from another input,
+then the pre-step copies both downstreams into dev. The post-copy submits
+have the copies' logic, but read dev's upstream, which the copied builds did
+not read. Hosted rebuilds them:
+
+| Submit over the copy | Decision, codes | Reason | Tree |
+|---|---|---|---|
+| MERGE (`ri_dm`), snapshot (`ri_ds`), one upstream the copied build did not read | EXECUTE, 6 / 6, "either its query didn't match …" (`snapshot` for a snapshot) | `no_reuse_candidate.failed_reuse_qualification` | SKIP-shaped against the copy: the table exists, the query and upstream model queries have not changed, the upstream listed with its `last updated` line only (no badge, no `no updates since` line), no summary |
+
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+  - upstream model queries have not changed           [SUCCESS]
+- data freshness analysis
+  - upstream dependencies
+    - "«dev upstream FQN»"
+      - last updated: «rel_time»
+```
+
+This server judges the copy over the inputs of the build it holds
+(`submit_decision::judge_registered_copy`) and refuses it at Reuse
+qualification; its Explain anchor is the copy with that build's inputs
+(`node_decisions.anchor_input_tables`, migration 0038), so the dev upstream
+has no verdict and no summary follows. It renders the tree for MERGE and
+SNAPSHOT, the captured kinds, when the copy's build recorded an input; any
+other refusal of a copy renders nothing. The unchanged rerun reuses the
+rebuild (entries 52, 53). Over prod's upstream, read by both, hosted and this
+server reuse the copy (entries 45, 46, 59, 60).
 
 Crafted probes (`explain_copy_logic_crafted.jsonl`, `x2`–`x19`) cover the
 cells the client run did not:
@@ -1264,6 +1300,7 @@ and `an upstream model query has changed` keep `model`.
 | post-copy submit after the RegisterClone pre-step, over a fixed prod source (`c76rsnap`, `explain_snapshot_register_clone.jsonl`; `c93sa`, `explain_post_copy_identity.jsonl`) | SKIP | SKIP, `<FRESH>` listing with `no updates since "«dev FQN»" last executed`, `upstream data is up to date` |
 | post-copy submit over a ref'd view resolved per target, whose definition reads the fixed prod source (`c93sv`) | SKIP | as above: the listing names the view's base source |
 | post-copy submit over a ref'd table resolved per target (`c93st`; the append `c93it` alike) | SKIP | SKIP; the dev upstream is listed with its `last updated` line only (no badge, no `no updates since` line), then `upstream data is up to date` |
+| post-copy submit over a dev upstream built independently before the copy (`ri_ds`, `explain_register_clone_input_origin.jsonl`, #271) | EXECUTE (6 / 6) | SKIP-shaped, the dev upstream with its `last updated` line only, no summary ([RegisterClone copy over other inputs](#execute-registerclone-copy-over-other-inputs)) |
 | post-copy submit with other logic (`ls4`, `explain_copy_logic_mismatch.jsonl`) | EXECUTE (6 / 6) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 
 The client's default Lag tolerance for these snapshots was 45 minutes, so the
@@ -1310,8 +1347,11 @@ schema, has the logic the copy inherited from its source build
 build's runtime. In the SKIP tree only an upstream the source build recorded
 (by physical name) is FRESH with the `no updates since` line; the copy keeps
 those names (`executions.clone_source_inputs`, migration 0018) and Explain
-lists any other upstream with its `last updated` line only. A rebuild over a
-copy whose logic differs even so (`no_reuse_candidate.copy_logic_mismatch`,
+lists any other upstream with its `last updated` line only. The copy is
+reused only when the build it holds read the submit's inputs, by name or as
+Stand-ins: in `c93st` the dev upstream was a copy of prod's. Over a dev
+upstream built independently the snapshot rebuilds (`ri_ds`, #271). A
+rebuild over a copy whose logic differs even so (`no_reuse_candidate.copy_logic_mismatch`,
 `ls4`, crafted `x5`) renders SHAPE 7 judged against the copy
 ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)).
 
@@ -1943,8 +1983,11 @@ the tolerance and Build age persisted with the decision
 
 Explain computes the per-upstream verdicts with the same
 `decision::upstream_freshness` helper the decision uses, against the matched
-execution as returned by `store::ExplainDecisionRow::anchor` (which applies the
-decision's copy-adoption input rule, `reuse_candidate::adopt_current_inputs`).
+execution as returned by `store::ExplainDecisionRow::anchor`: a
+client-requested copy anchor carries the inputs the decision judged it with
+(`node_decisions.anchor_input_tables`, migration 0038, #271), and one
+recorded before then the decision-time inputs at the copy's epoch
+(`copy_lifecycle::adopt_current_inputs`).
 
 ## Not rendered
 
@@ -2009,7 +2052,7 @@ there is no cell.
 | `no_reuse_candidate.upstream_names_changed` ᵖ | U | U | U | U | L | L | — | — |
 | `no_reuse_candidate.copy_logic_mismatch` ˡ | C | L | L | L | L | L | — | — |
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ (#129) |
-| `no_reuse_candidate.failed_reuse_qualification` ⁱ | L (#194, #195, #204, #206), N, LO | APPEND L (#205), MERGE L (#211), N, LO | N, LO | L (#205), N, LO | L (#204), N, LO | L (#205), N, LO | L (#195, #204, #205), N, LO | U ʲ |
+| `no_reuse_candidate.failed_reuse_qualification` ⁱ | L (#194, #195, #204, #206), N, LO | APPEND L (#205), MERGE L (#211, #271), N, LO | N, LO | L (#205, #271), N, LO | L (#204), N, LO | L (#205), N, LO | L (#195, #204, #205), N, LO | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
 | `dependency_set_changed` | U | U | U | U | U | U | U | — |
 | `copy_chain_limit` ᵐ | U | MERGE L (#152); APPEND — | — ᵏ | — | — | — | — | LO ˢ |
@@ -2129,6 +2172,12 @@ last ones were settled.
   also a model with an empty dependency name or query. A query dependency
   listed twice is built, then SKIPped with the ordinary SKIP tree
   (`explain_malformed_requests.jsonl`, keyed gaps).
+  Also (#271, `explain_register_clone_input_origin.jsonl` entries 36, 37):
+  a MERGE incremental and a snapshot over a RegisterClone copy whose held
+  build read another upstream than the submit, judged against the copy
+  ([its tree](#execute-registerclone-copy-over-other-inputs)). A copy
+  refused otherwise (its build recorded no input, or every upstream the
+  submit reads and more, or no build was recorded) renders nothing (LO).
 - ʲ The client always sends a `values_hash` (the md5 of the seed file).
 - ᵏ This server copies only FULL (and a Snowflake seed, #91) on submit
   (#86, #92, #101), so it never records these reasons for another kind on
@@ -2206,6 +2255,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
 | EXECUTE | `no_reuse_candidate.failed_reuse_qualification` with the Target relation present, values rendered for its own SQL and evaluation requested: FULL with either no genuine upstream or query dependency, query dependencies only, or genuine upstreams only; DBT_CUSTOM with neither; APPEND or SNAPSHOT with genuine upstreams only. Genuine upstreams: none drifted or with a changed producer since the anchor (the refused build) | [rerun of a volatile model](#execute-rerun-of-a-volatile-model) |
 | EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, values rendered only for query dependency definitions, with evaluation requested, and no genuine upstream drifted or with a changed producer since the anchor (the refused build) | [over a volatile query dependency](#execute-over-a-volatile-query-dependency) |
+| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for MERGE and SNAPSHOT with the Target relation present, over a RegisterClone copy judged with its held build's inputs, which recorded an input but not every genuine upstream (#271) | [SKIP-shaped against the copy](#execute-registerclone-copy-over-other-inputs) |
 | EXECUTE | `copy_chain_limit` for the captured Databricks MERGE with an existing Target relation, own anchor, proven upstream drift and frozen refused copy name | ordinary own-anchor outdated tree plus the captured table refusal line (#152) |
 | any | every other reason (local-only reasons, `copy_chain_limit` outside the captured scope, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 

@@ -68,9 +68,10 @@ reused within tolerance.
   records no build, as a later submit would resolve it too. Physical batch
   outcomes without an epoch are rejected atomically (#158); legacy unknown
   physical rows cannot establish a producer.
-- Copies registered with RegisterClone record no inputs. Their freshness stays
-  anchored on the copy's own build epoch, so a copy is never treated as
-  fresher than when it was made.
+- Copies registered with RegisterClone record no inputs. Their freshness was
+  anchored on the copy's own build epoch. Amended by #271: a copy is judged
+  over the inputs of the build it holds
+  ([Client-requested copies](#client-requested-copies)).
 - A seed's producer identity includes its values, so a reloaded seed with
   changed values or config counts as an upstream query change, and a
   same-values reload as a data change. Characterized live on 2026-11-10
@@ -204,7 +205,8 @@ provenance binds exact logic/config/full UID and retains the actual source
 context. RegisterClone freezes that source's recorded input epochs and producers
 onto its pending copy. Adoption judges freshness against those inputs, including
 changes before the copy, rather than synthesizing a baseline at the copy epoch.
-Snowflake and DuckDB retain their existing copy-age rule.
+Snowflake and DuckDB retained their copy-age rule until #271
+([Client-requested copies](#client-requested-copies)).
 
 Confirm clears this adoption evidence when the latest scoped source ID/epoch
 changed after registration, any source write remains pending, or the client
@@ -505,8 +507,8 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   `copy_search::records_held_inputs`). One granted by an earlier server over
   another input, or recorded at the newer epochs its submit read, is refused
   at Reuse qualification and rebuilds (6 / 6, the generic rebuild
-  description, no Explain tree). A
-  RegisterClone copy keeps its adoption rule (#93), and Databricks its
+  description, no Explain tree). A RegisterClone copy is judged the same
+  way ([below](#client-requested-copies)), and Databricks keeps its
   publication checks.
 
 A copy that fails to clone is built by the client from the submit's own
@@ -577,3 +579,68 @@ with the submit's inputs as read; the replayed tree of
 
 Open questions are in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).
+
+## Client-requested copies
+
+Amendment (#271). It extends [Result copy over different inputs](#result-copy-over-different-inputs)
+to a copy the client requests with RegisterClone (the dev-clone pre-step of
+a missing snapshot or incremental, `state.pre_clone`), on every Warehouse
+but Databricks, whose direct registrations freeze their source's inputs
+([#152](#narrow-databricks-direct-copy-provenance-152)).
+
+**Evidence.** A native Snowflake run against this server (dbt 2.0.11,
+server `03f3087`, run `111727798fed`) copied prod's MERGE incremental and
+snapshot into dev with the pre-step, where dev had built its own upstream
+from a dev input before the copy. The post-copy submits read dev's upstream
+and this server reused the copies: dev kept `(1, 'prod')` where the
+independent-schema Reference produced `(1, 'dev')`. Adoption had recorded
+the submit's own inputs at the copy's epoch, so an upstream built before the
+copy looked fresh whatever the copy held. Hosted rebuilt both (6 / 6) and
+served `dev`, then reused the rebuild, and reused the copies whose
+downstreams read prod's upstream itself (run `11172745418a`,
+`explain_register_clone_input_origin.jsonl`,
+[report](../reports/snowflake-register-clone-input-origin-2026-11-28.md)).
+Hosted also reused a copy over a dev upstream that was itself a copy of the
+upstream the copied build read (`explain_post_copy_identity.jsonl` `c93st`,
+`c93it`).
+
+**Rule.** A RegisterClone copy holds the result of the build it was copied
+from. As the Reuse candidate it is judged as that build
+(`submit_decision::judge_registered_copy`):
+
+- *Its build is recorded at registration.* The copy records the source's
+  current build (`clone_source_execution_id`) while the request reports the
+  source relation as that build left it: at a known epoch no later than the
+  build's confirmation (the rule for a Target relation as built), or at
+  none. The client reports the source's warehouse metadata epoch, a few
+  hundred milliseconds before the confirmation; before #271 only an equal
+  epoch recorded the build, so a copy requested with the metadata epoch
+  recorded none (in both captures above).
+- *It is reused only over the inputs that build read*, each by name or as
+  its Stand-in at the exact recorded epoch (`copy_search::reads_as_recorded`),
+  and judged over the epochs that build recorded (`copy_search::held_inputs`).
+  An upstream changed after the build, even before the copy, is drift: the
+  copy's age proves nothing about its rows.
+- *Otherwise it is refused at Reuse qualification* and kept as the
+  rebuild's Explain anchor, with the inputs its build recorded, as named
+  there: a build that read other inputs, or a copy without a recorded build
+  (registered before migration 0029, or a broken chain). A rebuild answers
+  6 / 6 and the generic rebuild description, as hosted.
+- *Explain reads the judged inputs back* (`node_decisions.anchor_input_tables`,
+  migration 0038), since the copy chain and the Stand-ins are not on the
+  decision row. A decision recorded before keeps the copy-time substitution
+  it was decided with. Hosted's tree for the refusal is the SKIP-shaped
+  rebuild: the dev upstream with its `last updated` line only, no summary
+  (MERGE and SNAPSHOT captured).
+
+A copy the submit cannot adopt (other logic, another execution type) and a
+copy rejected for its own Target relation still rebuild for that reason;
+their Explain anchor keeps the copy-time substitution.
+
+**Considered.** *Keep the copy-time anchor and compare upstream names
+only.* Rejected: names abstracted by schema do not distinguish dev's own
+upstream from prod's, and an upstream rebuilt between the source build and
+the copy would still look fresh. *Freeze the source's inputs onto the copy at
+registration* (the Databricks direct rule). Rejected for now: it needs a
+new copy evidence format and Confirm-time revalidation; following the
+recorded build reads the same evidence and needs neither.

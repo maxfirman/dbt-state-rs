@@ -564,11 +564,11 @@ impl Store {
         &self,
         org_id: &str,
         q: &CopySourceQuery<'_>,
-    ) -> sqlx::Result<Option<Option<String>>> {
+    ) -> sqlx::Result<Option<CopySource>> {
         let mut query =
             current_physical_state(org_id, Some(q.table_namespace), q.dialect, Some(q.source));
         query
-            .push("SELECT node_namespace_logic_hash FROM current_state WHERE execution_type = ")
+            .push("SELECT node_namespace_logic_hash, id FROM current_state WHERE execution_type = ")
             .push_bind(q.execution_type)
             .push(" AND last_modified_epoch = ")
             .push_bind(q.last_modified_epoch)
@@ -577,10 +577,13 @@ impl Store {
             .push(" AND clone_source_table IS NULL AND node_hash = ")
             .push_bind(q.node_hash);
         let row = query
-            .build_query_as::<(Option<String>,)>()
+            .build_query_as::<(Option<String>, i64)>()
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|r| r.0))
+        Ok(row.map(|(logic, execution_id)| CopySource {
+            node_namespace_logic_hash: logic,
+            execution_id,
+        }))
     }
 
     /// Latest physical source, before qualification. Incompatible/unknown
@@ -654,6 +657,16 @@ impl Store {
             .transpose()?
             .map(CopySourceBuild::of))
     }
+}
+
+/// The current build a DuckDB incremental copy is made from
+/// ([`Store::find_current_copy_source`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopySource {
+    /// Its schema-abstracted logic identity, inherited by the copy.
+    pub node_namespace_logic_hash: Option<String>,
+    /// The build itself (`executions.id`): the copy holds its result (#271).
+    pub execution_id: i64,
 }
 
 /// What a client-requested copy (RegisterClone) inherits from its source's
