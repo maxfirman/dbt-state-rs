@@ -130,8 +130,9 @@ _Avoid_: Alias, equivalent relation
 **Physical binding**:
 Which physical relation each relation reference of a workload reads, each
 resolved in the context of the SQL that names it and a view through its
-definition. Two workloads with the same Logical copy identity can bind
-their references differently.
+definition, and which function each function call names (a built-in, or a
+user function named in full; #272). Two workloads with the same Logical
+copy identity can bind their references differently.
 _Avoid_: Input set, reported tables
 
 **Decision reason**:

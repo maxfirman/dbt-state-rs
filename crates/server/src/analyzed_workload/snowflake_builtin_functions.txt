@@ -7,8 +7,9 @@
 # Snowflake refuses a UDF named as a system function, and an unqualified
 # call of a built-in's name calls the built-in, so an unqualified call of a
 # listed name is that built-in. A built-in missing here (one Snowflake adds
-# later, a table function, a SYSTEM$ function SHOW FUNCTIONS omits) counts
-# as a user function: the workload keeps no physical binding and builds.
+# later, a SYSTEM$ function SHOW FUNCTIONS omits) counts as a user
+# function: an unqualified call of it in the root SQL leaves no physical
+# binding, so the workload builds. Table functions are judged separately.
 ABS
 ACCUMULATE
 ACOS
@@ -922,3 +923,9 @@ YEAROFWEEK
 YEAROFWEEKISO
 ZEROIFNULL
 ZIPF
+# Built-ins SHOW FUNCTIONS omits, each called on Snowflake 10.42.104
+# (2026-11-28) to confirm it exists.
+COLLATE
+COLLATION
+GROUPING
+SYSTEM$TYPEOF

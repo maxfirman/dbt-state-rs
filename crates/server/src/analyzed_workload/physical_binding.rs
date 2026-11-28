@@ -40,14 +40,15 @@
 //! normalized as Snowflake identity is (`sql_norm::normalize_sql`), so an
 //! unquoted identifier's case does not matter.
 //!
-//! Function calls also resolve through the session's schema (#272). An
-//! unquoted, unqualified call of a Snowflake built-in
-//! (`snowflake_builtin_functions.txt`) is that built-in: Snowflake refuses a
-//! user function of a built-in's name. Any other unqualified call (a quoted
-//! name, or a name off the list) goes through the search path and leaves
-//! no binding. A qualified call is bound in full, a schema-relative one in
-//! the session's database (the view's inside a view), so two targets bind
-//! alike only when they call the same named function. Nothing binds a
+//! Function calls resolve like relation names (#272). An unqualified call
+//! of a Snowflake built-in's name (`snowflake_builtin_functions.txt`; a
+//! quoted name as spelled) is that built-in: Snowflake refuses a user
+//! function of a built-in's name. Any other call names a user function and
+//! is bound in full: in the root SQL an unqualified one goes through the
+//! search path and leaves no binding, inside a view it resolves in the
+//! view's schema, and a schema-relative one resolves in the session's or
+//! the view's database. So two targets bind alike only when they call the
+//! same named functions. Nothing binds a
 //! function's definition: no request carries one, so a function replaced
 //! after a build is not seen, and two targets' equal definitions are not
 //! recognized. Sequence names are not bound (uncaptured).
@@ -67,7 +68,9 @@ use std::sync::LazyLock;
 
 /// The version of [`PhysicalBinding::hash`], a persisted fingerprint
 /// (`executions.node_binding_hash`). Change it with any change to what it
-/// frames.
+/// frames. Binding function calls (#272) kept v5: it only removes bindings
+/// and rewrites a user function's name to the function it names in full,
+/// so where a v5 hash equals a later one, both name the same functions.
 const VERSION: &[u8] = b"dbt-state-physical-binding-v5";
 
 /// Table functions that read no relation.
@@ -411,27 +414,40 @@ struct References<'a> {
 
 impl References<'_> {
     fn resolve(&self, parts: Vec<String>) -> Option<Relation> {
-        let resolved = match parts.len() {
-            1 if !self.catalog.is_empty() && !self.schema.is_empty() => {
-                let resolved = vec![self.catalog.clone(), self.schema.clone(), parts[0].clone()];
-                // In the root SQL, through `SEARCH_PATH`: only when the one
-                // relation of that name the workload reports or defines is
-                // the default schema's. A view's are its schema's only.
-                if let Some(known) = self.known {
-                    let mut named = known.iter().filter(|known| known.last() == parts.last());
-                    if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
-                        return None;
-                    }
-                }
-                resolved
+        let one_part = parts.len() == 1;
+        let resolved = self.complete(parts)?;
+        // In the root SQL, a one-part name goes through `SEARCH_PATH`: only
+        // when the one relation of that name the workload reports or
+        // defines is the default schema's. A view's are its schema's only.
+        if let (true, Some(known)) = (one_part, self.known) {
+            let mut named = known.iter().filter(|known| known.last() == resolved.last());
+            if named.next() != Some(&resolved) || named.any(|other| *other != resolved) {
+                return None;
             }
-            2 if !self.catalog.is_empty() => {
-                vec![self.catalog.clone(), parts[0].clone(), parts[1].clone()]
-            }
-            3 => parts,
+        }
+        Some(resolved)
+    }
+
+    /// The user function a call of `parts` resolves to (#272): a one-part
+    /// name only inside a view, in the view's schema, since in the root SQL
+    /// it goes through `SEARCH_PATH`, which no request carries.
+    fn function(&self, parts: Vec<String>) -> Option<Relation> {
+        if parts.len() == 1 && self.known.is_some() {
+            return None;
+        }
+        self.complete(parts)
+    }
+
+    /// `parts` completed in this query's catalog and schema; `None` when a
+    /// component is unknown.
+    fn complete(&self, parts: Vec<String>) -> Option<Relation> {
+        let full = match parts.as_slice() {
+            [name] => vec![self.catalog.clone(), self.schema.clone(), name.clone()],
+            [schema, name] => vec![self.catalog.clone(), schema.clone(), name.clone()],
+            [_, _, _] => parts,
             _ => return None,
         };
-        resolved.iter().all(|p| !p.is_empty()).then_some(resolved)
+        full.iter().all(|p| !p.is_empty()).then_some(full)
     }
 
     /// What a one-part name means here: a CTE in scope (`Some(true)`), a
@@ -449,33 +465,6 @@ impl References<'_> {
         (!later).then_some(false)
     }
 
-    /// A qualified function `name` as its three canonical components,
-    /// quoted; `None` when it cannot be completed.
-    fn qualified_function(&self, name: &ObjectName) -> Option<ObjectName> {
-        let parts: Vec<String> = name
-            .0
-            .iter()
-            .map(|p| match p {
-                ObjectNamePart::Identifier(id) => Some(ident_key(id)),
-                _ => None,
-            })
-            .collect::<Option<_>>()?;
-        let full = match parts.as_slice() {
-            [_, _] if !self.catalog.is_empty() => {
-                let mut full = vec![self.catalog.clone()];
-                full.extend(parts);
-                full
-            }
-            [_, _, _] => parts,
-            _ => return None,
-        };
-        Some(ObjectName(
-            full.into_iter()
-                .map(|p| ObjectNamePart::Identifier(Ident::with_quote('"', p)))
-                .collect(),
-        ))
-    }
-
     /// Record `relation` and rewrite the reference to its placeholder.
     fn placeholder(&mut self, relation: Relation) -> ObjectName {
         let name = format!("{PLACEHOLDER}{}", self.resolved.len());
@@ -484,6 +473,18 @@ impl References<'_> {
             '"', name,
         ))])
     }
+}
+
+/// `name`'s components as canonical keys; `None` when one is not an
+/// identifier.
+fn object_parts(name: &ObjectName) -> Option<Vec<String>> {
+    name.0
+        .iter()
+        .map(|p| match p {
+            ObjectNamePart::Identifier(id) => Some(ident_key(id)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn ident_key(id: &Ident) -> String {
@@ -615,24 +616,15 @@ impl VisitorMut for References<'_> {
             }
             _ => return ControlFlow::Continue(()),
         };
-        // A qualified call names its function: bound in full, a
-        // schema-relative one in the session's (or the view's) database.
-        if f.name.0.len() > 1 {
-            match self.qualified_function(&f.name) {
-                Some(name) => f.name = name,
-                None => self.unbound = true,
-            }
-            return ControlFlow::Continue(());
-        }
-        let [ObjectNamePart::Identifier(id)] = f.name.0.as_slice() else {
-            self.unbound = true;
-            return ControlFlow::Continue(());
+        let key = match f.name.0.as_slice() {
+            [ObjectNamePart::Identifier(id)] => Some(ident_key(id)),
+            _ => None,
         };
-        match id.value.to_ascii_uppercase().as_str() {
-            "CURRENT_DATABASE" => self.context.database = true,
-            "CURRENT_SCHEMA" => self.context.schema = true,
-            name if UNKNOWN_CONTEXT_FUNCTIONS.contains(&name) => self.unbound = true,
-            "SYS_CONTEXT" => {
+        match key.as_deref() {
+            Some("CURRENT_DATABASE") => self.context.database = true,
+            Some("CURRENT_SCHEMA") => self.context.schema = true,
+            Some(name) if UNKNOWN_CONTEXT_FUNCTIONS.contains(&name) => self.unbound = true,
+            Some("SYS_CONTEXT") => {
                 // The session's database or schema, in the root SQL. Any
                 // other property, namespace or call, or one inside a view,
                 // reads a context the request does not identify.
@@ -652,12 +644,21 @@ impl VisitorMut for References<'_> {
                     _ => self.unbound = true,
                 }
             }
-            // Any other function the search path resolves: a built-in, or a
-            // user function that may differ between schemas (#272).
-            name if id.quote_style.is_some() || !BUILTIN_FUNCTIONS.contains(name) => {
-                self.unbound = true
-            }
-            _ => {}
+            // Snowflake refuses a user function of a built-in's name.
+            Some(name) if BUILTIN_FUNCTIONS.contains(name) => {}
+            // A user function, bound in full; one the context leaves
+            // unknown has no binding (#272).
+            _ => match object_parts(&f.name).and_then(|parts| self.function(parts)) {
+                Some(function) => {
+                    f.name = ObjectName(
+                        function
+                            .into_iter()
+                            .map(|p| ObjectNamePart::Identifier(Ident::with_quote('"', p)))
+                            .collect(),
+                    )
+                }
+                None => self.unbound = true,
+            },
         }
         ControlFlow::Continue(())
     }
@@ -689,13 +690,7 @@ impl VisitorMut for References<'_> {
                     {
                         identifier_literal(&f.args).map(canonical_name)
                     }
-                    parts => parts
-                        .iter()
-                        .map(|p| match p {
-                            ObjectNamePart::Identifier(id) => Some(ident_key(id)),
-                            _ => None,
-                        })
-                        .collect(),
+                    _ => object_parts(name),
                 };
                 let Some(parts) = parts else {
                     self.unbound = true;
@@ -1085,16 +1080,43 @@ mod tests {
             None,
             "a call anywhere in the query"
         );
-        // A quoted name is not taken for a built-in.
-        assert_eq!(root("select \"COALESCE\"(v, 0) as v from db.raw.u"), None);
-        // Inside a view too: its schema could hold a different function.
-        let mut req = request("select v from db.prod.v", "PROD", &["DB.RAW.U"]);
+        // A quoted name is its exact identifier: `"COALESCE"` is the
+        // built-in, `"coalesce"` is not.
+        assert!(root("select \"COALESCE\"(v, 0) as v from db.raw.u").is_some());
+        assert_eq!(root("select \"coalesce\"(v, 0) as v from db.raw.u"), None);
+    }
+
+    #[test]
+    fn a_views_unqualified_function_resolves_in_its_own_schema() {
+        // Snowflake resolves a view's unqualified names in the view's own
+        // schema, never through the search path.
+        let bound = |view_schema: &str, definition: &str| {
+            let sql = format!("select v from db.{view_schema}.v");
+            let mut req = request(&sql, "ZZZ", &["DB.RAW.U"]);
+            req.query_dependencies = vec![view(
+                &format!("DB.{view_schema}.V"),
+                definition,
+                view_schema,
+            )];
+            binding(&req).map(|b| b.hash)
+        };
+        let unqualified = "select my_udf(v) as v from db.raw.u";
+        assert_ne!(bound("P", unqualified), bound("Q", unqualified));
+        assert_eq!(
+            bound("P", unqualified),
+            bound("Q", "select db.p.my_udf(v) as v from db.raw.u")
+        );
+        // A schema-relative call, in the view's database.
+        let mut req = request("select v from db2.p.v", "ZZZ", &["DB.RAW.U"]);
         req.query_dependencies = vec![view(
-            "DB.PROD.V",
-            "select my_udf(v) as v from db.raw.u",
-            "PROD",
+            "DB2.P.V",
+            "select s.my_udf(v) as v from db.raw.u",
+            "P",
         )];
-        assert_eq!(binding(&req), None);
+        assert_eq!(
+            binding(&req).map(|b| b.hash),
+            bound("Q", "select db2.s.my_udf(v) as v from db.raw.u")
+        );
     }
 
     #[test]

@@ -472,12 +472,12 @@ physical inputs the submit reads (`submit_decision::copy_search`):
   source, must have the build's binding, so two inputs swapped between
   references, inside a view too, a view's columns renamed, or an
   unqualified reference that resolves in another schema, differ, even with
-  the same reported inputs. Function calls resolve through the same
-  context (#272): an unquoted, unqualified call of a Snowflake built-in
-  is that built-in (Snowflake refuses a user function of a built-in's
-  name), any other unqualified call leaves no binding, and a qualified
-  call is bound in full, a schema-relative one in the session's database
-  or the view's. No request carries a function's definition, so the
+  the same reported inputs. Function calls resolve in the same context
+  (#272): an unqualified call of a Snowflake built-in's name is that
+  built-in (Snowflake refuses a user function of a built-in's name). Any
+  other call is bound in full as the user function it names; an
+  unqualified one in the root SQL goes through `SEARCH_PATH` and leaves no
+  binding, while inside a view it resolves in the view's schema. No request carries a function's definition, so the
   binding cannot tell a function replaced since the build, nor recognize
   equal definitions behind two targets' own functions; both stay open.
 - *Every read is evidenced on both sides.* Each base relation the submit's

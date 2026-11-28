@@ -173,13 +173,15 @@ Do not weaken these without new evidence.
   `copy_search.rs::review266_stand_in_epoch_is_a_qualification_before_lag`.
   Snowflake builds recorded before migration 0034 have no binding: after
   the upgrade each is copied from only once rebuilt, and a copy of one
-  rebuilds once. Function calls also resolve through the session's schema
-  (#272): an unquoted, unqualified call of a Snowflake built-in
+  rebuilds once. Function calls resolve like relation names (#272): an
+  unqualified call of a Snowflake built-in's name
   (`analyzed_workload/snowflake_builtin_functions.txt`, captured from
   `SHOW FUNCTIONS`) binds as that built-in, since Snowflake refuses a user
-  function of a built-in's name; any other unqualified call leaves no
-  binding, and a qualified call is bound in full (a schema-relative one in
-  the session's database, the view's inside a view). Regressions:
+  function of a built-in's name. Any other call is bound in full as the
+  user function it names: an unqualified one in the root SQL goes through
+  `SEARCH_PATH` and leaves no binding, one inside a view resolves in the
+  view's schema, and a schema-relative one in the session's or the view's
+  database. Regressions:
   `snowflake_function_binding.rs` and the `physical_binding` unit tests.
   Sequence names are not bound (uncaptured).
   **Open (#272):** no request carries a function's definition (pinned
